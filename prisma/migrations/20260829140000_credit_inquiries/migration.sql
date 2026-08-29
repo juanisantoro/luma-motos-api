@@ -111,6 +111,19 @@ FROM "financieras_organizaciones_mapa" AS mapa
 WHERE mapa."financiera_original_id" = componente."financiera_id"
   AND mapa."organizacion_id" = componente."organizacion_id";
 
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM "public"."financieras"
+    WHERE "organizacion_id" IS NULL
+  ) THEN
+    RAISE EXCEPTION
+      'Cannot backfill financial institution organizations: no LUMA_CENTRAL organization exists or some institutions remain unmapped';
+  END IF;
+END
+$$;
+
 ALTER TABLE "public"."financieras"
   ALTER COLUMN "organizacion_id" SET NOT NULL;
 
@@ -166,7 +179,7 @@ SET
       LIMIT 1
     )
   ),
-  "clave_idempotencia" = 'legacy:' || consulta."id"::text,
+  "clave_idempotencia" = '_legacy/' || consulta."id"::text,
   "huella_idempotencia" =
     md5(consulta."id"::text) || md5(consulta."id"::text || ':legacy');
 
