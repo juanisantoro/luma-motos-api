@@ -79,7 +79,7 @@ export class SupplyService {
         ]),
     );
     return {
-      items: items.map((item) => this.request(item)),
+      items: items.map((item) => this.request(item, actor)),
       total,
       page: query.page,
       limit: query.limit,
@@ -87,7 +87,7 @@ export class SupplyService {
   }
   async findOne(id: string, actor: AuthenticatedUser) {
     return this.prisma.withTenant(this.scope(actor), async (tx) =>
-      this.request(await this.requestOr404(tx, id, actor)),
+      this.request(await this.requestOr404(tx, id, actor), actor),
     );
   }
   async create(input: CreateSupplyRequestDto, actor: AuthenticatedUser) {
@@ -144,7 +144,7 @@ export class SupplyService {
           },
           include: requestInclude,
         });
-        return this.request(item);
+        return this.request(item, actor);
       },
       undefined,
       undefined,
@@ -202,6 +202,7 @@ export class SupplyService {
             data,
             include: requestInclude,
           }),
+          actor,
         );
       },
       id,
@@ -257,8 +258,8 @@ export class SupplyService {
               'VIN conflicts with the completed supply reception',
             );
           return {
-            supplyRequest: this.request(current),
-            unit: this.unit(unit),
+            supplyRequest: this.request(current, actor),
+            unit: this.unit(unit, actor),
             inventoryMovement: this.movement(movement),
             replayed: true,
           };
@@ -328,8 +329,8 @@ export class SupplyService {
           include: requestInclude,
         });
         return {
-          supplyRequest: this.request(request),
-          unit: this.unit(unit),
+          supplyRequest: this.request(request, actor),
+          unit: this.unit(unit, actor),
           inventoryMovement: this.movement(movement),
           replayed: false,
         };
@@ -431,7 +432,11 @@ export class SupplyService {
     item: Prisma.solicitudes_abastecimientoGetPayload<{
       include: typeof requestInclude;
     }>,
+    actor: AuthenticatedUser,
   ) {
+    const canViewCosts = actor.role.permissions.includes(
+      'compras.costos.consultar',
+    );
     return {
       id: item.id,
       supplierId: item.proveedor_id,
@@ -443,7 +448,9 @@ export class SupplyService {
       arrivalBranchId: item.sucursal_llegada_id,
       status: item.estado,
       supplierReference: item.referencia_proveedor,
-      estimatedCost: item.costo_estimado?.toString() ?? null,
+      ...(canViewCosts
+        ? { estimatedCost: item.costo_estimado?.toString() ?? null }
+        : {}),
       receivedUnitId: item.unidad_vehiculo_recibida_id,
       requestedAt: item.solicitado_en,
       confirmedAt: item.confirmado_en,
@@ -546,7 +553,11 @@ export class SupplyService {
     item: Prisma.unidades_vehiculosGetPayload<{
       include: typeof requestUnitInclude;
     }>,
+    actor: AuthenticatedUser,
   ) {
+    const canViewCosts = actor.role.permissions.includes(
+      'compras.costos.consultar',
+    );
     return {
       id: item.id,
       versionId: item.version_id,
@@ -561,7 +572,9 @@ export class SupplyService {
       branchId: item.sucursal_id,
       supplierId: item.proveedor_id,
       acquisitionOrigin: item.origen_adquisicion,
-      purchaseCost: item.costo_compra?.toString() ?? null,
+      ...(canViewCosts
+        ? { purchaseCost: item.costo_compra?.toString() ?? null }
+        : {}),
       inventoryStatus: item.estado_inventario,
       receivedAt: item.recibido_en,
       createdAt: item.creado_en,

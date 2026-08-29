@@ -35,6 +35,21 @@ export const PERMISSION_CODES = {
   SALES_CANCEL: 'ventas.cancelar',
   SALES_CLOSE: 'ventas.cerrar',
   STOCK_RESERVATIONS_MANAGE: 'reservas_stock.gestionar',
+  PURCHASES_READ: 'compras.consultar',
+  PURCHASES_MANAGE: 'compras.gestionar',
+  PURCHASES_PAY: 'compras.pagar',
+  PURCHASE_COSTS_READ: 'compras.costos.consultar',
+  INCOMES_READ: 'ingresos.consultar',
+  INCOMES_MANAGE: 'ingresos.gestionar',
+  INCOMES_COLLECT: 'ingresos.cobrar',
+  EXPENSES_READ: 'gastos.consultar',
+  EXPENSES_MANAGE: 'gastos.gestionar',
+  EXPENSES_PAY: 'gastos.pagar',
+  EXPENSES_RECOVER: 'gastos.recuperar',
+  CASH_READ: 'caja.consultar',
+  CASH_MANAGE: 'caja.gestionar',
+  CASH_TRANSFER: 'caja.transferir',
+  CASH_REVERSE: 'caja.reversar',
 } as const;
 
 export const AUDIT_ACTIONS = {

@@ -176,6 +176,8 @@ describe('SupplyService', () => {
       unit: { id: unitId },
       inventoryMovement: { id: 'a5ed870b-c3b0-4dcb-8cc8-905e1a0126b9' },
     });
+    expect(result.supplyRequest).not.toHaveProperty('estimatedCost');
+    expect(result.unit).not.toHaveProperty('purchaseCost');
   });
 
   it('requires reception at the canonical arrival branch', async () => {

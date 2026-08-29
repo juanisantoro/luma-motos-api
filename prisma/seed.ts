@@ -190,6 +190,96 @@ const managedPermissions = [
     descripcion: 'Reserva y libera unidades para operaciones comerciales.',
     roles: ['VENDEDOR', 'ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
   },
+  {
+    codigo: 'compras.consultar',
+    modulo: 'compras',
+    descripcion: 'Consulta compras a proveedores sin revelar costos sensibles.',
+    roles: ['ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+  },
+  {
+    codigo: 'compras.gestionar',
+    modulo: 'compras',
+    descripcion: 'Registra y modifica compras a proveedores.',
+    roles: ['ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+  },
+  {
+    codigo: 'compras.pagar',
+    modulo: 'compras',
+    descripcion: 'Registra pagos parciales de compras a proveedores.',
+    roles: ['ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+  },
+  {
+    codigo: 'compras.costos.consultar',
+    modulo: 'compras',
+    descripcion: 'Consulta importes y costos sensibles de compras.',
+    roles: ['GERENTE', 'ADMINISTRADOR'],
+  },
+  {
+    codigo: 'ingresos.consultar',
+    modulo: 'ingresos',
+    descripcion: 'Consulta ingresos administrativos.',
+    roles: ['ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+  },
+  {
+    codigo: 'ingresos.gestionar',
+    modulo: 'ingresos',
+    descripcion: 'Registra y modifica ingresos administrativos.',
+    roles: ['ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+  },
+  {
+    codigo: 'ingresos.cobrar',
+    modulo: 'ingresos',
+    descripcion: 'Registra cobranzas parciales de ingresos.',
+    roles: ['ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+  },
+  {
+    codigo: 'gastos.consultar',
+    modulo: 'gastos',
+    descripcion: 'Consulta gastos generales.',
+    roles: ['ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+  },
+  {
+    codigo: 'gastos.gestionar',
+    modulo: 'gastos',
+    descripcion: 'Registra y modifica gastos generales.',
+    roles: ['ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+  },
+  {
+    codigo: 'gastos.pagar',
+    modulo: 'gastos',
+    descripcion: 'Registra pagos parciales de gastos.',
+    roles: ['ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+  },
+  {
+    codigo: 'gastos.recuperar',
+    modulo: 'gastos',
+    descripcion: 'Registra recuperaciones de gastos recuperables.',
+    roles: ['ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+  },
+  {
+    codigo: 'caja.consultar',
+    modulo: 'caja',
+    descripcion: 'Consulta cuentas, saldos y movimientos de caja.',
+    roles: ['ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+  },
+  {
+    codigo: 'caja.gestionar',
+    modulo: 'caja',
+    descripcion: 'Gestiona cuentas de caja, banco, socio y otras.',
+    roles: ['GERENTE', 'ADMINISTRADOR'],
+  },
+  {
+    codigo: 'caja.transferir',
+    modulo: 'caja',
+    descripcion: 'Registra transferencias internas balanceadas.',
+    roles: ['ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+  },
+  {
+    codigo: 'caja.reversar',
+    modulo: 'caja',
+    descripcion: 'Revierte movimientos financieros mediante contramovimientos.',
+    roles: ['GERENTE', 'ADMINISTRADOR'],
+  },
 ] as const;
 
 async function main(): Promise<void> {

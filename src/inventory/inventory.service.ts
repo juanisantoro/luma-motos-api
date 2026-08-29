@@ -83,7 +83,7 @@ export class InventoryService {
         ]),
     );
     return {
-      items: items.map((item) => this.unit(item)),
+      items: items.map((item) => this.unit(item, actor)),
       total,
       page: query.page,
       limit: query.limit,
@@ -91,7 +91,7 @@ export class InventoryService {
   }
   async findOne(id: string, actor: AuthenticatedUser) {
     return this.prisma.withTenant(this.scope(actor), async (tx) =>
-      this.unit(await this.unitOr404(tx, id, actor)),
+      this.unit(await this.unitOr404(tx, id, actor), actor),
     );
   }
   async create(input: CreateInventoryUnitDto, actor: AuthenticatedUser) {
@@ -207,7 +207,7 @@ export class InventoryService {
           },
           include: unitInclude,
         });
-        return this.unit(updated);
+        return this.unit(updated, actor);
       },
       id,
     );
@@ -264,7 +264,10 @@ export class InventoryService {
             organizacion_id: current.organizacion_id,
           },
         });
-        return { unit: this.unit(unit), movement: this.movement(movement) };
+        return {
+          unit: this.unit(unit, actor),
+          movement: this.movement(movement),
+        };
       },
       id,
     );
@@ -371,7 +374,7 @@ export class InventoryService {
         organizacion_id: organizationId,
       },
     });
-    return this.unit(unit);
+    return this.unit(unit, actor);
   }
   private async unitOr404(
     tx: Prisma.TransactionClient,
@@ -518,6 +521,7 @@ export class InventoryService {
   }
   private unit(
     item: Prisma.unidades_vehiculosGetPayload<{ include: typeof unitInclude }>,
+    actor: AuthenticatedUser,
   ) {
     return {
       id: item.id,
@@ -532,7 +536,9 @@ export class InventoryService {
       branchId: item.sucursal_id,
       supplierId: item.proveedor_id,
       acquisitionOrigin: item.origen_adquisicion,
-      purchaseCost: item.costo_compra?.toString() ?? null,
+      ...(actor.role.permissions.includes('compras.costos.consultar')
+        ? { purchaseCost: item.costo_compra?.toString() ?? null }
+        : {}),
       inventoryStatus: item.estado_inventario,
       receivedAt: item.recibido_en,
       createdAt: item.creado_en,

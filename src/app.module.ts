@@ -20,6 +20,10 @@ import { SuppliersModule } from './suppliers/suppliers.module';
 import { SupplyModule } from './supply/supply.module';
 import { SalesModule } from './sales/sales.module';
 import { UsersModule } from './users/users.module';
+import { CashModule } from './cash/cash.module';
+import { ExpensesModule } from './expenses/expenses.module';
+import { IncomesModule } from './incomes/incomes.module';
+import { SupplierPurchasesModule } from './supplier-purchases/supplier-purchases.module';
 
 @Module({
   imports: [
@@ -48,6 +52,10 @@ import { UsersModule } from './users/users.module';
     SuppliersModule,
     SupplyModule,
     SalesModule,
+    CashModule,
+    SupplierPurchasesModule,
+    IncomesModule,
+    ExpensesModule,
   ],
   providers: [
     {

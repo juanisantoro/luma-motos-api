@@ -184,6 +184,8 @@ model componentes_pago_operacion {
 model compras_proveedor {
   id                                                                                                                   String                      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   proveedor_id                                                                                                         String                      @db.Uuid
+  sucursal_id                                                                                                          String?                     @db.Uuid
+  version_id                                                                                                           String?                     @db.Uuid
   unidad_vehiculo_id                                                                                                   String?                     @db.Uuid
   solicitud_abastecimiento_id                                                                                          String?                     @db.Uuid
   fecha_compra                                                                                                         DateTime                    @db.Date
@@ -199,6 +201,8 @@ model compras_proveedor {
   organizacion_id                                                                                                      String                      @db.Uuid
   solicitudes_abastecimiento_compras_proveedor_solicitud_abastecimiento_id_organizacion_idTosolicitudes_abastecimiento solicitudes_abastecimiento? @relation("compras_proveedor_solicitud_abastecimiento_id_organizacion_idTosolicitudes_abastecimiento", fields: [solicitud_abastecimiento_id, organizacion_id], references: [id, organizacion_id], onDelete: NoAction, onUpdate: NoAction, map: "compra_abastecimiento_organizacion_fk")
   proveedores_compras_proveedor_proveedor_id_organizacion_idToproveedores                                              proveedores                 @relation("compras_proveedor_proveedor_id_organizacion_idToproveedores", fields: [proveedor_id, organizacion_id], references: [id, organizacion_id], onDelete: NoAction, onUpdate: NoAction, map: "compra_proveedor_referencia_organizacion_fk")
+  sucursal                                                                                                             sucursales?                 @relation("compra_sucursal", fields: [sucursal_id, organizacion_id], references: [id, organizacion_id], onDelete: NoAction, onUpdate: NoAction, map: "compra_sucursal_organizacion_fk")
+  version                                                                                                              versiones_vehiculos?        @relation("compra_version", fields: [version_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
   unidades_vehiculos_compras_proveedor_unidad_vehiculo_id_organizacion_idTounidades_vehiculos                          unidades_vehiculos?         @relation("compras_proveedor_unidad_vehiculo_id_organizacion_idTounidades_vehiculos", fields: [unidad_vehiculo_id, organizacion_id], references: [id, organizacion_id], onDelete: NoAction, onUpdate: NoAction, map: "compra_unidad_organizacion_fk")
   organizaciones                                                                                                       organizaciones              @relation(fields: [organizacion_id], references: [id], onUpdate: NoAction, map: "compras_proveedor_organizacion_fk")
   proveedores                                                                                                          proveedores                 @relation(fields: [proveedor_id], references: [id], onUpdate: NoAction)
@@ -515,6 +519,8 @@ model movimientos_caja {
   es_importado                                                                                                Boolean                   @default(false)
   fila_importacion_id                                                                                         String?                   @db.Uuid
   datos_inferidos                                                                                             Json                      @default("{}")
+  clave_idempotencia                                                                                          String?                   @db.VarChar(100)
+  hash_idempotencia                                                                                           String?                   @db.Char(64)
   ingresos_movimientos_caja_ingreso                                                                           ingresos?                 @relation("movimientos_caja_ingreso", fields: [ingreso_id, organizacion_id], references: [id, organizacion_id], onDelete: NoAction, onUpdate: NoAction, map: "movimiento_caja_ingreso_organizacion_fk")
   filas_importacion                                                                                           filas_importacion?        @relation("movimientos_caja_importacion_fila", fields: [fila_importacion_id, organizacion_id], references: [id, organizacion_id], onDelete: Restrict, onUpdate: NoAction, map: "movimiento_caja_importacion_fila_organizacion_fk")
   cobranzas_movimientos_caja_cobranza_id_organizacion_idTocobranzas                                           cobranzas?                @relation("movimientos_caja_cobranza_id_organizacion_idTocobranzas", fields: [cobranza_id, organizacion_id], references: [id, organizacion_id], onDelete: NoAction, onUpdate: NoAction, map: "movimiento_caja_cobranza_organizacion_fk")
@@ -536,6 +542,7 @@ model movimientos_caja {
   transferencias_caja_movimientos_caja_transferencia_idTotransferencias_caja                                  transferencias_caja?      @relation("movimientos_caja_transferencia_idTotransferencias_caja", fields: [transferencia_id], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "movimientos_caja_transferenciaencia_id_fkey")
 
   @@unique([id, organizacion_id], map: "movimientos_caja_id_organizacion_unico")
+  @@unique([organizacion_id, clave_idempotencia], map: "movimientos_caja_organizacion_idempotencia_unico")
   @@index([cuenta_caja_id, contabilizado_en(sort: Desc)], map: "movimientos_caja_cuenta_fecha_indice")
 }
 
@@ -632,6 +639,7 @@ model operaciones {
   consultas_crediticias                                                                                       consultas_crediticias[]
   gastos_gastos_operacion_id_organizacion_idTooperaciones                                                     gastos[]                           @relation("gastos_operacion_id_organizacion_idTooperaciones")
   gastos                                                                                                      gastos[]
+  ingresos_financieros                                                                                        ingresos[]                         @relation("ingreso_operacion")
   movimientos_inventario_movimientos_inventario_operacion_id_organizacion_idTooperaciones                     movimientos_inventario[]           @relation("movimientos_inventario_operacion_id_organizacion_idTooperaciones")
   movimientos_inventario                                                                                      movimientos_inventario[]
   obligaciones_operacion_obligaciones_operacion_operacion_id_organizacion_idTooperaciones                     obligaciones_operacion[]           @relation("obligaciones_operacion_operacion_id_organizacion_idTooperaciones")
@@ -952,6 +960,7 @@ model sucursales {
   usuarios                                                                                              usuarios[]
   usuarios_usuarios_sucursal_id_organizacion_idTosucursales                                             usuarios[]                        @relation("usuarios_sucursal_id_organizacion_idTosucursales")
   ingresos                                                                                              ingresos[]
+  compras_proveedor_financieras                                                                         compras_proveedor[]               @relation("compra_sucursal")
   polizas_seguros                                                                                       polizas_seguros[]
   prospectos                                                                                            prospectos[]
   registros_inventario_importados                                                                       registros_inventario_importados[]
@@ -1035,6 +1044,7 @@ model unidades_vehiculos {
   vehiculos_tomados_parte_pago                                                                         vehiculos_tomados_parte_pago?
   polizas_seguros                                                                                      polizas_seguros[]
   registros_inventario_importados                                                                      registros_inventario_importados[]
+  ingresos_financieros                                                                                 ingresos[]                        @relation("ingreso_unidad")
 
   @@unique([id, organizacion_id], map: "unidades_vehiculos_id_organizacion_unico")
   @@index([sucursal_id, estado_inventario, version_id], map: "unidades_vehiculos_inventario_consulta_indice")
@@ -1112,25 +1122,26 @@ model vehiculos_tomados_parte_pago {
 }
 
 model versiones_vehiculos {
-  id                           String                         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  modelo_id                    String                         @db.Uuid
-  nombre                       String                         @db.VarChar(140)
-  nombre_normalizado           String                         @db.VarChar(140)
-  es_marcador                  Boolean                        @default(false)
-  activo                       Boolean                        @default(true)
-  creado_en                    DateTime                       @default(now()) @db.Timestamptz(6)
-  actualizado_en               DateTime                       @default(now()) @db.Timestamptz(6)
-  alcance                      alcance_catalogo_luma          @default(RESTRINGIDO)
-  organizacion_propietaria_id  String?                        @db.Uuid
-  catalogo_organizaciones      catalogo_organizaciones[]
-  disponibilidad_proveedor     disponibilidad_proveedor[]
-  operaciones                  operaciones[]
-  politicas_precios_vehiculos  politicas_precios_vehiculos[]
-  solicitudes_abastecimiento   solicitudes_abastecimiento[]
-  unidades_vehiculos           unidades_vehiculos[]
-  vehiculos_tomados_parte_pago vehiculos_tomados_parte_pago[]
-  modelos_vehiculos            modelos_vehiculos              @relation(fields: [modelo_id], references: [id], onUpdate: NoAction)
-  organizaciones               organizaciones?                @relation(fields: [organizacion_propietaria_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  id                            String                         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  modelo_id                     String                         @db.Uuid
+  nombre                        String                         @db.VarChar(140)
+  nombre_normalizado            String                         @db.VarChar(140)
+  es_marcador                   Boolean                        @default(false)
+  activo                        Boolean                        @default(true)
+  creado_en                     DateTime                       @default(now()) @db.Timestamptz(6)
+  actualizado_en                DateTime                       @default(now()) @db.Timestamptz(6)
+  alcance                       alcance_catalogo_luma          @default(RESTRINGIDO)
+  organizacion_propietaria_id   String?                        @db.Uuid
+  catalogo_organizaciones       catalogo_organizaciones[]
+  disponibilidad_proveedor      disponibilidad_proveedor[]
+  operaciones                   operaciones[]
+  politicas_precios_vehiculos   politicas_precios_vehiculos[]
+  solicitudes_abastecimiento    solicitudes_abastecimiento[]
+  unidades_vehiculos            unidades_vehiculos[]
+  vehiculos_tomados_parte_pago  vehiculos_tomados_parte_pago[]
+  compras_proveedor_financieras compras_proveedor[]            @relation("compra_version")
+  modelos_vehiculos             modelos_vehiculos              @relation(fields: [modelo_id], references: [id], onUpdate: NoAction)
+  organizaciones                organizaciones?                @relation(fields: [organizacion_propietaria_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
 }
 
 /// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
@@ -1196,31 +1207,37 @@ model organizaciones {
 
 /// This table contains check constraints, composite tenant foreign keys and row level security.
 model ingresos {
-  id                      String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  organizacion_id         String             @db.Uuid
-  sucursal_id             String             @db.Uuid
-  fila_importacion_id     String             @db.Uuid
-  fecha_ingreso           DateTime           @db.Date
-  tipo_original           String             @db.VarChar(120)
+  id                      String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizacion_id         String              @db.Uuid
+  sucursal_id             String              @db.Uuid
+  fila_importacion_id     String?             @db.Uuid
+  fecha_ingreso           DateTime            @db.Date
+  tipo_original           String              @db.VarChar(120)
   descripcion             String
-  importe                 Decimal            @db.Decimal(18, 2)
-  estado_registro         String             @db.VarChar(40)
-  estado_original         String?            @db.VarChar(120)
+  importe                 Decimal             @db.Decimal(18, 2)
+  estado_registro         String              @db.VarChar(40)
+  estado_original         String?             @db.VarChar(120)
   observaciones           String?
   cobrado_por_original    String?
-  cobrado_por_personal_id String?            @db.Uuid
-  cuenta_caja_id          String?            @db.Uuid
-  es_transferencia        Boolean            @default(false)
-  requiere_conciliacion   Boolean            @default(false)
-  datos_inferidos         Json               @default("{}")
-  creado_en               DateTime           @default(now()) @db.Timestamptz(6)
-  actualizado_en          DateTime           @default(now()) @db.Timestamptz(6)
-  organizaciones          organizaciones     @relation(fields: [organizacion_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  sucursales              sucursales         @relation(fields: [sucursal_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  filas_importacion       filas_importacion  @relation(fields: [fila_importacion_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  personal                personal?          @relation(fields: [cobrado_por_personal_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  cuentas_caja            cuentas_caja?      @relation(fields: [cuenta_caja_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  movimientos_caja        movimientos_caja[] @relation("movimientos_caja_ingreso")
+  cobrado_por_personal_id String?             @db.Uuid
+  cuenta_caja_id          String?             @db.Uuid
+  operacion_id            String?             @db.Uuid
+  unidad_vehiculo_id      String?             @db.Uuid
+  referencia              String?             @db.VarChar(160)
+  moneda                  String              @default("ARS") @db.Char(3)
+  es_transferencia        Boolean             @default(false)
+  requiere_conciliacion   Boolean             @default(false)
+  datos_inferidos         Json                @default("{}")
+  creado_en               DateTime            @default(now()) @db.Timestamptz(6)
+  actualizado_en          DateTime            @default(now()) @db.Timestamptz(6)
+  organizaciones          organizaciones      @relation(fields: [organizacion_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  sucursales              sucursales          @relation(fields: [sucursal_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  filas_importacion       filas_importacion?  @relation(fields: [fila_importacion_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  personal                personal?           @relation(fields: [cobrado_por_personal_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  cuentas_caja            cuentas_caja?       @relation(fields: [cuenta_caja_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  operaciones             operaciones?        @relation("ingreso_operacion", fields: [operacion_id, organizacion_id], references: [id, organizacion_id], onDelete: NoAction, onUpdate: NoAction, map: "ingreso_operacion_organizacion_fk")
+  unidades_vehiculos      unidades_vehiculos? @relation("ingreso_unidad", fields: [unidad_vehiculo_id, organizacion_id], references: [id, organizacion_id], onDelete: NoAction, onUpdate: NoAction, map: "ingreso_unidad_organizacion_fk")
+  movimientos_caja        movimientos_caja[]  @relation("movimientos_caja_ingreso")
 
   @@unique([id, organizacion_id], map: "ingresos_id_organizacion_unico")
   @@unique([organizacion_id, fila_importacion_id], map: "ingresos_fila_organizacion_unico")
