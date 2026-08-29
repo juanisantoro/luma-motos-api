@@ -236,8 +236,14 @@ describe('SalesService', () => {
       version_fila: 3,
     };
     const updateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const queryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([{ id: operationId }])
+      .mockResolvedValueOnce([{ id: unitId }])
+      .mockResolvedValueOnce([{ id: expiredReservation.id }])
+      .mockResolvedValueOnce([{ id: displacedOperationId }]);
     const transaction = {
-      $queryRaw: jest.fn().mockResolvedValue([{ id: operationId }]),
+      $queryRaw: queryRaw,
       operaciones: {
         findFirst: jest
           .fn()
@@ -292,6 +298,7 @@ describe('SalesService', () => {
         version_fila: { increment: 1 },
       },
     });
+    expect(queryRaw).toHaveBeenCalledTimes(4);
   });
 
   it('requires an active reservation before submission', async () => {

@@ -944,6 +944,18 @@ export class SalesService {
     actor: AuthenticatedUser,
   ) {
     const now = new Date();
+    const lockedOperation = await tx.$queryRaw<Array<{ id: string }>>`
+      SELECT "id"
+      FROM "public"."operaciones"
+      WHERE "id" = CAST(${reservation.operacion_id} AS uuid)
+        AND "organizacion_id" = CAST(${reservation.organizacion_id} AS uuid)
+        AND "unidad_vehiculo_id" = CAST(${unit.id} AS uuid)
+      FOR UPDATE SKIP LOCKED
+    `;
+    if (!lockedOperation.length)
+      throw new ConflictException(
+        'Expired reservation operation is being modified; retry the request',
+      );
     await tx.reservas_stock.update({
       where: { id: reservation.id },
       data: {
