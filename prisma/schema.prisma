@@ -252,6 +252,8 @@ model cuentas_caja {
   creado_en                                                                               DateTime              @default(now()) @db.Timestamptz(6)
   actualizado_en                                                                          DateTime              @default(now()) @db.Timestamptz(6)
   organizacion_id                                                                         String                @db.Uuid
+  es_importada                                                                            Boolean               @default(false)
+  datos_inferidos                                                                         Json                  @default("{}")
   cobranzas_cobranzas_cuenta_caja_id_organizacion_idTocuentas_caja                        cobranzas[]           @relation("cobranzas_cuenta_caja_id_organizacion_idTocuentas_caja")
   cobranzas                                                                               cobranzas[]
   personal_cuentas_caja_personal_responsable_id_organizacion_idTopersonal                 personal?             @relation("cuentas_caja_personal_responsable_id_organizacion_idTopersonal", fields: [personal_responsable_id, organizacion_id], references: [id, organizacion_id], onDelete: NoAction, onUpdate: NoAction, map: "cuenta_personal_organizacion_fk")
@@ -586,8 +588,8 @@ model operaciones {
   unidad_vehiculo_id                                                                                          String?                            @db.Uuid
   fecha_operacion                                                                                             DateTime                           @db.Date
   estado_operacion                                                                                            luma_estado_operacion              @default(BORRADOR)
-  precio_lista                                                                                                Decimal                            @db.Decimal(18, 2)
-  precio_minimo                                                                                               Decimal                            @db.Decimal(18, 2)
+  precio_lista                                                                                                Decimal?                           @db.Decimal(18, 2)
+  precio_minimo                                                                                               Decimal?                           @db.Decimal(18, 2)
   precio_acordado                                                                                             Decimal                            @db.Decimal(18, 2)
   moneda                                                                                                      String                             @default("ARS") @db.Char(3)
   estado_entrega                                                                                              luma_estado_entrega                @default(NO_PROGRAMADA)
@@ -700,6 +702,8 @@ model personal {
   creado_en                                                                                                DateTime                          @default(now()) @db.Timestamptz(6)
   actualizado_en                                                                                           DateTime                          @default(now()) @db.Timestamptz(6)
   organizacion_id                                                                                          String                            @db.Uuid
+  es_actor_sistema_importado                                                                               Boolean                           @default(false)
+  datos_inferidos                                                                                          Json                              @default("{}")
   acceso_personal_sucursal_acceso_personal_sucursal_personal_id_organizacion_idTopersonal                  acceso_personal_sucursal[]        @relation("acceso_personal_sucursal_personal_id_organizacion_idTopersonal")
   acceso_personal_sucursal                                                                                 acceso_personal_sucursal[]
   aprobaciones_operacion_aprobaciones_operacion_decidido_por_personal_id_organizacion_idTopersonal         aprobaciones_operacion[]          @relation("aprobaciones_operacion_decidido_por_personal_id_organizacion_idTopersonal")
