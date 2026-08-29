@@ -1,0 +1,38 @@
+services:
+  - type: web
+    name: luma-motos-api
+    runtime: node
+    buildCommand: npm ci && npm run prisma:generate && npm run build
+    preDeployCommand: npm run prisma:migrate:deploy && npm run prisma:seed
+    startCommand: npm run start:prod
+    healthCheckPath: /api/health
+    autoDeployTrigger: commit
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: DIRECT_URL
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_SESSION_IDLE_TIMEOUT_SECONDS
+        value: 3600
+      - key: USER_TEMPORARY_PASSWORD_TTL_SECONDS
+        value: 86400
+      - key: SMTP_HOST
+        value: smtp-relay.brevo.com
+      - key: SMTP_PORT
+        value: 587
+      - key: SMTP_SECURE
+        value: false
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: SMTP_FROM_EMAIL
+        sync: false
+      - key: SMTP_FROM_NAME
+        value: Luma Motos
+      - key: FRONTEND_URL
+        sync: false
