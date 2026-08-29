@@ -77,6 +77,24 @@ describe('AuditService', () => {
     });
   });
 
+  it('does not duplicate audit records for an idempotent replay', async () => {
+    const event = {
+      action: 'PAYMENT_RECORDED',
+      entity: 'payment',
+      actorId: 'actor-id',
+      organizationId: 'organization-id',
+      globalAccess: false,
+      skipRecord: false,
+    };
+
+    await service.execute(event, () => {
+      event.skipRecord = true;
+      return Promise.resolve({ replayed: true });
+    });
+
+    expect(createAuditLog).not.toHaveBeenCalled();
+  });
+
   it('restricts audit queries to the caller organization', async () => {
     countAuditLogs.mockResolvedValue(0);
     findAuditLogs.mockResolvedValue([]);

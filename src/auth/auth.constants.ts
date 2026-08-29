@@ -50,6 +50,12 @@ export const PERMISSION_CODES = {
   CASH_MANAGE: 'caja.gestionar',
   CASH_TRANSFER: 'caja.transferir',
   CASH_REVERSE: 'caja.reversar',
+  COMMISSIONS_READ: 'comisiones.consultar',
+  COMMISSIONS_CONFIGURE: 'comisiones.configurar',
+  COMMISSIONS_AGREE: 'comisiones.acordar',
+  COMMISSIONS_PAY: 'comisiones.pagar',
+  COMMISSIONS_HISTORY: 'comisiones.historial',
+  COMMISSIONS_OWN: 'comisiones.propias',
 } as const;
 
 export const AUDIT_ACTIONS = {

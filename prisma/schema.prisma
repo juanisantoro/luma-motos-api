@@ -429,6 +429,26 @@ model liquidaciones_comisiones {
   creado_en                                                                                                                  DateTime                           @default(now()) @db.Timestamptz(6)
   actualizado_en                                                                                                             DateTime                           @default(now()) @db.Timestamptz(6)
   organizacion_id                                                                                                            String                             @db.Uuid
+  tipo_vehiculo                                                                                                              tipo_vehiculo_luma                 @default(MOTO)
+  politica_comision_id                                                                                                       String?                            @db.Uuid
+  estado                                                                                                                     estado_liquidacion_comision_luma   @default(CALCULADA)
+  moneda                                                                                                                     String                             @default("ARS") @db.Char(3)
+  politica_snapshot                                                                                                          Json                               @default("{}")
+  escala_snapshot                                                                                                            Json?
+  operaciones_snapshot                                                                                                       Json                               @default("[]")
+  fecha_reunion                                                                                                              DateTime?                          @db.Date
+  version_fila                                                                                                               Int                                @default(0)
+  pagado_en                                                                                                                  DateTime?                          @db.Timestamptz(6)
+  pagado_por_personal_id                                                                                                     String?                            @db.Uuid
+  gasto_id                                                                                                                   String?                            @db.Uuid
+  movimiento_caja_id                                                                                                         String?                            @db.Uuid
+  cuenta_caja_id                                                                                                             String?                            @db.Uuid
+  referencia_pago                                                                                                            String?                            @db.VarChar(160)
+  comprobante_pago                                                                                                           String?                            @db.VarChar(240)
+  observaciones_pago                                                                                                         String?
+  clave_idempotencia_pago                                                                                                    String?                            @db.VarChar(100)
+  hash_idempotencia_pago                                                                                                     String?                            @db.Char(64)
+  pago_legacy                                                                                                                Boolean                            @default(false)
   personal_liquidaciones_comisiones_acordado_por_personal_id_organizacion_idTopersonal                                       personal?                          @relation("liquidaciones_comisiones_acordado_por_personal_id_organizacion_idTopersonal", fields: [acordado_por_personal_id, organizacion_id], references: [id, organizacion_id], onDelete: NoAction, onUpdate: NoAction, map: "liquidacion_acordador_organizacion_fk")
   personal_liquidaciones_comisiones_personal_id_organizacion_idTopersonal                                                    personal                           @relation("liquidaciones_comisiones_personal_id_organizacion_idTopersonal", fields: [personal_id, organizacion_id], references: [id, organizacion_id], onDelete: NoAction, onUpdate: NoAction, map: "liquidacion_personal_organizacion_fk")
   sucursales_liquidaciones_comisiones_sucursal_id_organizacion_idTosucursales                                                sucursales                         @relation("liquidaciones_comisiones_sucursal_id_organizacion_idTosucursales", fields: [sucursal_id, organizacion_id], references: [id, organizacion_id], onDelete: NoAction, onUpdate: NoAction, map: "liquidacion_sucursal_organizacion_fk")
@@ -441,8 +461,46 @@ model liquidaciones_comisiones {
   operaciones_liquidacion_comision_operaciones_liquidacion_comision_liquidacion_id_organizacion_idToliquidaciones_comisiones operaciones_liquidacion_comision[] @relation("operaciones_liquidacion_comision_liquidacion_id_organizacion_idToliquidaciones_comisiones")
   operaciones_liquidacion_comision                                                                                           operaciones_liquidacion_comision[]
 
-  @@unique([personal_id, sucursal_id, periodo_desde, periodo_hasta])
+  @@unique([organizacion_id, personal_id, periodo_desde, periodo_hasta, tipo_vehiculo], map: "liquidaciones_comisiones_periodo_tipo_unico")
   @@unique([id, organizacion_id], map: "liquidaciones_comisiones_id_organizacion_unico")
+  @@unique([organizacion_id, clave_idempotencia_pago], map: "liquidaciones_comisiones_pago_idempotencia_unico")
+  @@index([organizacion_id, estado, tipo_vehiculo, periodo_desde(sort: Desc)], map: "liquidaciones_comisiones_estado_tipo_periodo_indice")
+}
+
+model politicas_comisiones {
+  id                                                                             String                        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizacion_id                                                                String                        @db.Uuid
+  tipo_vehiculo                                                                  tipo_vehiculo_luma
+  moneda                                                                         String                        @default("ARS") @db.Char(3)
+  vigente_desde                                                                  DateTime                      @db.Date
+  vigente_hasta                                                                  DateTime?                     @db.Date
+  estado                                                                         estado_politica_comision_luma @default(BORRADOR)
+  version_fila                                                                   Int                           @default(0)
+  creado_por_personal_id                                                         String                        @db.Uuid
+  creado_en                                                                      DateTime                      @default(now()) @db.Timestamptz(6)
+  actualizado_en                                                                 DateTime                      @default(now()) @db.Timestamptz(6)
+  escalas_comisiones                                                             escalas_comisiones[]
+  organizaciones                                                                 organizaciones                @relation(fields: [organizacion_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  personal_politicas_comisiones_creado_por_personal_id_organizacion_idTopersonal personal                      @relation("politicas_comisiones_creador_organizacion", fields: [creado_por_personal_id, organizacion_id], references: [id, organizacion_id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@unique([id, organizacion_id], map: "politicas_comisiones_id_organizacion_unico")
+  @@index([organizacion_id, tipo_vehiculo, estado, vigente_desde(sort: Desc)], map: "politicas_comisiones_tipo_vigencia_indice")
+}
+
+model escalas_comisiones {
+  id                   String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  politica_id          String               @db.Uuid
+  organizacion_id      String               @db.Uuid
+  minimo_ventas        Int
+  maximo_ventas        Int?
+  importe_fijo         Decimal              @db.Decimal(18, 2)
+  creado_en            DateTime             @default(now()) @db.Timestamptz(6)
+  politicas_comisiones politicas_comisiones @relation(fields: [politica_id, organizacion_id], references: [id, organizacion_id], onDelete: Cascade, onUpdate: NoAction, map: "escalas_comisiones_politica_organizacion_fk")
+  organizaciones       organizaciones       @relation(fields: [organizacion_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@unique([id, organizacion_id], map: "escalas_comisiones_id_organizacion_unico")
+  @@unique([politica_id, minimo_ventas], map: "escalas_comisiones_politica_minimo_unico")
+  @@index([politica_id, minimo_ventas], map: "escalas_comisiones_politica_orden_indice")
 }
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
@@ -773,6 +831,7 @@ model personal {
   transferencias_caja_transferencias_caja_creado_por_personal_id_organizacion_idTopersonal                 transferencias_caja[]             @relation("transferencias_caja_creado_por_personal_id_organizacion_idTopersonal")
   transferencias_caja                                                                                      transferencias_caja[]
   ingresos                                                                                                 ingresos[]
+  politicas_comisiones_creadas                                                                             politicas_comisiones[]            @relation("politicas_comisiones_creador_organizacion")
 
   @@unique([id, organizacion_id], map: "personal_id_organizacion_unico")
   @@index([nombre_normalizado(ops: raw("gin_trgm_ops"))], map: "personal_nombre_trgm_indice", type: Gin)
@@ -1208,6 +1267,8 @@ model organizaciones {
   polizas_seguros                  polizas_seguros[]
   prospectos                       prospectos[]
   registros_inventario_importados  registros_inventario_importados[]
+  politicas_comisiones             politicas_comisiones[]
+  escalas_comisiones               escalas_comisiones[]
 }
 
 /// This table contains check constraints, composite tenant foreign keys and row level security.
@@ -1453,6 +1514,19 @@ enum luma_estado_pago {
   VENCIDO
   CANCELADA
   REINTEGRADO
+}
+
+enum estado_politica_comision_luma {
+  BORRADOR
+  ACTIVA
+  INACTIVA
+}
+
+enum estado_liquidacion_comision_luma {
+  CALCULADA
+  ACORDADA
+  PENDIENTE_PAGO
+  PAGADA
 }
 
 enum luma_personal_estado {

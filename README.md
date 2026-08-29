@@ -249,7 +249,7 @@ Prisma está alineado con el esquema integral existente de Luma Motos. La migrac
 - `registros_auditoria`: acción, entidad, organización, usuario actor, valores auditables y timestamp.
 - `sesiones_autenticacion`: sesiones JWT revocables con vencimiento por inactividad.
 
-El seed es idempotente y preserva el catálogo existente. Administra `LUMA_CENTRAL`, sus sucursales **San Miguel** y **Del Viso**, los roles **Vendedor**, **Administrativa**, **Administrador** y **Gerente**, y sincroniza los permisos de auditoría, usuarios y clientes descritos arriba. No crea usuarios, clientes ni contraseñas.
+El seed es idempotente y preserva el catálogo existente. Administra `LUMA_CENTRAL`, sus sucursales **San Miguel** y **Del Viso**, los roles **Vendedor**, **Administrativa**, **Administrador** y **Gerente**, sincroniza los permisos y crea la política inicial de comisiones sólo para MOTO. No crea usuarios, clientes ni contraseñas; el perfil técnico sin login `SISTEMA_COMISIONES` identifica la autoría del seed.
 
 ### Aislamiento multiorganización
 

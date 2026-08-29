@@ -14,6 +14,7 @@ export interface AuditEvent {
   ipAddress?: string;
   organizationId: string;
   targetOrganizationId?: string;
+  skipRecord?: boolean;
 }
 
 export interface AuthenticatedAuditEvent extends AuditEvent, TenantScope {
@@ -89,7 +90,7 @@ export class AuditService {
   ): Promise<T> {
     return this.prisma.withTenant(event, async (transaction) => {
       const result = await operation(transaction);
-      await this.createRecord(transaction, event);
+      if (!event.skipRecord) await this.createRecord(transaction, event);
       return result;
     });
   }

@@ -24,6 +24,7 @@ import { CashModule } from './cash/cash.module';
 import { ExpensesModule } from './expenses/expenses.module';
 import { IncomesModule } from './incomes/incomes.module';
 import { SupplierPurchasesModule } from './supplier-purchases/supplier-purchases.module';
+import { CommissionsModule } from './commissions/commissions.module';
 
 @Module({
   imports: [
@@ -56,6 +57,7 @@ import { SupplierPurchasesModule } from './supplier-purchases/supplier-purchases
     SupplierPurchasesModule,
     IncomesModule,
     ExpensesModule,
+    CommissionsModule,
   ],
   providers: [
     {

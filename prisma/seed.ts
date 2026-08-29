@@ -280,6 +280,42 @@ const managedPermissions = [
     descripcion: 'Revierte movimientos financieros mediante contramovimientos.',
     roles: ['GERENTE', 'ADMINISTRADOR'],
   },
+  {
+    codigo: 'comisiones.consultar',
+    modulo: 'comisiones',
+    descripcion: 'Consulta sugeridos, reuniones y liquidaciones de comisiones.',
+    roles: ['GERENTE', 'ADMINISTRADOR'],
+  },
+  {
+    codigo: 'comisiones.configurar',
+    modulo: 'comisiones',
+    descripcion: 'Configura políticas y escalas de comisiones.',
+    roles: ['ADMINISTRADOR'],
+  },
+  {
+    codigo: 'comisiones.acordar',
+    modulo: 'comisiones',
+    descripcion: 'Registra acuerdos de comisión con vendedores.',
+    roles: ['GERENTE', 'ADMINISTRADOR'],
+  },
+  {
+    codigo: 'comisiones.pagar',
+    modulo: 'comisiones',
+    descripcion: 'Paga liquidaciones acordadas desde una cuenta de caja.',
+    roles: ['GERENTE', 'ADMINISTRADOR'],
+  },
+  {
+    codigo: 'comisiones.historial',
+    modulo: 'comisiones',
+    descripcion: 'Consulta el historial de comisiones pagadas.',
+    roles: ['GERENTE', 'ADMINISTRADOR'],
+  },
+  {
+    codigo: 'comisiones.propias',
+    modulo: 'comisiones',
+    descripcion: 'Consulta el progreso y el historial propio de comisiones.',
+    roles: ['VENDEDOR'],
+  },
 ] as const;
 
 async function main(): Promise<void> {
@@ -355,6 +391,59 @@ async function main(): Promise<void> {
             codigo_permiso: permission.codigo,
           })),
           skipDuplicates: true,
+        });
+      }
+
+      let commissionSeedActor = await transaction.personal.findFirst({
+        where: {
+          organizacion_id: organization.id,
+          codigo_empleado: 'SISTEMA_COMISIONES',
+        },
+        select: { id: true },
+      });
+      if (!commissionSeedActor) {
+        commissionSeedActor = await transaction.personal.create({
+          data: {
+            organizacion_id: organization.id,
+            codigo_empleado: 'SISTEMA_COMISIONES',
+            nombre_completo: 'Sistema de comisiones',
+            nombre_normalizado: 'sistema de comisiones',
+            puede_iniciar_sesion: false,
+            estado: 'ACTIVO',
+          },
+          select: { id: true },
+        });
+      }
+
+      const existingMotoPolicy =
+        await transaction.politicas_comisiones.findFirst({
+          where: {
+            organizacion_id: organization.id,
+            tipo_vehiculo: 'MOTO',
+          },
+          select: { id: true },
+        });
+      if (!existingMotoPolicy) {
+        await transaction.politicas_comisiones.create({
+          data: {
+            organizacion_id: organization.id,
+            tipo_vehiculo: 'MOTO',
+            moneda: 'ARS',
+            vigente_desde: new Date('2000-01-01T00:00:00.000Z'),
+            estado: 'ACTIVA',
+            creado_por_personal_id: commissionSeedActor.id,
+            escalas_comisiones: {
+              create: [
+                { minimo_ventas: 1, maximo_ventas: 5, importe_fijo: 35000 },
+                { minimo_ventas: 6, maximo_ventas: 10, importe_fijo: 40000 },
+                { minimo_ventas: 11, maximo_ventas: 15, importe_fijo: 45000 },
+                { minimo_ventas: 16, maximo_ventas: null, importe_fijo: 50000 },
+              ].map((tier) => ({
+                ...tier,
+                organizacion_id: organization.id,
+              })),
+            },
+          },
         });
       }
     },
