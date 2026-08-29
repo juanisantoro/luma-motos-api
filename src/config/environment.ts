@@ -8,6 +8,8 @@ export interface EnvironmentVariables {
   FRONTEND_URL: string;
   JWT_SECRET: string;
   JWT_SESSION_IDLE_TIMEOUT_SECONDS: number;
+  PRISMA_TRANSACTION_MAX_WAIT_MS: number;
+  PRISMA_TRANSACTION_TIMEOUT_MS: number;
   USER_TEMPORARY_PASSWORD_TTL_SECONDS: number;
   SMTP_HOST?: string;
   SMTP_PORT?: number;
@@ -33,6 +35,16 @@ const environmentSchema = Joi.object<EnvironmentVariables>({
     .min(60)
     .max(604_800)
     .default(3_600),
+  PRISMA_TRANSACTION_MAX_WAIT_MS: Joi.number()
+    .integer()
+    .min(1_000)
+    .max(60_000)
+    .default(10_000),
+  PRISMA_TRANSACTION_TIMEOUT_MS: Joi.number()
+    .integer()
+    .min(5_001)
+    .max(120_000)
+    .default(30_000),
   USER_TEMPORARY_PASSWORD_TTL_SECONDS: Joi.number()
     .integer()
     .min(900)

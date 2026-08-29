@@ -52,7 +52,7 @@ La API requiere autenticación por defecto. Las únicas rutas públicas iniciale
 - `POST /api/auth/login`
 - `POST /api/auth/change-temporary-password`
 
-Cada JWT identifica una sesión persistida. La sesión vence después de una hora sin actividad por defecto; cada request autenticado renueva `lastActivityAt`. El valor se configura con `JWT_SESSION_IDLE_TIMEOUT_SECONDS`, entre 60 segundos y 7 días. No es una expiración fija desde el login: mientras exista actividad dentro de la ventana, la sesión continúa vigente. `POST /api/auth/logout` la revoca inmediatamente.
+Cada JWT identifica una sesión persistida. La sesión vence después de una hora sin actividad por defecto; cada request autenticado valida la sesión y la actividad se persiste de forma coalescida, como máximo una vez por minuto con la configuración predeterminada, para evitar contención entre requests concurrentes. El valor se configura con `JWT_SESSION_IDLE_TIMEOUT_SECONDS`, entre 60 segundos y 7 días. No es una expiración fija desde el login: mientras exista actividad dentro de la ventana, la sesión continúa vigente. `POST /api/auth/logout` la revoca inmediatamente.
 
 La estrategia vuelve a consultar el usuario, su estado, rol y permisos en PostgreSQL en cada request, por lo que desactivar una cuenta o cambiar permisos tiene efecto inmediato. Las contraseñas se verifican con Argon2id y nunca se devuelven en respuestas ni se guardan en auditoría.
 
@@ -210,6 +210,8 @@ La respuesta incluye acción, entidad, organización, usuario, sucursal actual y
 | `DIRECT_URL` | URL directa del propietario, usada exclusivamente por Prisma para migraciones. |
 | `JWT_SECRET` | Secreto aleatorio de al menos 32 caracteres. Nunca debe almacenarse en git. |
 | `JWT_SESSION_IDLE_TIMEOUT_SECONDS` | Inactividad máxima de una sesión JWT; por defecto `3600` segundos. |
+| `PRISMA_TRANSACTION_MAX_WAIT_MS` | Espera máxima para obtener una transacción interactiva; por defecto `10000` ms. |
+| `PRISMA_TRANSACTION_TIMEOUT_MS` | Duración máxima de una transacción interactiva; por defecto `30000` ms para tolerar cold starts de Neon. |
 | `USER_TEMPORARY_PASSWORD_TTL_SECONDS` | Vigencia de contraseñas temporales; por defecto `86400` segundos. |
 | `SMTP_HOST` | Host SMTP de Brevo, normalmente `smtp-relay.brevo.com`. |
 | `SMTP_PORT` | Puerto SMTP de Brevo, normalmente `587`. |

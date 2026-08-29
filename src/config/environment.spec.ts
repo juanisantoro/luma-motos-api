@@ -19,6 +19,8 @@ describe('validateEnvironment', () => {
     expect(environment.NODE_ENV).toBe('development');
     expect(environment.PORT).toBe(4000);
     expect(environment.JWT_SESSION_IDLE_TIMEOUT_SECONDS).toBe(3600);
+    expect(environment.PRISMA_TRANSACTION_MAX_WAIT_MS).toBe(10_000);
+    expect(environment.PRISMA_TRANSACTION_TIMEOUT_MS).toBe(30_000);
     expect(environment.USER_TEMPORARY_PASSWORD_TTL_SECONDS).toBe(86_400);
     expect(environment.SMTP_HOST).toBeUndefined();
     expect(environment.SMTP_PASSWORD).toBeUndefined();
@@ -58,6 +60,18 @@ describe('validateEnvironment', () => {
         JWT_SESSION_IDLE_TIMEOUT_SECONDS: 30,
       }),
     ).toThrow(/JWT_SESSION_IDLE_TIMEOUT_SECONDS.*greater than or equal to 60/);
+  });
+
+  it('rejects transaction budgets that reintroduce Prisma defaults', () => {
+    expect(() =>
+      validateEnvironment({
+        ...validEnvironment,
+        PRISMA_TRANSACTION_MAX_WAIT_MS: 999,
+        PRISMA_TRANSACTION_TIMEOUT_MS: 5_000,
+      }),
+    ).toThrow(
+      /PRISMA_TRANSACTION_MAX_WAIT_MS.*greater than or equal to 1000.*PRISMA_TRANSACTION_TIMEOUT_MS.*greater than or equal to 5001/,
+    );
   });
 
   it('reports all invalid required settings without their values', () => {

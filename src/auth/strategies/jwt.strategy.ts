@@ -11,6 +11,7 @@ import { AuthenticatedPrincipal, JwtPayload } from '../auth.types';
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
   private readonly idleTimeoutMilliseconds: number;
+  private readonly activityTouchIntervalSeconds: number;
 
   constructor(
     config: ConfigService<EnvironmentVariables, true>,
@@ -26,6 +27,10 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     });
     this.idleTimeoutMilliseconds =
       config.get('JWT_SESSION_IDLE_TIMEOUT_SECONDS', { infer: true }) * 1_000;
+    this.activityTouchIntervalSeconds = Math.max(
+      1,
+      Math.min(60, Math.floor(this.idleTimeoutMilliseconds / 10_000)),
+    );
   }
 
   async validate(payload: JwtPayload): Promise<AuthenticatedPrincipal> {
@@ -38,50 +43,38 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       throw new UnauthorizedException();
     }
 
-    const idleTimeoutSeconds = this.idleTimeoutMilliseconds / 1_000;
+    const checkedAt = new Date();
+    const idleCutoff = new Date(
+      checkedAt.getTime() - this.idleTimeoutMilliseconds,
+    );
+    const touchCutoff = new Date(
+      checkedAt.getTime() - this.activityTouchIntervalSeconds * 1_000,
+    );
     const result = await this.prisma.withTenant(
       {
         organizationId: payload.oid,
         globalAccess: false,
       },
       async (transaction) => {
-        const touchedSessions = await transaction.$executeRaw`
-          UPDATE "sesiones_autenticacion" AS session
-          SET "ultima_actividad_en" = GREATEST(
-            session."ultima_actividad_en",
-            statement_timestamp()
-          )
-          WHERE session."id" = ${payload.sid}::uuid
-            AND session."usuario_id" = ${payload.sub}::uuid
-            AND session."revocada_en" IS NULL
-            AND session."ultima_actividad_en" >
-              statement_timestamp() - (${idleTimeoutSeconds} * INTERVAL '1 second')
-            AND EXISTS (
-              SELECT 1
-              FROM "usuarios" AS app_user
-              INNER JOIN "personal" AS employee
-                ON employee."usuario_id" = app_user."id"
-                AND employee."organizacion_id" = app_user."organizacion_id"
-              INNER JOIN "organizaciones" AS organization
-                ON organization."id" = app_user."organizacion_id"
-              WHERE app_user."id" = session."usuario_id"
-                AND app_user."organizacion_id" = ${payload.oid}::uuid
-                AND app_user."activo" = true
-                AND organization."activa" = true
-                AND employee."puede_iniciar_sesion" = true
-                AND employee."estado" = 'ACTIVO'
-            )
-        `;
-
-        if (touchedSessions !== 1) {
-          return null;
-        }
-
-        return transaction.usuarios.findUnique({
+        const user = await transaction.usuarios.findUnique({
           where: {
             id_organizacion_id: {
               id: payload.sub,
               organizacion_id: payload.oid,
+            },
+            activo: true,
+            contrasena_configurada_en: {
+              not: null,
+            },
+            organizaciones: {
+              activa: true,
+            },
+            roles: {
+              activo: true,
+            },
+            personal: {
+              puede_iniciar_sesion: true,
+              estado: 'ACTIVO',
             },
           },
           select: {
@@ -125,8 +118,49 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
                 nombre: true,
               },
             },
+            sesiones_autenticacion: {
+              where: {
+                id: payload.sid,
+                revokedAt: null,
+                lastActivityAt: {
+                  gt: idleCutoff,
+                },
+              },
+              select: {
+                lastActivityAt: true,
+              },
+              take: 1,
+            },
           },
         });
+        const session = user?.sesiones_autenticacion[0];
+        if (!session) {
+          return null;
+        }
+
+        if (session.lastActivityAt <= touchCutoff) {
+          await transaction.$executeRaw`
+            WITH session_to_touch AS (
+              SELECT session."id"
+              FROM "sesiones_autenticacion" AS session
+              WHERE session."id" = ${payload.sid}::uuid
+                AND session."usuario_id" = ${payload.sub}::uuid
+                AND session."revocada_en" IS NULL
+                AND session."ultima_actividad_en" > ${idleCutoff}
+                AND session."ultima_actividad_en" <= ${touchCutoff}
+              FOR UPDATE SKIP LOCKED
+            )
+            UPDATE "sesiones_autenticacion" AS session
+            SET "ultima_actividad_en" = GREATEST(
+              session."ultima_actividad_en",
+              ${checkedAt}
+            )
+            FROM session_to_touch
+            WHERE session."id" = session_to_touch."id"
+          `;
+        }
+
+        return user;
       },
     );
 

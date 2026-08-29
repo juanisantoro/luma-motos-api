@@ -41,6 +41,7 @@ class AuthorizationTestController {
 
 describe('Application security (e2e)', () => {
   const findUnique = jest.fn();
+  const queryRaw = jest.fn();
   const updateSessions = jest.fn<
     Promise<Prisma.BatchPayload>,
     [Prisma.AuthSessionUpdateManyArgs]
@@ -125,6 +126,7 @@ describe('Application security (e2e)', () => {
       permisos_rol: [{ codigo_permiso: 'clientes.consultar' }],
     },
     sucursales: null,
+    sesiones_autenticacion: [{ lastActivityAt: new Date() }],
   };
 
   beforeEach(async () => {
@@ -134,6 +136,8 @@ describe('Application security (e2e)', () => {
     updateSessions.mockResolvedValue({ count: 1 });
     executeRaw.mockReset();
     executeRaw.mockResolvedValue(1);
+    queryRaw.mockReset();
+    queryRaw.mockResolvedValue([{ valid: true, locked: true }]);
     createAuditLog.mockReset();
     countAuditLogs.mockReset();
     countAuditLogs.mockResolvedValue(1);
@@ -246,7 +250,7 @@ describe('Application security (e2e)', () => {
     withTenant.mockImplementation(
       (_scope: unknown, operation: (client: object) => Promise<unknown>) =>
         operation({
-          $queryRaw: jest.fn().mockResolvedValue([{ locked: true }]),
+          $queryRaw: queryRaw,
           $executeRaw: executeRaw,
           usuarios: { findUnique },
           authSession: { updateMany: updateSessions },
@@ -381,7 +385,10 @@ describe('Application security (e2e)', () => {
   });
 
   it('rejects a token whose session exceeded the inactivity timeout', async () => {
-    executeRaw.mockResolvedValueOnce(0);
+    findUnique.mockResolvedValueOnce({
+      ...databaseUser,
+      sesiones_autenticacion: [],
+    });
     const token = await accessToken();
 
     return request(app.getHttpServer())

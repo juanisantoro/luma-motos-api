@@ -19,11 +19,21 @@ export class PrismaService
   implements OnApplicationShutdown, OnModuleInit
 {
   private readonly logger = new Logger(PrismaService.name);
+  private readonly transactionMaxWaitMilliseconds: number;
+  private readonly transactionTimeoutMilliseconds: number;
 
   constructor(
     private readonly config: ConfigService<EnvironmentVariables, true>,
   ) {
     super();
+    this.transactionMaxWaitMilliseconds = config.get(
+      'PRISMA_TRANSACTION_MAX_WAIT_MS',
+      { infer: true },
+    );
+    this.transactionTimeoutMilliseconds = config.get(
+      'PRISMA_TRANSACTION_TIMEOUT_MS',
+      { infer: true },
+    );
   }
 
   async onModuleInit(): Promise<void> {
@@ -52,19 +62,25 @@ export class PrismaService
     scope: TenantScope,
     operation: (tx: Prisma.TransactionClient) => Promise<T>,
   ): Promise<T> {
-    return this.$transaction(async (tx) => {
-      await tx.$queryRaw`
-        SELECT
-          set_config('app.organizacion_id', ${scope.organizationId}, true),
-          set_config(
-            'app.acceso_global',
-            ${scope.globalAccess ? 'true' : 'false'},
-            true
-          )
-      `;
+    return this.$transaction(
+      async (tx) => {
+        await tx.$queryRaw`
+          SELECT
+            set_config('app.organizacion_id', ${scope.organizationId}, true),
+            set_config(
+              'app.acceso_global',
+              ${scope.globalAccess ? 'true' : 'false'},
+              true
+            )
+        `;
 
-      return operation(tx);
-    });
+        return operation(tx);
+      },
+      {
+        maxWait: this.transactionMaxWaitMilliseconds,
+        timeout: this.transactionTimeoutMilliseconds,
+      },
+    );
   }
 
   async onApplicationShutdown(): Promise<void> {

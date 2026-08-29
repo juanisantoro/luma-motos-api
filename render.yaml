@@ -18,6 +18,10 @@ services:
         generateValue: true
       - key: JWT_SESSION_IDLE_TIMEOUT_SECONDS
         value: 3600
+      - key: PRISMA_TRANSACTION_MAX_WAIT_MS
+        value: 10000
+      - key: PRISMA_TRANSACTION_TIMEOUT_MS
+        value: 30000
       - key: USER_TEMPORARY_PASSWORD_TTL_SECONDS
         value: 86400
       - key: SMTP_HOST
