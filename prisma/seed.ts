@@ -1,4 +1,4 @@
-import { PrismaClient } from '@prisma/client';
+import { Prisma, PrismaClient } from '@prisma/client';
 
 const prisma = new PrismaClient();
 
@@ -80,76 +80,92 @@ async function main(): Promise<void> {
     },
   });
 
-  await prisma.$transaction(async (transaction) => {
-    await transaction.$queryRaw`
-      SELECT
-        set_config('app.organizacion_id', ${organization.id}, true),
-        set_config('app.acceso_global', 'false', true)
-    `;
+  await prisma.$transaction(
+    async (transaction) => {
+      await transaction.$queryRaw`
+        SELECT
+          set_config('app.organizacion_id', ${organization.id}, true),
+          set_config('app.acceso_global', 'false', true)
+      `;
 
-    for (const branch of branches) {
-      await transaction.sucursales.upsert({
-        where: {
-          organizacion_id_codigo: {
-            organizacion_id: organization.id,
-            codigo: branch.codigo,
+      for (const branch of branches) {
+        await transaction.sucursales.upsert({
+          where: {
+            organizacion_id_codigo: {
+              organizacion_id: organization.id,
+              codigo: branch.codigo,
+            },
           },
-        },
-        create: {
-          ...branch,
-          organizacion_id: organization.id,
-        },
-        update: {
-          nombre: branch.nombre,
-        },
-      });
-    }
+          create: {
+            ...branch,
+            organizacion_id: organization.id,
+          },
+          update: {
+            nombre: branch.nombre,
+          },
+        });
+      }
 
-    for (const role of roles) {
-      await transaction.role.upsert({
-        where: { codigo: role.codigo },
-        create: role,
-        update: {
-          nombre: role.nombre,
-          descripcion: role.descripcion,
-        },
-      });
-    }
+      for (const role of roles) {
+        await transaction.role.upsert({
+          where: { codigo: role.codigo },
+          create: role,
+          update: {
+            nombre: role.nombre,
+            descripcion: role.descripcion,
+          },
+        });
+      }
 
-    for (const permission of managedPermissions) {
-      await transaction.permisos.upsert({
-        where: { codigo: permission.codigo },
-        create: {
-          codigo: permission.codigo,
-          modulo: permission.modulo,
-          descripcion: permission.descripcion,
-        },
-        update: {
-          modulo: permission.modulo,
-          descripcion: permission.descripcion,
-        },
-      });
+      for (const permission of managedPermissions) {
+        await transaction.permisos.upsert({
+          where: { codigo: permission.codigo },
+          create: {
+            codigo: permission.codigo,
+            modulo: permission.modulo,
+            descripcion: permission.descripcion,
+          },
+          update: {
+            modulo: permission.modulo,
+            descripcion: permission.descripcion,
+          },
+        });
 
-      const assignedRoles = await transaction.role.findMany({
-        where: {
-          codigo: { in: [...permission.roles] },
-        },
-        select: { id: true },
-      });
-      await transaction.permisos_rol.createMany({
-        data: assignedRoles.map((role) => ({
-          rol_id: role.id,
-          codigo_permiso: permission.codigo,
-        })),
-        skipDuplicates: true,
-      });
-    }
-  });
+        const assignedRoles = await transaction.role.findMany({
+          where: {
+            codigo: { in: [...permission.roles] },
+          },
+          select: { id: true },
+        });
+        await transaction.permisos_rol.createMany({
+          data: assignedRoles.map((role) => ({
+            rol_id: role.id,
+            codigo_permiso: permission.codigo,
+          })),
+          skipDuplicates: true,
+        });
+      }
+    },
+    {
+      maxWait: 10_000,
+      timeout: 30_000,
+    },
+  );
 }
 
 void main()
-  .catch(() => {
-    console.error('Database seed failed');
+  .catch((error: unknown) => {
+    const errorCode =
+      error instanceof Prisma.PrismaClientKnownRequestError
+        ? error.code
+        : error instanceof Prisma.PrismaClientInitializationError
+          ? error.errorCode
+          : undefined;
+    console.error(
+      errorCode
+        ? `Database seed failed (${errorCode})`
+        : 'Database seed failed',
+    );
     process.exitCode = 1;
   })
   .finally(async () => {
