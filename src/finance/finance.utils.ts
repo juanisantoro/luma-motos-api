@@ -5,6 +5,16 @@ import type { AuthenticatedUser } from '../auth/auth.types';
 import { FinancialPaymentStatus } from './finance.dto';
 import { financialBadRequest } from './finance.errors';
 
+export const COMPUTED_FILTER_SCAN_LIMIT = 10_000;
+
+export function assertComputedFilterScanLimit(rowCount: number): void {
+  if (rowCount > COMPUTED_FILTER_SCAN_LIMIT)
+    financialBadRequest(
+      'FILTER_RESULT_TOO_LARGE',
+      'Computed financial filters require a narrower date or organization range',
+    );
+}
+
 export function decimal(value: string): Prisma.Decimal {
   const result = new Prisma.Decimal(value);
   if (!result.isPositive()) {

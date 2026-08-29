@@ -127,6 +127,7 @@ describe('IncomesService', () => {
       'estado_registro',
     );
     expect(findMany.mock.calls[0]?.[0]).not.toHaveProperty('skip');
+    expect(findMany.mock.calls[0]?.[0]).toHaveProperty('take', 10_001);
     expect(count).not.toHaveBeenCalled();
   });
 
@@ -157,5 +158,58 @@ describe('IncomesService', () => {
       }),
     );
     expect(registerEntityMovement).not.toHaveBeenCalled();
+  });
+
+  it('preserves reconciliation state when reversing an external income movement', async () => {
+    const reconciled = {
+      ...income,
+      requiere_conciliacion: true,
+      estado_registro: 'COBRADO',
+      movimientos_caja: [],
+    };
+    const update = jest.fn().mockResolvedValue({});
+    const reverseEntityMovement = jest.fn().mockResolvedValue({});
+    const settledAmount = jest.fn().mockResolvedValue(new Prisma.Decimal(0));
+    const entityMovements = jest.fn().mockResolvedValue([]);
+    const localTransaction = {
+      $queryRaw: jest.fn().mockResolvedValue([{ id: income.id }]),
+      ingresos: {
+        findFirst: jest.fn().mockResolvedValue(reconciled),
+        update,
+      },
+      movimientos_caja: { findMany: jest.fn().mockResolvedValue([]) },
+    } as unknown as Prisma.TransactionClient;
+    const localService = new IncomesService(
+      {} as PrismaService,
+      {
+        execute: jest.fn(
+          (
+            _event: unknown,
+            operation: (tx: Prisma.TransactionClient) => Promise<unknown>,
+          ) => operation(localTransaction),
+        ),
+      } as unknown as AuditService,
+      {
+        reverseEntityMovement,
+        settledAmount,
+        entityMovements,
+      } as unknown as CashService,
+    );
+
+    await localService.reverse(
+      income.id,
+      '8346e2ae-490a-4815-b8bc-87a355656d11',
+      {
+        idempotencyKey: '7db0fc0c-891c-4126-a25c-e9d36ccf2dd8',
+        reason: 'Corrección',
+      },
+      actor,
+    );
+
+    expect(update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: { estado_registro: 'COBRADO' },
+      }),
+    );
   });
 });

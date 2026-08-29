@@ -24,8 +24,10 @@ import {
   financialNotFound,
 } from '../finance/finance.errors';
 import {
+  assertComputedFilterScanLimit,
   assertOrganization,
   businessDate,
+  COMPUTED_FILTER_SCAN_LIMIT,
   decimal,
   paymentStatus,
   scope,
@@ -134,17 +136,20 @@ export class IncomesService {
               take: query.limit,
             }),
           ]);
-        const matching = (
-          await tx.ingresos.findMany({
-            where,
-            include: incomeInclude,
-            orderBy,
-          })
-        ).filter((item) => this.income(item).paymentStatus === query.status);
+        const matching = await tx.ingresos.findMany({
+          where,
+          include: incomeInclude,
+          orderBy,
+          take: COMPUTED_FILTER_SCAN_LIMIT + 1,
+        });
+        assertComputedFilterScanLimit(matching.length);
+        const filtered = matching.filter(
+          (item) => this.income(item).paymentStatus === query.status,
+        );
         const start = (query.page - 1) * query.limit;
         return [
-          matching.length,
-          matching.slice(start, start + query.limit),
+          filtered.length,
+          filtered.slice(start, start + query.limit),
         ] as const;
       },
     );
@@ -366,7 +371,11 @@ export class IncomesService {
               organizacion_id: income.organizacion_id,
             },
           },
-          data: { estado_registro: paymentStatus(collected, income.importe) },
+          data: {
+            estado_registro: income.requiere_conciliacion
+              ? income.estado_registro
+              : paymentStatus(collected, income.importe),
+          },
         });
         return this.detail(await this.incomeOr404(tx, id, actor), tx, actor);
       },

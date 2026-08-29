@@ -79,8 +79,9 @@ describe('ExpensesService', () => {
         movimientos_caja: [],
       },
     ]);
+  const count = jest.fn().mockResolvedValue(2);
   const transaction = {
-    gastos: { findMany },
+    gastos: { findMany, count },
   } as unknown as Prisma.TransactionClient;
   const withTenant = jest.fn(
     (
@@ -109,5 +110,20 @@ describe('ExpensesService', () => {
       paymentStatus: 'PARCIAL',
     });
     expect(findMany.mock.calls[0]?.[0].where).not.toHaveProperty('estado_pago');
+    expect(findMany.mock.calls[0]?.[0]).toHaveProperty('take', 10_001);
+    expect(count).not.toHaveBeenCalled();
+  });
+
+  it('uses database pagination when no computed filter is requested', async () => {
+    findMany.mockResolvedValueOnce([expense]);
+
+    const result = await service.findAll({ page: 2, limit: 1 }, actor);
+
+    expect(result).toMatchObject({ total: 2, page: 2, limit: 1 });
+    expect(findMany.mock.calls[0]?.[0]).toMatchObject({
+      skip: 1,
+      take: 1,
+    });
+    expect(count).toHaveBeenCalled();
   });
 });

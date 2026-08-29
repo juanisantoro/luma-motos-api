@@ -24,8 +24,10 @@ import {
   financialNotFound,
 } from '../finance/finance.errors';
 import {
+  assertComputedFilterScanLimit,
   assertOrganization,
   businessDate,
+  COMPUTED_FILTER_SCAN_LIMIT,
   databasePaymentStatus,
   decimal,
   paymentStatus,
@@ -117,11 +119,35 @@ export class ExpensesService {
         : undefined,
     };
     return this.prisma.withTenant(scope(actor), async (tx) => {
+      const orderBy = [
+        { fecha_generacion: 'desc' as const },
+        { id: 'desc' as const },
+      ];
+      if (query.status === undefined && query.recovered === undefined) {
+        const [total, rows] = await Promise.all([
+          tx.gastos.count({ where }),
+          tx.gastos.findMany({
+            where,
+            include: expenseInclude,
+            orderBy,
+            skip: (query.page - 1) * query.limit,
+            take: query.limit,
+          }),
+        ]);
+        return {
+          items: rows.map((row) => this.expense(row)),
+          total,
+          page: query.page,
+          limit: query.limit,
+        };
+      }
       const rows = await tx.gastos.findMany({
         where,
         include: expenseInclude,
-        orderBy: [{ fecha_generacion: 'desc' }, { id: 'desc' }],
+        orderBy,
+        take: COMPUTED_FILTER_SCAN_LIMIT + 1,
       });
+      assertComputedFilterScanLimit(rows.length);
       const filtered = rows
         .map((row) => this.expense(row))
         .filter(
