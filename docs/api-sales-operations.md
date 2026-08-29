@@ -15,65 +15,145 @@ Todas las rutas usan el prefijo `/api`, requieren JWT y quedan acotadas por RLS 
 
 El seed es idempotente: crea o actualiza el catálogo y agrega asignaciones faltantes sin retirar permisos personalizados.
 
-## Endpoints
+## Separación MOTO/AUTO y seguridad
 
-| Método y ruta                                    | Permiso                    | Contrato                                                                                                                                                              |
-| ------------------------------------------------ | -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET /sales/operations`                          | `ventas.consultar`         | Filtros `status`, `branchId`, `clientId`, `sellerId`, `mine`, `versionId`, `search`, `from`, `to`, `organizationId`; paginación `page`, `limit`.                      |
-| `GET /sales/operations/sellers`                  | `ventas.consultar`         | Requiere `branchId`; acepta `search`, `organizationId`, `page`, `limit`. Devuelve vendedores asignables a esa sucursal.                                               |
-| `GET /sales/operations/price-policy`             | `ventas.consultar`         | Requiere `branchId`, `versionId`; acepta `operationDate`, `organizationId`. Devuelve la política efectiva priorizando sucursal sobre organización.                    |
-| `GET /sales/operations/:id`                      | `ventas.consultar`         | Detalle sanitizado con cliente, sucursal, versión/unidad, vendedor, última reserva y última aprobación.                                                               |
-| `POST /sales/operations`                         | `ventas.gestionar`         | `branchId`, `clientId`, `versionId`, `condition`, `agreedPrice`; opcionales `unitId`, `sellerId`, `operationDate`, `reservationExpiresAt`, `notes`, `organizationId`. |
-| `PATCH /sales/operations/:id`                    | `ventas.gestionar`         | `expectedVersion` y al menos uno de `branchId`, `clientId`, `sellerId`, `agreedPrice`, `notes`. Solo BORRADOR/RECHAZADA.                                              |
-| `POST /sales/operations/:id/reservation`         | `reservas_stock.gestionar` | `unitId`, `expectedVersion`, `expiresAt?`.                                                                                                                            |
-| `POST /sales/operations/:id/reservation/release` | `reservas_stock.gestionar` | `expectedVersion`, `reason`.                                                                                                                                          |
-| `POST /sales/operations/:id/submit`              | `ventas.gestionar`         | `expectedVersion`.                                                                                                                                                    |
-| `POST /sales/operations/:id/approve`             | `ventas.aprobar`           | `expectedVersion`, `notes?`.                                                                                                                                          |
-| `POST /sales/operations/:id/reject`              | `ventas.aprobar`           | `expectedVersion`, `reason`.                                                                                                                                          |
-| `POST /sales/operations/:id/cancel`              | `ventas.cancelar`          | `expectedVersion`, `reason`.                                                                                                                                          |
-| `POST /sales/operations/:id/close`               | `ventas.cerrar`            | `expectedVersion`.                                                                                                                                                    |
+`vehicleType=MOTO|AUTO` es obligatorio en `GET /sales/operations`,
+`GET /sales/operations/approvals`, `GET /sales/operations/price-policy` y
+`POST /sales/operations`. El filtro se aplica en PostgreSQL sobre la versión,
+no en frontend. VENDEDOR siempre queda restringido server-side a operaciones
+asignadas a su propio `personal.id`, incluso si omite `mine` o intenta acceder
+por id; `sellerId` está prohibido para ese rol.
 
-Los DTO rechazan campos desconocidos. `expectedVersion` debe coincidir con `rowVersion`; una edición concurrente devuelve `409`.
-`mine=true` resuelve el `personal.id` del actor en el backend; no se puede
-combinar con `sellerId` y esa combinación devuelve 400.
+Compras e ingresos aceptan el mismo filtro opcional en
+`GET /supplier-purchases?vehicleType=` y `GET /incomes?vehicleType=`. Catálogo,
+inventario, disponibilidad de proveedor y abastecimiento ya filtran por
+`vehicleType`.
 
-El lookup de vendedores devuelve
-`{items:[{id,employeeCode,fullName}],total,page,limit}` y replica exactamente
-la elegibilidad validada al crear/editar: personal activo de la organización
-con sucursal principal o acceso explícito a `branchId`. No requiere
-`usuarios.consultar`.
+## Alta y edición
 
-La política efectiva devuelve
-`{id,versionId,branchId,organizationId,currency,listPrice,minimumPrice,
-validFrom,validUntil,scope}`. `branchId` es nullable y `scope` vale
-`BRANCH|ORGANIZATION`; los importes son strings decimales. Este endpoint es
-solo una previsualización: create/submit vuelven a resolver la política en el
-backend.
+`POST /api/sales/operations`:
 
-## Estados, reservas y precios
+```json
+{
+  "vehicleType": "MOTO",
+  "branchId": "uuid",
+  "client": {
+    "documentType": "DNI",
+    "documentNumber": "12345678",
+    "fullName": "Ana Pérez",
+    "phone": "1122334455"
+  },
+  "versionId": "uuid",
+  "condition": "NUEVO",
+  "unitId": "uuid optional",
+  "supplierAvailabilityId": "uuid optional",
+  "sellerId": "uuid optional para no VENDEDOR",
+  "contactId": "uuid optional",
+  "agreedPrice": 2500000,
+  "paymentPlatform": "EFECTIVO_CREDITO",
+  "creditAmount": 1000000,
+  "guarantor": "texto optional",
+  "operationDate": "2026-08-29",
+  "reservationExpiresAt": "timestamp optional",
+  "deliveryStatus": "NO_PROGRAMADA",
+  "papersDelivered": false,
+  "debt": "NO",
+  "submit": false,
+  "notes": "observaciones optional",
+  "organizationId": "uuid sólo acceso global"
+}
+```
 
-Flujo permitido:
+El contrato principal usa `client`; `clientId` se acepta como alternativa
+temporal compatible, nunca junto con `client`. La misma transacción tenant/RLS
+normaliza y bloquea la identidad organización+tipo+número, reutiliza el cliente
+activo o lo crea y luego crea la operación. No requiere `clientes.gestionar`.
+Una coincidencia existente sólo actualiza nombre, teléfono y presentación del
+documento; una coincidencia inactiva devuelve `409`.
 
-`BORRADOR -> PENDIENTE_APROBACION -> APROBADA -> CERRADA`
+`unitId` y `supplierAvailabilityId` son mutuamente excluyentes. El segundo crea
+reserva de disponibilidad y solicitud de abastecimiento vinculadas. Un borrador
+puede no tener origen, pero no puede enviarse sin reserva física o de proveedor.
 
-`PENDIENTE_APROBACION -> RECHAZADA`, y una edición o nueva reserva reabre la operación como `BORRADOR`. Se puede cancelar cualquier estado no terminal excepto `CERRADA`.
+`submit=false` (default) guarda `BORRADOR`; `submit=true` equivale a guardar y
+enviar. También existe `POST /api/sales/operations/:id/submit` con
+`{expectedVersion}`. Si `agreedPrice < listPrice`, el resultado es
+`PENDIENTE_APROBACION`; a lista o superior es `APROBADA`. El piso mínimo es una
+protección adicional y nunca reemplaza la regla bajo lista.
 
-Crear una reserva bloquea primero la operación y luego la unidad con `FOR UPDATE`, verifica que no exista otra reserva ACTIVO y acepta únicamente unidades `EN_STOCK` de la misma organización, versión, condición y sucursal. La unidad pasa a `RESERVADO`. Una reserva dura 48 horas por defecto y como máximo 30 días. Rechazo, cancelación o liberación explícita la pasan a `LIBERADA`, crean movimiento `LIBERACION` y devuelven la unidad a `EN_STOCK`. Una reserva vencida se marca `VENCIDA` al intentar reutilizar la unidad. El cierre consume la reserva, crea movimiento `VENTA` y cambia la unidad a `VENDIDO`.
+`PATCH /api/sales/operations/:id` requiere `expectedVersion` y acepta
+`branchId`, `clientId`, `sellerId`, `contactId` (nullable), `agreedPrice`,
+`paymentPlatform`, `creditAmount` (nullable), `guarantor` (nullable),
+`operationDate`, `deliveryStatus`, `papersDelivered`, `debt` y `notes`
+(nullable). BORRADOR/RECHAZADA vuelven a BORRADOR. APROBADA sólo admite
+entrega, papeles, debe y observaciones.
 
-El cliente nunca fija precio de lista, mínimo ni moneda. El backend selecciona la política vigente más específica (sucursal y luego organización) y guarda la referencia al crear; al enviar vuelve a tomar la política vigente. Toda operación pasa por aprobación explícita y la aprobación conserva la foto de lista, mínimo y acordado, satisfaciendo el override bajo mínimo exigido por las invariantes SQL.
+Plataformas: `EFECTIVO`, `CREDITO`, `EFECTIVO_CREDITO`, `MOTO_EFECTIVO`,
+`MOTO_CREDITO`, `MOTO_EFECTIVO_CREDITO`. `creditAmount` es obligatorio y
+positivo exactamente cuando la plataforma contiene crédito, y no puede superar
+el cierre. `debt`: `NO|RESERVA|CUOTA_INICIAL|PAPELES|ACCESORIOS|OTRO`.
 
-La reserva comercial solo admite una unidad física mediante `unitId`; una
-disponibilidad informada por proveedor no tiene VIN ni unidad y no se reserva.
-El flujo para proveedor es: consultar `GET /supplier-availability`, crear
-`POST /supply-requests` con `operationId` y opcional
-`supplierAvailabilityId`, recibir la solicitud para materializar la unidad, y
-recién entonces reservar su `unitId`. VENDEDOR puede consultar disponibilidad
-pero `abastecimiento.gestionar` (ADMINISTRATIVA/GERENTE/ADMINISTRADOR) es
-necesario para crear la solicitud. Mientras tanto la operación permanece en
-BORRADOR y no puede enviarse a aprobación.
+## Componentes, toma y aprobación
 
-## Cierre y futuro módulo de caja
+`POST /api/sales/operations/:id/trade-ins` crea la moto tomada con
+`expectedVersion`, `description`, `appraisedAmount` y opcionales `versionId`,
+`vin`, `engineNumber`, `licensePlate`, `year`, `kilometers`, `acceptedAmount`.
 
-Este corte no crea cobranzas ni movimientos de caja. Para cerrar, la suma de componentes de pago no cancelados debe coincidir exactamente con `precio_acordado`; es la única lectura del dominio financiero. El módulo posterior deberá gestionar componentes, cobranzas, contabilización/reversas y decidir si además exige pago completo antes del cierre comercial.
+`POST /api/sales/operations/:id/payment-plan` reemplaza el plan completo:
 
-No se agrega migración: el schema actual contiene tablas, enums, RLS, FKs, checks y triggers requeridos. La exclusión concurrente se obtiene con el bloqueo pesimista de la unidad y la comprobación de reserva ACTIVO dentro de la misma transacción auditada.
+```json
+{
+  "expectedVersion": 3,
+  "components": [
+    { "type": "EFECTIVO", "amount": 1500000 },
+    {
+      "type": "FINANCIACION",
+      "amount": 1000000,
+      "financialInstitutionId": "uuid",
+      "creditInquiryId": "uuid optional"
+    }
+  ]
+}
+```
+
+Tipos: `EFECTIVO|TRANSFERENCIA_BANCARIA|TARJETA|FINANCIACION|TOMA_PARTE_PAGO|OTRO`.
+El total debe igualar `agreedPrice`, la suma FINANCIACION debe igualar
+`creditAmount`, la combinación debe coincidir con `paymentPlatform` y
+TOMA_PARTE_PAGO requiere `tradeInVehicleId`. No se reemplaza un plan con
+cobranzas existentes.
+
+La bandeja es
+`GET /api/sales/operations/approvals?vehicleType=MOTO|AUTO` y fuerza estado
+`PENDIENTE_APROBACION`. Decisiones:
+`POST /:id/approve {expectedVersion,notes?}` y
+`POST /:id/reject {expectedVersion,reason}`. Rechazar libera reserva y cancela
+abastecimiento pendiente.
+
+## Respuesta y resto de rutas
+
+Lista y detalle devuelven documento/nombre/teléfono del cliente, mes derivado,
+tipo/versión/unidad/chasis, origen de adquisición, sucursal destino,
+abastecimiento y observación, vendedor, contacto, usuario creador,
+`paymentPlatform`, `creditAmount`, garante, entrega, debe, papeles,
+componentes, tomas, obligaciones, reserva y aprobación. Dinero se serializa
+como string decimal.
+
+Rutas adicionales: `GET /sellers`, `GET /price-policy`, `GET /:id`,
+`POST /:id/reservation`, `POST /:id/reservation/release`,
+`POST /:id/cancel`, `POST /:id/close`. Los DTO rechazan campos desconocidos y
+`expectedVersion` debe coincidir con `rowVersion` o responde `409`. Cerrar exige
+APROBADA, unidad física/reserva válida y plan total exacto; consume la reserva y
+marca la unidad VENDIDO.
+
+Lookups de formulario:
+
+- `GET /api/sales/operations/sellers?branchId=&search=&page=&limit=` devuelve
+  personal activo con usuario VENDEDOR activo; cada item es
+  `{id,employeeCode,fullName,isCurrentUser}`. VENDEDOR puede ver la lista pero
+  el backend sólo le permite asignarse a sí mismo.
+- `GET /api/sales/operations/contacts?branchId=&search=&page=&limit=` devuelve
+  personal activo elegible de la sucursal con el mismo shape.
+- `GET /api/sales/operations/financial-institutions?search=&page=&limit=`
+  devuelve `{id,legalName}` para financieras activas.
+- `GET /api/sales/operations/price-policy` requiere `branchId`, `versionId` y
+  `vehicleType`; acepta `condition`, `operationDate` y `organizationId`.

@@ -81,15 +81,23 @@ describe('SalesService', () => {
       fecha_operacion: new Date('2026-08-29T00:00:00.000Z'),
       estado_entrega: 'NO_PROGRAMADA',
       estado_documentacion: 'NO_INICIADA',
+      documentacion_entregada_en: null,
       precio_lista: new Prisma.Decimal(120),
       precio_minimo: new Prisma.Decimal(110),
       moneda: 'ARS',
+      plataforma_pago: 'EFECTIVO',
+      monto_credito: null,
+      respaldo_garante: null,
+      debe: 'NO',
       notas: null,
       creado_en: new Date('2026-08-29T10:00:00.000Z'),
       actualizado_en: new Date('2026-08-29T10:00:00.000Z'),
       clientes: {
         id: base.cliente_id,
+        tipo_documento: 'DNI',
+        numero_documento: '12345678',
         nombre_completo: 'Cliente',
+        telefono: '1122334455',
         activo: true,
       },
       sucursales: {
@@ -116,9 +124,12 @@ describe('SalesService', () => {
         patente: null,
         estado_inventario: 'RESERVADO',
         sucursal_id: base.sucursal_id,
+        origen_adquisicion: 'COMPRA',
+        proveedores: null,
       },
       asignaciones_personal_operacion: [
         {
+          rol_asignacion: 'VENDEDOR',
           personal: {
             id: '11b5de9b-9bc2-4777-bb78-9c7267b73aca',
             nombre_completo: 'Vendedor',
@@ -127,6 +138,13 @@ describe('SalesService', () => {
       ],
       reservas_stock: [],
       aprobaciones_operacion: [],
+      componentes_pago_operacion: [],
+      obligaciones_operacion: [],
+      solicitudes_abastecimiento: [],
+      personal: {
+        id: '11b5de9b-9bc2-4777-bb78-9c7267b73aca',
+        nombre_completo: 'Administrador',
+      },
     };
   }
 
@@ -171,6 +189,145 @@ describe('SalesService', () => {
       ),
     ).resolves.toMatchObject({ notes: null, rowVersion: 3 });
     expect(update.mock.calls[0]?.[0].data).toMatchObject({ notas: null });
+  });
+
+  it('creates and links a new inline client in the operation transaction', async () => {
+    const clientId = '904e2a34-8285-48fa-b64c-24a80d94f9cb';
+    const createdOperation = completeOperation('BORRADOR');
+    const clientCreate = jest
+      .fn<Promise<unknown>, [Prisma.clientesCreateArgs]>()
+      .mockResolvedValue({ id: clientId });
+    const operationCreate = jest
+      .fn<Promise<unknown>, [Prisma.operacionesCreateArgs]>()
+      .mockResolvedValue(operation('BORRADOR'));
+    const transaction = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
+      sucursales: { findFirst: jest.fn().mockResolvedValue({ id: 'branch' }) },
+      clientes: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: clientCreate,
+      },
+      versiones_vehiculos: {
+        findUnique: jest.fn().mockResolvedValue({
+          alcance: 'GLOBAL',
+          organizacion_propietaria_id: null,
+          catalogo_organizaciones: [],
+          modelos_vehiculos: { tipo_vehiculo: 'MOTO' },
+        }),
+      },
+      personal: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: '11b5de9b-9bc2-4777-bb78-9c7267b73aca',
+        }),
+      },
+      politicas_precios_vehiculos: {
+        findFirst: jest.fn().mockResolvedValue({
+          precio_lista: new Prisma.Decimal(100),
+          precio_minimo: new Prisma.Decimal(90),
+          moneda: 'ARS',
+        }),
+      },
+      operaciones: {
+        create: operationCreate,
+        findFirst: jest.fn().mockResolvedValue(createdOperation),
+      },
+      asignaciones_personal_operacion: {
+        create: jest.fn().mockResolvedValue({}),
+      },
+    } as unknown as Prisma.TransactionClient;
+
+    await expect(
+      service(transaction).create(
+        {
+          vehicleType: 'MOTO',
+          branchId: operation('BORRADOR').sucursal_id,
+          client: {
+            documentType: 'DNI',
+            documentNumber: '12.345.678',
+            fullName: 'Cliente Nuevo',
+            phone: '1122334455',
+          },
+          versionId: operation('BORRADOR').version_id,
+          condition: 'NUEVO',
+          agreedPrice: 100,
+          paymentPlatform: 'EFECTIVO',
+          submit: false,
+        },
+        actor,
+      ),
+    ).resolves.toMatchObject({ client: { id: clientId } });
+    expect(clientCreate.mock.calls[0]?.[0].data).toMatchObject({
+      documento_normalizado: '12345678',
+      nombre_normalizado: 'cliente nuevo',
+    });
+    expect(operationCreate.mock.calls[0]?.[0].data).toMatchObject({
+      cliente_id: clientId,
+    });
+  });
+
+  it('submits a below-list operation for approval', async () => {
+    const current = {
+      ...completeOperation('BORRADOR'),
+      reservas_stock: [
+        {
+          id: 'a5ed870b-c3b0-4dcb-8cc8-905e1a0126b9',
+          operacion_id: operationId,
+          unidad_vehiculo_id: unitId,
+          disponibilidad_proveedor_id: null,
+          estado: 'ACTIVO',
+          vence_en: new Date(Date.now() + 60_000),
+        },
+      ],
+    };
+    const update = jest
+      .fn<Promise<unknown>, [Prisma.operacionesUpdateArgs]>()
+      .mockResolvedValue({});
+    const transaction = {
+      $queryRaw: jest.fn().mockResolvedValue([{ id: operationId }]),
+      operaciones: {
+        findFirst: jest
+          .fn()
+          .mockResolvedValueOnce(current)
+          .mockResolvedValueOnce({
+            ...current,
+            estado_operacion: 'PENDIENTE_APROBACION',
+            version_fila: 3,
+          }),
+        update,
+      },
+      unidades_vehiculos: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: unitId,
+          estado_inventario: 'RESERVADO',
+        }),
+      },
+      reservas_stock: {
+        findFirst: jest.fn().mockResolvedValue(current.reservas_stock[0]),
+      },
+      clientes: {
+        findFirst: jest.fn().mockResolvedValue({ id: current.cliente_id }),
+      },
+      politicas_precios_vehiculos: {
+        findFirst: jest.fn().mockResolvedValue({
+          precio_lista: new Prisma.Decimal(120),
+          precio_minimo: new Prisma.Decimal(90),
+          moneda: 'ARS',
+        }),
+      },
+      personal: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: '11b5de9b-9bc2-4777-bb78-9c7267b73aca',
+        }),
+      },
+      aprobaciones_operacion: { create: jest.fn().mockResolvedValue({}) },
+    } as unknown as Prisma.TransactionClient;
+
+    await expect(
+      service(transaction).submit(operationId, { expectedVersion: 2 }, actor),
+    ).resolves.toMatchObject({ status: 'PENDIENTE_APROBACION' });
+    expect(update.mock.calls[0]?.[0].data).toMatchObject({
+      estado_operacion: 'PENDIENTE_APROBACION',
+    });
   });
 
   it('serializes by unit and rejects a second active reservation', async () => {
@@ -520,6 +677,7 @@ describe('SalesService', () => {
           id: '11b5de9b-9bc2-4777-bb78-9c7267b73aca',
           employeeCode: 'VEN-01',
           fullName: 'Vendedora Demo',
+          isCurrentUser: false,
         },
       ],
       total: 1,

@@ -16,10 +16,13 @@ import { Permissions } from '../auth/decorators/permissions.decorator';
 import {
   ApproveSalesOperationDto,
   CreateSalesOperationDto,
+  CreateSalesTradeInDto,
   ReasonedSalesActionDto,
+  ReplaceSalesPaymentPlanDto,
   ReleaseSalesReservationDto,
   ReserveSalesUnitDto,
   SalesOperationQueryDto,
+  SalesFinancialInstitutionQueryDto,
   SalesPricePolicyQueryDto,
   SalesSellerQueryDto,
   UpdateSalesOperationDto,
@@ -48,12 +51,37 @@ export class SalesController {
     return this.service.sellers(query, actor);
   }
 
+  @Get('contacts')
+  contacts(
+    @Query() query: SalesSellerQueryDto,
+    @CurrentUser() actor: AuthenticatedUser,
+  ) {
+    return this.service.contacts(query, actor);
+  }
+
   @Get('price-policy')
   pricePolicy(
     @Query() query: SalesPricePolicyQueryDto,
     @CurrentUser() actor: AuthenticatedUser,
   ) {
     return this.service.pricePolicy(query, actor);
+  }
+
+  @Get('financial-institutions')
+  financialInstitutions(
+    @Query() query: SalesFinancialInstitutionQueryDto,
+    @CurrentUser() actor: AuthenticatedUser,
+  ) {
+    return this.service.financialInstitutions(query, actor);
+  }
+
+  @Get('approvals')
+  @Permissions(PERMISSION_CODES.SALES_APPROVE)
+  pendingApprovals(
+    @Query() query: SalesOperationQueryDto,
+    @CurrentUser() actor: AuthenticatedUser,
+  ) {
+    return this.service.pendingApprovals(query, actor);
   }
 
   @Get(':id')
@@ -116,6 +144,28 @@ export class SalesController {
     @CurrentUser() actor: AuthenticatedUser,
   ) {
     return this.service.submit(id, input, actor);
+  }
+
+  @Post(':id/payment-plan')
+  @Permissions(PERMISSION_CODES.SALES_MANAGE)
+  @AuditedMutation()
+  replacePaymentPlan(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() input: ReplaceSalesPaymentPlanDto,
+    @CurrentUser() actor: AuthenticatedUser,
+  ) {
+    return this.service.replacePaymentPlan(id, input, actor);
+  }
+
+  @Post(':id/trade-ins')
+  @Permissions(PERMISSION_CODES.SALES_MANAGE)
+  @AuditedMutation()
+  createTradeIn(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() input: CreateSalesTradeInDto,
+    @CurrentUser() actor: AuthenticatedUser,
+  ) {
+    return this.service.createTradeIn(id, input, actor);
   }
 
   @Post(':id/approve')

@@ -12,11 +12,13 @@ import {
   Max,
   MaxLength,
   Min,
+  ValidateIf,
 } from 'class-validator';
 import {
   direccion_caja_luma,
   tipo_cuenta_caja_luma,
   tipo_movimiento_caja_luma,
+  tipo_vehiculo_luma,
 } from '@prisma/client';
 
 export enum FinancialPaymentStatus {
@@ -44,12 +46,14 @@ export class FinancialQueryDto extends FinancialPageDto {
 }
 
 export class SupplierPurchaseQueryDto extends FinancialQueryDto {
+  @IsOptional() @IsEnum(tipo_vehiculo_luma) vehicleType?: tipo_vehiculo_luma;
   @IsOptional() @IsUUID() supplierId?: string;
   @IsOptional() @IsUUID() unitId?: string;
   @IsOptional() @IsUUID() versionId?: string;
 }
 
 export class IncomeQueryDto extends FinancialQueryDto {
+  @IsOptional() @IsEnum(tipo_vehiculo_luma) vehicleType?: tipo_vehiculo_luma;
   @IsOptional() @IsString() @MaxLength(120) type?: string;
   @IsOptional() @IsUUID() unitId?: string;
   @IsOptional() @IsUUID() operationId?: string;
@@ -59,8 +63,6 @@ export class IncomeQueryDto extends FinancialQueryDto {
 
 export class ExpenseQueryDto extends FinancialQueryDto {
   @IsOptional() @IsString() @MaxLength(100) category?: string;
-  @IsOptional() @IsUUID() unitId?: string;
-  @IsOptional() @IsUUID() operationId?: string;
   @IsOptional() @IsUUID() accountId?: string;
   @IsOptional()
   @Transform(({ value }: { value: unknown }) =>
@@ -139,11 +141,14 @@ export class CreateExpenseDto {
   @IsOptional() @IsUUID() branchId?: string;
   @IsDateString() @Matches(BUSINESS_DATE_PATTERN) expenseDate!: string;
   @IsString() @IsNotEmpty() @MaxLength(100) category!: string;
-  @IsOptional() @IsString() @MaxLength(160) reference?: string;
-  @IsOptional() @IsUUID() unitId?: string;
-  @IsOptional() @IsUUID() operationId?: string;
+  @IsString() @IsNotEmpty() @MaxLength(160) reference!: string;
   @IsString() @IsNotEmpty() @MaxLength(2000) description!: string;
   @IsString() @Matches(MONEY_PATTERN) totalAmount!: string;
+  @IsString() @IsNotEmpty() @MaxLength(180) paidBy!: string;
+  @IsEnum(FinancialPaymentStatus) status!: FinancialPaymentStatus;
+  @IsBoolean() recovered!: boolean;
+  @Type(() => Number) @IsInt() @Min(1) @Max(12) month!: number;
+  @Type(() => Number) @IsInt() @Min(2000) @Max(2200) year!: number;
   @IsOptional() @IsString() @Matches(CURRENCY_PATTERN) currency?: string;
   @IsOptional() @IsBoolean() recoverable?: boolean;
   @IsOptional() @IsString() @MaxLength(2000) notes?: string;
@@ -156,11 +161,22 @@ export class UpdateExpenseDto {
   expenseDate?: string;
   @IsOptional() @IsUUID() branchId?: string | null;
   @IsOptional() @IsString() @IsNotEmpty() @MaxLength(100) category?: string;
-  @IsOptional() @IsString() @MaxLength(160) reference?: string | null;
-  @IsOptional() @IsUUID() unitId?: string | null;
-  @IsOptional() @IsUUID() operationId?: string | null;
+  @ValidateIf((_input, value: unknown) => value !== undefined)
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(160)
+  reference?: string;
   @IsOptional() @IsString() @IsNotEmpty() @MaxLength(2000) description?: string;
   @IsOptional() @IsString() @Matches(MONEY_PATTERN) totalAmount?: string;
+  @IsOptional() @IsString() @IsNotEmpty() @MaxLength(180) paidBy?: string;
+  @IsOptional() @IsBoolean() recovered?: boolean;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(12) month?: number;
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(2000)
+  @Max(2200)
+  year?: number;
   @IsOptional() @IsBoolean() recoverable?: boolean;
   @IsOptional() @IsString() @MaxLength(2000) notes?: string | null;
 }

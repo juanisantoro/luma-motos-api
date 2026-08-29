@@ -381,6 +381,7 @@ model gastos {
   importe                                                                          Decimal             @db.Decimal(18, 2)
   moneda                                                                           String              @default("ARS") @db.Char(3)
   recuperable                                                                      Boolean             @default(false)
+  recuperada                                                                       Boolean             @default(false)
   estado_pago                                                                      luma_estado_pago    @default(PENDIENTE)
   creado_por_personal_id                                                           String              @db.Uuid
   creado_en                                                                        DateTime            @default(now()) @db.Timestamptz(6)
@@ -613,6 +614,10 @@ model operaciones {
   precio_minimo                                                                                               Decimal?                           @db.Decimal(18, 2)
   precio_acordado                                                                                             Decimal                            @db.Decimal(18, 2)
   moneda                                                                                                      String                             @default("ARS") @db.Char(3)
+  plataforma_pago                                                                                            plataforma_pago_luma?
+  monto_credito                                                                                               Decimal?                           @db.Decimal(18, 2)
+  respaldo_garante                                                                                            String?                            @db.VarChar(500)
+  debe                                                                                                        deuda_operacion_luma               @default(NO)
   estado_entrega                                                                                              luma_estado_entrega                @default(NO_PROGRAMADA)
   entrega_programada_en                                                                                       DateTime?                          @db.Timestamptz(6)
   entregado_en                                                                                                DateTime?                          @db.Timestamptz(6)
@@ -1538,6 +1543,24 @@ enum tipo_obligacion_luma {
 enum tipo_vehiculo_luma {
   MOTO
   AUTO
+}
+
+enum plataforma_pago_luma {
+  EFECTIVO
+  CREDITO
+  EFECTIVO_CREDITO
+  MOTO_EFECTIVO
+  MOTO_CREDITO
+  MOTO_EFECTIVO_CREDITO
+}
+
+enum deuda_operacion_luma {
+  NO
+  RESERVA
+  CUOTA_INICIAL
+  PAPELES
+  ACCESORIOS
+  OTRO
 }
 
 enum alcance_catalogo_luma {

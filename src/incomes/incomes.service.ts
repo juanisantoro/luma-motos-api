@@ -37,9 +37,28 @@ import { PrismaService } from '../prisma/prisma.service';
 
 const incomeInclude = {
   sucursales: { select: { id: true, codigo: true, nombre: true } },
-  operaciones: { select: { id: true, numero_operacion: true } },
+  operaciones: {
+    select: {
+      id: true,
+      numero_operacion: true,
+      versiones_vehiculos: {
+        select: {
+          modelos_vehiculos: { select: { tipo_vehiculo: true } },
+        },
+      },
+    },
+  },
   unidades_vehiculos: {
-    select: { id: true, vin_mostrado: true, patente: true },
+    select: {
+      id: true,
+      vin_mostrado: true,
+      patente: true,
+      versiones_vehiculos: {
+        select: {
+          modelos_vehiculos: { select: { tipo_vehiculo: true } },
+        },
+      },
+    },
   },
   personal: { select: { id: true, nombre_completo: true } },
   cuentas_caja: {
@@ -86,6 +105,44 @@ export class IncomesService {
       unidad_vehiculo_id: query.unitId,
       operacion_id: query.operationId,
       es_transferencia: false,
+      AND: query.vehicleType
+        ? [
+            {
+              OR: [
+                { unidad_vehiculo_id: null },
+                {
+                  unidades_vehiculos: {
+                    versiones_vehiculos: {
+                      modelos_vehiculos: {
+                        tipo_vehiculo: query.vehicleType,
+                      },
+                    },
+                  },
+                },
+              ],
+            },
+            {
+              OR: [
+                { operacion_id: null },
+                {
+                  operaciones: {
+                    versiones_vehiculos: {
+                      modelos_vehiculos: {
+                        tipo_vehiculo: query.vehicleType,
+                      },
+                    },
+                  },
+                },
+              ],
+            },
+            {
+              OR: [
+                { unidad_vehiculo_id: { not: null } },
+                { operacion_id: { not: null } },
+              ],
+            },
+          ]
+        : undefined,
       fecha_ingreso:
         query.from || query.to
           ? {
@@ -434,6 +491,9 @@ export class IncomesService {
       },
       vehicle: item.unidades_vehiculos
         ? {
+            vehicleType:
+              item.unidades_vehiculos.versiones_vehiculos.modelos_vehiculos
+                .tipo_vehiculo,
             unit: {
               id: item.unidades_vehiculos.id,
               vin: item.unidades_vehiculos.vin_mostrado,
@@ -445,6 +505,9 @@ export class IncomesService {
         ? {
             id: item.operaciones.id,
             number: item.operaciones.numero_operacion.toString(),
+            vehicleType:
+              item.operaciones.versiones_vehiculos.modelos_vehiculos
+                .tipo_vehiculo,
           }
         : null,
       collector: latest

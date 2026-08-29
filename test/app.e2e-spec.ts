@@ -655,7 +655,7 @@ describe('Application security (e2e)', () => {
     });
     const readToken = await accessToken();
     await request(app.getHttpServer())
-      .get('/api/sales/operations?page=1&limit=20')
+      .get('/api/sales/operations?vehicleType=MOTO&page=1&limit=20')
       .set('Authorization', 'Bearer ' + readToken)
       .expect(200)
       .expect({ items: [], total: 0, page: 1, limit: 20 });

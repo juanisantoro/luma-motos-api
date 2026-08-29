@@ -82,6 +82,11 @@ export class SupplierPurchasesService {
       proveedor_id: query.supplierId,
       unidad_vehiculo_id: query.unitId,
       version_id: query.versionId,
+      version: query.vehicleType
+        ? {
+            modelos_vehiculos: { tipo_vehiculo: query.vehicleType },
+          }
+        : undefined,
       fecha_compra:
         query.from || query.to
           ? {

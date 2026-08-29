@@ -243,8 +243,8 @@ Detail adds `movements`.
 
 ### Filters
 
-Common filters plus `category`, `unitId`, `operationId`, `accountId`,
-`recoverable`, `recovered`.
+Common filters plus `category`, `accountId`, `recoverable`, `recovered`.
+General expenses never accept, query, or return an inventory unit/VIN.
 
 `category` is a trimmed business string up to 100 characters. It is not a
 closed enum and requires no seed data.
@@ -258,15 +258,24 @@ closed enum and requires no seed data.
   "expenseDate": "2026-08-29",
   "category": "GESTORIA",
   "reference": "TT-123",
-  "unitId": "uuid optional",
-  "operationId": "uuid optional",
   "description": "Informe de dominio",
   "totalAmount": "25000.00",
+  "paidBy": "Lucía Fernández",
+  "status": "PENDIENTE",
+  "recovered": false,
+  "month": 8,
+  "year": 2026,
   "currency": "ARS",
   "recoverable": true,
   "notes": "optional"
 }
 ```
+
+`reference` is the required TT/reference. New expenses must send
+`status=PENDIENTE`; actual `PARCIAL|PAGADO` state is derived only from
+append-only cash movements. `month` and `year` are required and must match
+`expenseDate`; they are derived again in responses. `paidBy` is the declared
+payer text. `recovered=true` is accepted only for a recoverable expense.
 
 ### Response
 
@@ -274,6 +283,8 @@ closed enum and requires no seed data.
 {
   "id": "uuid",
   "expenseDate": "2026-08-29T00:00:00.000Z",
+  "month": 8,
+  "year": 2026,
   "category": "GESTORIA",
   "reference": "TT-123",
   "description": "Informe de dominio",
@@ -288,12 +299,9 @@ closed enum and requires no seed data.
   "recoverableBalance": "15000",
   "organizationId": "uuid",
   "branch": { "id": "uuid", "code": "SM", "name": "San Miguel" },
-  "vehicle": {
-    "unit": { "id": "uuid", "vin": "8CHASSIS", "licensePlate": null }
-  },
-  "operation": { "id": "uuid", "number": "1048" },
   "createdBy": { "id": "uuid", "fullName": "Lucía Fernández" },
-  "paidBy": { "id": "uuid", "fullName": "Lucía Fernández" },
+  "paidBy": "Lucía Fernández",
+  "paymentRegisteredBy": { "id": "uuid", "fullName": "Lucía Fernández" },
   "account": { "id": "uuid", "code": "CAJA", "name": "Caja", "type": "CAJA" },
   "notes": "optional",
   "createdAt": "timestamp",

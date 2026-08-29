@@ -14,6 +14,7 @@ import { CashService } from '../cash/cash.service';
 import {
   CreateExpenseDto,
   ExpenseQueryDto,
+  FinancialPaymentStatus,
   RegisterFinancialMovementDto,
   ReverseFinancialMovementDto,
   UpdateExpenseDto,
@@ -38,10 +39,6 @@ import { PrismaService } from '../prisma/prisma.service';
 
 const expenseInclude = {
   sucursales: { select: { id: true, codigo: true, nombre: true } },
-  operaciones: { select: { id: true, numero_operacion: true } },
-  unidades_vehiculos: {
-    select: { id: true, vin_mostrado: true, patente: true },
-  },
   personal: { select: { id: true, nombre_completo: true } },
   movimientos_caja: {
     where: {
@@ -86,8 +83,6 @@ export class ExpensesService {
       organizacion_id: organizationId,
       sucursal_id: query.branchId,
       categoria: query.category?.trim(),
-      unidad_vehiculo_id: query.unitId,
-      operacion_id: query.operationId,
       recuperable: query.recoverable,
       fecha_generacion:
         query.from || query.to
@@ -110,11 +105,7 @@ export class ExpensesService {
             { categoria: { contains: search, mode: 'insensitive' } },
             { detalle: { contains: search, mode: 'insensitive' } },
             { referencia_origen: { contains: search, mode: 'insensitive' } },
-            {
-              unidades_vehiculos: {
-                vin_mostrado: { contains: search, mode: 'insensitive' },
-              },
-            },
+            { pagador_original: { contains: search, mode: 'insensitive' } },
           ]
         : undefined,
     };
@@ -176,32 +167,37 @@ export class ExpensesService {
     assertOrganization(actor, input.organizationId);
     const organizationId = input.organizationId ?? actor.organization.id;
     const total = decimal(input.totalAmount);
+    const expenseDate = businessDate(input.expenseDate);
+    this.assertExpensePeriod(expenseDate, input.month, input.year);
+    if (input.status !== FinancialPaymentStatus.PENDIENTE)
+      financialBadRequest(
+        'INITIAL_EXPENSE_STATUS_INVALID',
+        'New expenses must start with status PENDIENTE; register payments separately',
+      );
+    if (input.recovered && input.recoverable === false)
+      financialBadRequest(
+        'RECOVERED_EXPENSE_NOT_RECOVERABLE',
+        'A recovered expense must be recoverable',
+      );
     return this.mutate(
       actor,
       'EXPENSE_CREATED',
       async (tx, event) => {
         if (input.branchId)
           await this.cash.branchOr400(tx, input.branchId, organizationId);
-        await this.validateReferences(
-          tx,
-          input.unitId,
-          input.operationId,
-          input.branchId,
-          organizationId,
-        );
         const expense = await tx.gastos.create({
           data: {
             organizacion_id: organizationId,
             sucursal_id: input.branchId,
-            fecha_generacion: businessDate(input.expenseDate),
+            fecha_generacion: expenseDate,
             categoria: input.category.trim(),
-            referencia_origen: input.reference?.trim(),
-            unidad_vehiculo_id: input.unitId,
-            operacion_id: input.operationId,
+            referencia_origen: input.reference.trim(),
             detalle: input.description.trim(),
             importe: total,
             moneda: input.currency ?? 'ARS',
-            recuperable: input.recoverable ?? false,
+            recuperable: input.recoverable ?? input.recovered,
+            recuperada: input.recovered,
+            pagador_original: input.paidBy.trim(),
             estado_pago: 'PENDIENTE',
             creado_por_personal_id: await this.cash.actorPersonnelId(
               tx,
@@ -238,16 +234,13 @@ export class ExpensesService {
           input.branchId === undefined ? current.sucursal_id : input.branchId;
         if (branchId)
           await this.cash.branchOr400(tx, branchId, current.organizacion_id);
-        await this.validateReferences(
-          tx,
-          input.unitId === undefined
-            ? (current.unidad_vehiculo_id ?? undefined)
-            : (input.unitId ?? undefined),
-          input.operationId === undefined
-            ? (current.operacion_id ?? undefined)
-            : (input.operationId ?? undefined),
-          branchId ?? undefined,
-          current.organizacion_id,
+        const expenseDate = input.expenseDate
+          ? businessDate(input.expenseDate)
+          : current.fecha_generacion;
+        this.assertExpensePeriod(
+          expenseDate,
+          input.month ?? expenseDate.getUTCMonth() + 1,
+          input.year ?? expenseDate.getUTCFullYear(),
         );
         const total =
           input.totalAmount === undefined
@@ -275,6 +268,13 @@ export class ExpensesService {
             'RECOVERY_EXISTS',
             'Expense with active recoveries must remain recoverable',
           );
+        const recoverable = input.recoverable ?? current.recuperable;
+        const recoveredState = input.recovered ?? current.recuperada;
+        if (recoveredState && !recoverable)
+          financialBadRequest(
+            'RECOVERED_EXPENSE_NOT_RECOVERABLE',
+            'A recovered expense must be recoverable',
+          );
         const previousData =
           current.datos_inferidos &&
           typeof current.datos_inferidos === 'object' &&
@@ -297,12 +297,12 @@ export class ExpensesService {
             referencia_origen:
               input.reference === undefined
                 ? undefined
-                : input.reference?.trim() || null,
-            unidad_vehiculo_id: input.unitId,
-            operacion_id: input.operationId,
+                : input.reference.trim(),
             detalle: input.description?.trim(),
             importe: total,
             recuperable: input.recoverable,
+            recuperada: input.recovered,
+            pagador_original: input.paidBy?.trim(),
             estado_pago: databasePaymentStatus(paymentStatus(paid, total)),
             datos_inferidos:
               input.notes === undefined
@@ -512,6 +512,8 @@ export class ExpensesService {
     return {
       id: item.id,
       expenseDate: item.fecha_generacion,
+      month: item.fecha_generacion.getUTCMonth() + 1,
+      year: item.fecha_generacion.getUTCFullYear(),
       category: item.categoria,
       reference: item.referencia_origen,
       description: item.detalle,
@@ -522,7 +524,8 @@ export class ExpensesService {
       balanceAmount: item.importe.minus(paid).toString(),
       recoverable: item.recuperable,
       recovered:
-        item.recuperable && recovered.greaterThanOrEqualTo(item.importe),
+        item.recuperada ||
+        (item.recuperable && recovered.greaterThanOrEqualTo(item.importe)),
       recoveredAmount: recovered.toString(),
       recoverableBalance: item.recuperable
         ? item.importe.minus(recovered).toString()
@@ -537,26 +540,12 @@ export class ExpensesService {
             name: item.sucursales.nombre,
           }
         : null,
-      vehicle: item.unidades_vehiculos
-        ? {
-            unit: {
-              id: item.unidades_vehiculos.id,
-              vin: item.unidades_vehiculos.vin_mostrado,
-              licensePlate: item.unidades_vehiculos.patente,
-            },
-          }
-        : null,
-      operation: item.operaciones
-        ? {
-            id: item.operaciones.id,
-            number: item.operaciones.numero_operacion.toString(),
-          }
-        : null,
       createdBy: {
         id: item.personal.id,
         fullName: item.personal.nombre_completo,
       },
-      paidBy: latestPayment
+      paidBy: item.pagador_original,
+      paymentRegisteredBy: latestPayment
         ? {
             id: latestPayment.personal.id,
             fullName: latestPayment.personal.nombre_completo,
@@ -608,37 +597,14 @@ export class ExpensesService {
     return expense;
   }
 
-  private async validateReferences(
-    tx: Prisma.TransactionClient,
-    unitId: string | undefined,
-    operationId: string | undefined,
-    branchId: string | undefined,
-    organizationId: string,
-  ) {
-    const unit = unitId
-      ? await this.cash.unitOr400(tx, unitId, organizationId)
-      : undefined;
-    const operation = operationId
-      ? await this.cash.operationOr400(tx, operationId, organizationId)
-      : undefined;
-    if (unit && branchId && unit.sucursal_id !== branchId)
-      financialBadRequest(
-        'UNIT_BRANCH_MISMATCH',
-        'Inventory unit must belong to the expense branch',
-      );
-    if (operation && branchId && operation.sucursal_id !== branchId)
-      financialBadRequest(
-        'OPERATION_BRANCH_MISMATCH',
-        'Sales operation must belong to the expense branch',
-      );
+  private assertExpensePeriod(expenseDate: Date, month: number, year: number) {
     if (
-      unit &&
-      operation?.unidad_vehiculo_id &&
-      operation.unidad_vehiculo_id !== unit.id
+      expenseDate.getUTCMonth() + 1 !== month ||
+      expenseDate.getUTCFullYear() !== year
     )
       financialBadRequest(
-        'OPERATION_UNIT_MISMATCH',
-        'Sales operation and inventory unit do not match',
+        'EXPENSE_PERIOD_MISMATCH',
+        'month and year must match expenseDate',
       );
   }
 
