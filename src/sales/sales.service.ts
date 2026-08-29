@@ -855,6 +855,21 @@ export class SalesService {
       },
       data: { estado_inventario: luma_estado_inventario.EN_STOCK },
     });
+    const detachedOperation = await tx.operaciones.updateMany({
+      where: {
+        id: reservation.operacion_id,
+        organizacion_id: reservation.organizacion_id,
+        unidad_vehiculo_id: unit.id,
+      },
+      data: {
+        unidad_vehiculo_id: null,
+        version_fila: { increment: 1 },
+      },
+    });
+    if (detachedOperation.count !== 1)
+      throw new ConflictException(
+        'Expired reservation operation assignment is inconsistent',
+      );
     await tx.movimientos_inventario.create({
       data: {
         unidad_vehiculo_id: unit.id,

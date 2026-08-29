@@ -204,6 +204,80 @@ describe('SalesService', () => {
     expect(queryRaw).toHaveBeenCalledTimes(3);
   });
 
+  it('detaches a displaced operation when recycling an expired reservation', async () => {
+    const displacedOperationId = '5aa5ed61-7428-4650-9af1-f93d26466321';
+    const expiredReservation = {
+      id: 'a5ed870b-c3b0-4dcb-8cc8-905e1a0126b9',
+      operacion_id: displacedOperationId,
+      unidad_vehiculo_id: unitId,
+      estado: 'ACTIVO',
+      vence_en: new Date(Date.now() - 60_000),
+      organizacion_id: organizationId,
+    };
+    const current = operation('BORRADOR');
+    const completed = {
+      ...completeOperation('BORRADOR'),
+      version_fila: 3,
+    };
+    const updateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const transaction = {
+      $queryRaw: jest.fn().mockResolvedValue([{ id: operationId }]),
+      operaciones: {
+        findFirst: jest
+          .fn()
+          .mockResolvedValueOnce(current)
+          .mockResolvedValueOnce(completed),
+        update: jest.fn().mockResolvedValue({}),
+        updateMany,
+      },
+      reservas_stock: {
+        findFirst: jest
+          .fn()
+          .mockResolvedValueOnce(null)
+          .mockResolvedValueOnce(expiredReservation),
+        update: jest.fn().mockResolvedValue({}),
+        create: jest.fn().mockResolvedValue({}),
+      },
+      unidades_vehiculos: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: unitId,
+          version_id: current.version_id,
+          condicion: current.condicion,
+          sucursal_id: current.sucursal_id,
+          estado_inventario: 'RESERVADO',
+        }),
+        update: jest.fn().mockResolvedValue({}),
+      },
+      personal: {
+        findFirst: jest
+          .fn()
+          .mockResolvedValue({ id: '11b5de9b-9bc2-4777-bb78-9c7267b73aca' }),
+      },
+      movimientos_inventario: {
+        create: jest.fn().mockResolvedValue({}),
+      },
+    } as unknown as Prisma.TransactionClient;
+
+    await expect(
+      service(transaction).reserve(
+        operationId,
+        { unitId, expectedVersion: 2 },
+        actor,
+      ),
+    ).resolves.toMatchObject({ id: operationId, rowVersion: 3 });
+    expect(updateMany).toHaveBeenCalledWith({
+      where: {
+        id: displacedOperationId,
+        organizacion_id: organizationId,
+        unidad_vehiculo_id: unitId,
+      },
+      data: {
+        unidad_vehiculo_id: null,
+        version_fila: { increment: 1 },
+      },
+    });
+  });
+
   it('requires an active reservation before submission', async () => {
     const transaction = {
       $queryRaw: jest
