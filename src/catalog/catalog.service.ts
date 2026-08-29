@@ -292,12 +292,12 @@ export class CatalogService {
             take: query.limit,
           }),
         ]),
-      (item) => this.toVersion(item),
+      (item) => this.toVersion(item, actor),
     );
   }
   async version(id: string, actor: AuthenticatedUser) {
     return this.prisma.withTenant(this.scope(actor), async (tx) =>
-      this.toVersion(await this.versionOr404(tx, id, actor)),
+      this.toVersion(await this.versionOr404(tx, id, actor), actor),
     );
   }
   async createVersion(input: CreateVersionDto, actor: AuthenticatedUser) {
@@ -337,7 +337,7 @@ export class CatalogService {
           },
           select: versionSelect,
         });
-        return this.toVersion(created);
+        return this.toVersion(created, actor);
       },
       undefined,
       ownerId,
@@ -422,6 +422,7 @@ export class CatalogService {
             },
             select: versionSelect,
           }),
+          actor,
         );
       },
       id,
@@ -703,17 +704,22 @@ export class CatalogService {
     item: Prisma.versiones_vehiculosGetPayload<{
       select: typeof versionSelect;
     }>,
+    actor: AuthenticatedUser,
   ) {
+    const canSeeOrganization = (organizationId: string | null) =>
+      actor.globalAccess || organizationId === actor.organization.id;
     return {
       id: item.id,
       name: item.nombre,
       marker: item.es_marcador,
       active: item.activo,
       scope: item.alcance,
-      ownerOrganizationId: item.organizacion_propietaria_id,
-      sellableOrganizationIds: item.catalogo_organizaciones.map(
-        (row) => row.organizacion_id,
-      ),
+      ownerOrganizationId: canSeeOrganization(item.organizacion_propietaria_id)
+        ? item.organizacion_propietaria_id
+        : null,
+      sellableOrganizationIds: item.catalogo_organizaciones
+        .map((row) => row.organizacion_id)
+        .filter(canSeeOrganization),
       model: this.toModel(item.modelos_vehiculos),
       createdAt: item.creado_en,
       updatedAt: item.actualizado_en,

@@ -46,6 +46,11 @@ marker,active,createdAt,updatedAt}`. Price policy:
 validFrom,validUntil,createdAt,updatedAt,version:{id,name,model},branch:
 {id,code,name}|null}`.
 
+Organization identifiers in version responses are tenant-scoped: global users
+see the complete owner/assignment list, while tenant users only see their own
+organization identifier and receive a null owner when another tenant owns the
+shared version.
+
 Creation/update bodies are: brands `{name}` / `{name?,active?}`; models
 `{name,brandId,vehicleType}` / `{name?,active?,vehicleType?}`; versions
 `{name,modelId,marker?,scope?,organizationId?,organizationIds?}` /

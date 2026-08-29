@@ -206,6 +206,45 @@ describe('InventoryService', () => {
     ).toEqual([PERMISSION_CODES.INVENTORY_READ]);
   });
 
+  it('does not reopen workflow-managed or terminal inventory states', async () => {
+    const update = jest.fn();
+    const transaction = {
+      $queryRaw: jest
+        .fn()
+        .mockResolvedValue([{ id: '7d5cc401-544e-4651-9bd6-52495887fecd' }]),
+      unidades_vehiculos: {
+        findFirst: jest.fn().mockResolvedValue({
+          organizacion_id: actor.organization.id,
+          estado_inventario: 'VENDIDO',
+        }),
+        update,
+      },
+    } as unknown as Prisma.TransactionClient;
+    const execute = jest
+      .fn()
+      .mockImplementation(
+        (_event, work: (tx: Prisma.TransactionClient) => unknown) =>
+          work(transaction),
+      );
+    const service = new InventoryService(
+      {} as PrismaService,
+      { execute } as unknown as AuditService,
+    );
+
+    await expect(
+      service.update(
+        '7d5cc401-544e-4651-9bd6-52495887fecd',
+        { inventoryStatus: 'EN_STOCK' },
+        actor,
+      ),
+    ).rejects.toThrow(
+      new ConflictException(
+        'Inventory status cannot be manually changed from its current state',
+      ),
+    );
+    expect(update).not.toHaveBeenCalled();
+  });
+
   it('moves an EN_STOCK unit and appends a transfer movement', async () => {
     const unitId = '7d5cc401-544e-4651-9bd6-52495887fecd';
     const originId = 'edc9ce1d-dbf3-4691-a2d2-79e4e9563dd2';

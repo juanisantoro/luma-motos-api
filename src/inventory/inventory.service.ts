@@ -5,7 +5,11 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { Prisma, tipo_movimiento_inventario_luma } from '@prisma/client';
+import {
+  luma_estado_inventario,
+  Prisma,
+  tipo_movimiento_inventario_luma,
+} from '@prisma/client';
 import { AuditService, AuthenticatedAuditEvent } from '../audit/audit.service';
 import { AuthenticatedUser } from '../auth/auth.types';
 import { PrismaService } from '../prisma/prisma.service';
@@ -27,10 +31,10 @@ const unitInclude = {
   sucursales: true,
   proveedores: true,
 } satisfies Prisma.unidades_vehiculosInclude;
-const safeStatuses = new Set<string>([
-  'EN_STOCK',
-  'EN_ACONDICIONAMIENTO',
-  'BLOQUEADO',
+const manuallyManagedStatuses = new Set<luma_estado_inventario>([
+  luma_estado_inventario.EN_STOCK,
+  luma_estado_inventario.EN_ACONDICIONAMIENTO,
+  luma_estado_inventario.BLOQUEADO,
 ]);
 
 @Injectable()
@@ -149,7 +153,10 @@ export class InventoryService {
   ) {
     if (Object.keys(input).length === 0)
       throw new BadRequestException('At least one editable field is required');
-    if (input.inventoryStatus && !safeStatuses.has(input.inventoryStatus))
+    if (
+      input.inventoryStatus &&
+      !manuallyManagedStatuses.has(input.inventoryStatus)
+    )
       throw new BadRequestException(
         'Inventory status cannot be set through this endpoint',
       );
@@ -163,6 +170,13 @@ export class InventoryService {
           actor,
           current.organizacion_id,
         );
+        if (
+          input.inventoryStatus &&
+          !manuallyManagedStatuses.has(current.estado_inventario)
+        )
+          throw new ConflictException(
+            'Inventory status cannot be manually changed from its current state',
+          );
         const updated = await tx.unidades_vehiculos.update({
           where: {
             id_organizacion_id: {
