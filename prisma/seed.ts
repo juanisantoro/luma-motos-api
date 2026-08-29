@@ -57,6 +57,18 @@ const managedPermissions = [
     roles: ['ADMINISTRADOR'],
   },
   {
+    codigo: 'roles.consultar',
+    modulo: 'roles',
+    descripcion: 'Consulta roles, permisos y asignaciones vigentes.',
+    roles: ['ADMINISTRADOR', 'GERENTE'],
+  },
+  {
+    codigo: 'roles.gestionar',
+    modulo: 'roles',
+    descripcion: 'Crea, modifica, clona y desactiva roles personalizados.',
+    roles: ['ADMINISTRADOR'],
+  },
+  {
     codigo: 'clientes.consultar',
     modulo: 'clientes',
     descripcion: 'Consulta clientes de las organizaciones habilitadas.',
@@ -316,6 +328,18 @@ const managedPermissions = [
     descripcion: 'Consulta el progreso y el historial propio de comisiones.',
     roles: ['VENDEDOR'],
   },
+  {
+    codigo: 'comisiones.gestionar',
+    modulo: 'comisiones',
+    descripcion: 'Gestiona liquidaciones, acuerdos y estados de comisiones.',
+    roles: ['GERENTE', 'ADMINISTRADOR'],
+  },
+  {
+    codigo: 'reportes.consultar',
+    modulo: 'reportes',
+    descripcion: 'Consulta reportes operativos y financieros consolidados.',
+    roles: ['GERENTE', 'ADMINISTRADOR'],
+  },
 ] as const;
 
 async function main(): Promise<void> {
@@ -333,7 +357,7 @@ async function main(): Promise<void> {
       await transaction.$queryRaw`
         SELECT
           set_config('app.organizacion_id', ${organization.id}, true),
-          set_config('app.acceso_global', 'false', true)
+          set_config('app.acceso_global', 'true', true)
       `;
 
       for (const branch of branches) {
@@ -355,14 +379,32 @@ async function main(): Promise<void> {
       }
 
       for (const role of roles) {
-        await transaction.role.upsert({
-          where: { codigo: role.codigo },
-          create: role,
-          update: {
-            nombre: role.nombre,
-            descripcion: role.descripcion,
+        const existingRole = await transaction.role.findFirst({
+          where: {
+            codigo: role.codigo,
+            es_sistema: true,
+            organizacion_id: null,
           },
+          select: { id: true },
         });
+        if (existingRole) {
+          await transaction.role.update({
+            where: { id: existingRole.id },
+            data: {
+              nombre: role.nombre,
+              descripcion: role.descripcion,
+              activo: true,
+            },
+          });
+        } else {
+          await transaction.role.create({
+            data: {
+              ...role,
+              es_sistema: true,
+              organizacion_id: null,
+            },
+          });
+        }
       }
 
       for (const permission of managedPermissions) {
@@ -382,6 +424,8 @@ async function main(): Promise<void> {
         const assignedRoles = await transaction.role.findMany({
           where: {
             codigo: { in: [...permission.roles] },
+            es_sistema: true,
+            organizacion_id: null,
           },
           select: { id: true },
         });
@@ -391,6 +435,30 @@ async function main(): Promise<void> {
             codigo_permiso: permission.codigo,
           })),
           skipDuplicates: true,
+        });
+      }
+
+      for (const role of roles) {
+        const systemRole = await transaction.role.findFirstOrThrow({
+          where: {
+            codigo: role.codigo,
+            es_sistema: true,
+            organizacion_id: null,
+          },
+          select: { id: true },
+        });
+        const permissionCodes = managedPermissions
+          .filter((permission) =>
+            (permission.roles as readonly string[]).includes(role.codigo),
+          )
+          .map((permission) => permission.codigo);
+        await transaction.permisos_rol.deleteMany({
+          where: {
+            rol_id: systemRole.id,
+            codigo_permiso: {
+              notIn: permissionCodes,
+            },
+          },
         });
       }
 

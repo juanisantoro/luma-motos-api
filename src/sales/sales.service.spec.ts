@@ -22,7 +22,13 @@ describe('SalesService', () => {
       name: 'Luma',
       type: 'CASA_CENTRAL',
     },
-    role: { code: 'ADMINISTRADOR', name: 'Administrador', permissions: [] },
+    role: {
+      id: '4bd1189b-2bb1-4258-889b-4500de5eeade',
+      code: 'ADMINISTRADOR',
+      name: 'Administrador',
+      system: true,
+      permissions: [],
+    },
     branch: null,
   };
 

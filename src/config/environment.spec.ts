@@ -53,6 +53,15 @@ describe('validateEnvironment', () => {
     ).toThrow(/SMTP_HOST.*required peers.*SMTP_PASSWORD/);
   });
 
+  it('requires SMTP delivery configuration in production', () => {
+    expect(() =>
+      validateEnvironment({
+        ...validEnvironment,
+        NODE_ENV: 'production',
+      }),
+    ).toThrow(/SMTP_HOST.*required/);
+  });
+
   it('rejects idle timeouts outside the supported range', () => {
     expect(() =>
       validateEnvironment({

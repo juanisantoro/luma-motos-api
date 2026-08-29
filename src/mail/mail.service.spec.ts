@@ -23,6 +23,7 @@ describe('MailService', () => {
     SMTP_PASSWORD: 'smtp-password',
     SMTP_FROM_EMAIL: 'noreply@example.com',
     SMTP_FROM_NAME: 'Luma Motos',
+    FRONTEND_URL: 'https://luma.example.com',
   };
 
   beforeEach(() => {

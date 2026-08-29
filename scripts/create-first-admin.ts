@@ -51,8 +51,13 @@ async function main(): Promise<void> {
     );
   }
 
-  const role = await prisma.role.findUnique({
-    where: { codigo: ROLE_CODES.ADMINISTRADOR },
+  const role = await prisma.role.findFirst({
+    where: {
+      codigo: ROLE_CODES.ADMINISTRADOR,
+      es_sistema: true,
+      organizacion_id: null,
+      activo: true,
+    },
     select: { id: true },
   });
   if (!role) {
@@ -125,6 +130,8 @@ async function main(): Promise<void> {
           organizacion_id: organization.id,
           acceso_global: true,
           contrasena_configurada_en: new Date(),
+          estado_invitacion: 'ACCEPTED',
+          invitacion_aceptada_en: new Date(),
         },
         select: { id: true },
       });

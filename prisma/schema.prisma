@@ -9,17 +9,22 @@ datasource db {
 }
 
 model Role {
-  id             String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  codigo         String         @unique @db.VarChar(50)
-  nombre         String         @unique @db.VarChar(100)
-  descripcion    String         @db.VarChar(240)
-  activo         Boolean        @default(true)
-  creado_en      DateTime       @default(now()) @db.Timestamptz(6)
-  actualizado_en DateTime       @default(now()) @db.Timestamptz(6)
-  permisos_rol   permisos_rol[]
-  personal       personal[]
-  usuarios       usuarios[]
+  id              String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  codigo          String          @db.VarChar(50)
+  nombre          String          @db.VarChar(100)
+  descripcion     String          @db.VarChar(240)
+  activo          Boolean         @default(true)
+  es_sistema      Boolean         @default(false)
+  version         Int             @default(1)
+  organizacion_id String?         @db.Uuid
+  creado_en       DateTime        @default(now()) @db.Timestamptz(6)
+  actualizado_en  DateTime        @default(now()) @db.Timestamptz(6)
+  organizaciones  organizaciones? @relation(fields: [organizacion_id], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "roles_organizacion_fk")
+  permisos_rol    permisos_rol[]
+  personal        personal[]
+  usuarios        usuarios[]
 
+  @@index([organizacion_id, activo], map: "roles_organizacion_activo_indice")
   @@map("roles")
 }
 
@@ -1130,6 +1135,12 @@ model usuarios {
   organizacion_id                                                              String                @db.Uuid
   contrasena_configurada_en                                                    DateTime?             @db.Timestamptz(6)
   contrasena_temporal_vence_en                                                 DateTime?             @db.Timestamptz(6)
+  estado_invitacion                                                            estado_invitacion_usuario @default(PENDING)
+  invitacion_ultimo_intento_en                                                  DateTime?             @db.Timestamptz(6)
+  invitacion_enviada_en                                                         DateTime?             @db.Timestamptz(6)
+  invitacion_aceptada_en                                                        DateTime?             @db.Timestamptz(6)
+  invitacion_error                                                              String?               @db.VarChar(240)
+  invitacion_version                                                            Int                   @default(1)
   personal                                                                     personal?
   registros_auditoria_registros_auditoria_usuario_id_organizacion_idTousuarios registros_auditoria[] @relation("registros_auditoria_usuario_id_organizacion_idTousuarios")
   registros_auditoria                                                          registros_auditoria[]
@@ -1140,6 +1151,7 @@ model usuarios {
   sucursales_usuarios_sucursal_id_organizacion_idTosucursales                  sucursales?           @relation("usuarios_sucursal_id_organizacion_idTosucursales", fields: [sucursal_id, organizacion_id], references: [id, organizacion_id], onDelete: NoAction, onUpdate: NoAction, map: "usuarios_sucursal_organizacion_fk")
 
   @@unique([id, organizacion_id], map: "usuarios_id_organizacion_unico")
+  @@index([organizacion_id, estado_invitacion], map: "usuarios_organizacion_invitacion_indice")
 }
 
 model AuthSession {
@@ -1269,6 +1281,7 @@ model organizaciones {
   registros_inventario_importados  registros_inventario_importados[]
   politicas_comisiones             politicas_comisiones[]
   escalas_comisiones               escalas_comisiones[]
+  roles                            Role[]
 }
 
 /// This table contains check constraints, composite tenant foreign keys and row level security.
@@ -1532,6 +1545,14 @@ enum estado_liquidacion_comision_luma {
 enum luma_personal_estado {
   ACTIVO
   INACTIVO
+}
+
+enum estado_invitacion_usuario {
+  PENDING
+  DELIVERED
+  FAILED
+  ACCEPTED
+  EXPIRED
 }
 
 enum metodo_cobranza_luma {

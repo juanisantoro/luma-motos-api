@@ -76,7 +76,24 @@ export class UsersController {
   @Post(':id/temporary-password')
   @Permissions(PERMISSION_CODES.USERS_MANAGE)
   @AuditedMutation()
-  resetTemporaryPassword(
+  async resetTemporaryPassword(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @CurrentUser() actor: AuthenticatedUser,
+  ) {
+    const result = await this.usersService.resetTemporaryPassword(id, actor);
+    return {
+      user: result.user,
+      delivery: {
+        sent: result.delivery.status === 'DELIVERED',
+      },
+      expiresAt: result.delivery.expiresAt,
+    };
+  }
+
+  @Post(':id/invitation/resend')
+  @Permissions(PERMISSION_CODES.USERS_MANAGE)
+  @AuditedMutation()
+  resendInvitation(
     @Param('id', new ParseUUIDPipe()) id: string,
     @CurrentUser() actor: AuthenticatedUser,
   ) {
@@ -88,11 +105,6 @@ export class UsersController {
 @Permissions(PERMISSION_CODES.USERS_READ)
 export class UserReferenceDataController {
   constructor(private readonly usersService: UsersService) {}
-
-  @Get('roles')
-  findRoles(@CurrentUser() actor: AuthenticatedUser) {
-    return this.usersService.findRoles(actor);
-  }
 
   @Get('organizations')
   findOrganizations(@CurrentUser() actor: AuthenticatedUser) {

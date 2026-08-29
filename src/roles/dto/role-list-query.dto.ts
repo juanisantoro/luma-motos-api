@@ -2,7 +2,6 @@ import { Transform, Type } from 'class-transformer';
 import {
   IsBoolean,
   IsInt,
-  IsIn,
   IsOptional,
   IsString,
   IsUUID,
@@ -10,9 +9,8 @@ import {
   MaxLength,
   Min,
 } from 'class-validator';
-import { INVITATION_STATUSES, type InvitationStatus } from '../users.constants';
 
-export class UserListQueryDto {
+export class RoleListQueryDto {
   @Type(() => Number)
   @IsInt()
   @Min(1)
@@ -29,24 +27,8 @@ export class UserListQueryDto {
     typeof value === 'string' ? value.trim() : value,
   )
   @IsString()
-  @MaxLength(160)
+  @MaxLength(100)
   search?: string;
-
-  @IsOptional()
-  @IsUUID()
-  organizationId?: string;
-
-  @IsOptional()
-  @IsUUID()
-  branchId?: string;
-
-  @IsOptional()
-  @Transform(({ value }: { value: unknown }) =>
-    typeof value === 'string' ? value.trim().toUpperCase() : value,
-  )
-  @IsString()
-  @MaxLength(50)
-  roleCode?: string;
 
   @IsOptional()
   @Transform(({ value }: { value: unknown }) => {
@@ -58,6 +40,6 @@ export class UserListQueryDto {
   active?: boolean;
 
   @IsOptional()
-  @IsIn(INVITATION_STATUSES)
-  invitationStatus?: InvitationStatus;
+  @IsUUID()
+  organizationId?: string;
 }

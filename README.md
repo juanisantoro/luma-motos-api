@@ -88,6 +88,8 @@ Los decoradores `@Roles(...)` y `@Permissions(...)` permiten proteger nuevos con
 
 Los intentos de login exitosos y fallidos se registran en `registros_auditoria` sin contraseñas, tokens ni detalles de conexión.
 
+El login con una contraseña temporal válida responde `PASSWORD_CHANGE_REQUIRED` sin crear una sesión ni emitir JWT. Las credenciales temporales expiradas responden `TEMPORARY_PASSWORD_EXPIRED`. El contrato completo de usuarios, invitaciones, roles, permisos y errores tipados está en [`docs/api-user-role-management.md`](docs/api-user-role-management.md).
+
 ### Gestión segura de usuarios
 
 Los permisos se administran mediante el seed:
@@ -101,13 +103,20 @@ Los usuarios sin acceso global quedan limitados por RLS a su organización. Un a
 | --- | --- | --- |
 | `GET /api/users` | `usuarios.consultar` | Listar usuarios con filtros y paginación |
 | `GET /api/users/:id` | `usuarios.consultar` | Consultar un usuario |
-| `GET /api/roles` | `usuarios.consultar` | Consultar roles y sus permisos |
+| `GET /api/roles` | `roles.consultar` | Listar roles tenant-scoped y roles base |
+| `GET /api/roles/:id` | `roles.consultar` | Consultar un rol y sus permisos |
+| `GET /api/permissions` | `roles.consultar` | Consultar el catálogo agrupado |
+| `POST /api/roles` | `roles.gestionar` | Crear un rol personalizado |
+| `PATCH /api/roles/:id` | `roles.gestionar` | Editar y revocar sesiones si cambian permisos |
+| `PATCH /api/roles/:id/status` | `roles.gestionar` | Desactivar o reactivar con versionado optimista |
+| `POST /api/roles/:id/clone` | `roles.gestionar` | Clonar un rol como personalizado |
 | `GET /api/organizations` | `usuarios.consultar` | Consultar organizaciones accesibles |
 | `GET /api/branches` | `usuarios.consultar` | Consultar sucursales accesibles |
 | `POST /api/users` | `usuarios.gestionar` | Crear un usuario y enviar su contraseña temporal |
 | `PATCH /api/users/:id/access` | `usuarios.gestionar` | Cambiar rol, sucursal o acceso global |
 | `PATCH /api/users/:id/status` | `usuarios.gestionar` | Activar o desactivar |
-| `POST /api/users/:id/temporary-password` | `usuarios.gestionar` | Revocar sesiones y emitir otra contraseña temporal |
+| `POST /api/users/:id/invitation/resend` | `usuarios.gestionar` | Revocar sesiones y regenerar/reentregar la invitación |
+| `POST /api/users/:id/temporary-password` | `usuarios.gestionar` | Alias compatible del reenvío |
 
 El alta requiere email, nombre, organización y rol; sucursal, acceso global, código de empleado y teléfono son opcionales. La contraseña temporal se genera con aleatoriedad criptográfica, solo se conserva como hash Argon2id y vence según `USER_TEMPORARY_PASSWORD_TTL_SECONDS`. No se devuelve en la respuesta HTTP ni se incluye en auditoría.
 
@@ -181,7 +190,7 @@ SMTP_FROM_EMAIL="remitente-verificado@dominio.com"
 SMTP_FROM_NAME="Luma Motos"
 ```
 
-No usar la contraseña de la cuenta Brevo ni guardar la clave SMTP en git. `SMTP_USER`, `SMTP_PASSWORD` y `SMTP_FROM_EMAIL` deben estar todos presentes o todos ausentes. Sin ellos el backend puede arrancar, pero el alta o reseteo informa que la entrega no está configurada.
+No usar la contraseña de la cuenta Brevo ni guardar la clave SMTP en git. `SMTP_USER`, `SMTP_PASSWORD` y `SMTP_FROM_EMAIL` deben estar todos presentes o todos ausentes. En desarrollo y tests el bloque puede omitirse; el alta o reseteo informa que la entrega no está configurada. En producción el bloque completo es obligatorio y el proceso no arranca si falta.
 
 PostgreSQL y SMTP no comparten una transacción distribuida: primero se confirma la cuenta o el reseteo y su auditoría, y luego se envía el email. Si Brevo falla, el fallo queda auditado y un administrador debe usar `POST /api/users/:id/temporary-password` para generar y enviar una credencial nueva; la anterior queda invalidada.
 

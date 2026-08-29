@@ -21,8 +21,10 @@ describe('IncomesService', () => {
       type: 'CASA_CENTRAL',
     },
     role: {
+      id: '4bd1189b-2bb1-4258-889b-4500de5eeade',
       code: 'ADMINISTRATIVA',
       name: 'Administrativa',
+      system: true,
       permissions: ['ingresos.consultar', 'ingresos.cobrar'],
     },
     branch: null,

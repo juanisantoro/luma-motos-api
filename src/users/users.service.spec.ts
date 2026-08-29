@@ -1,4 +1,4 @@
-import { ConflictException, ForbiddenException } from '@nestjs/common';
+import { ConflictException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
 import {
@@ -32,8 +32,10 @@ describe('UsersService', () => {
       type: 'CASA_CENTRAL',
     },
     role: {
+      id: '4bd1189b-2bb1-4258-889b-4500de5eeade',
       code: 'ADMINISTRADOR',
       name: 'Administrador',
+      system: true,
       permissions: ['usuarios.consultar', 'usuarios.gestionar'],
     },
     branch: null,
@@ -48,6 +50,12 @@ describe('UsersService', () => {
     ultimo_inicio_sesion_en: null,
     contrasena_configurada_en: null,
     contrasena_temporal_vence_en: new Date('2026-08-30T00:00:00.000Z'),
+    estado_invitacion: 'DELIVERED',
+    invitacion_ultimo_intento_en: new Date('2026-08-29T00:00:00.000Z'),
+    invitacion_enviada_en: new Date('2026-08-29T00:00:00.000Z'),
+    invitacion_aceptada_en: null,
+    invitacion_error: null,
+    invitacion_version: 1,
     organizacion_id: actor.organization.id,
     organizaciones: {
       id: actor.organization.id,
@@ -61,6 +69,8 @@ describe('UsersService', () => {
       codigo: 'VENDEDOR',
       nombre: 'Vendedor',
       activo: true,
+      es_sistema: true,
+      version: 1,
       permisos_rol: [{ codigo_permiso: 'stock.consultar' }],
     },
     sucursales: {
@@ -83,8 +93,13 @@ describe('UsersService', () => {
   const createPersonnel = jest.fn();
   const createBranchAccess = jest.fn();
   const findUser = jest.fn();
+  const countUsers = jest.fn();
   const findUserOrThrow = jest.fn();
-  const updateUser = jest.fn();
+  const updateUser = jest.fn<Promise<unknown>, [Prisma.usuariosUpdateArgs]>();
+  const updateUsers = jest.fn<
+    Promise<Prisma.BatchPayload>,
+    [Prisma.usuariosUpdateManyArgs]
+  >();
   const updatePersonnel = jest.fn();
   const deleteBranchAccess = jest.fn();
   const updateSessions = jest.fn<
@@ -92,7 +107,7 @@ describe('UsersService', () => {
     [Prisma.AuthSessionUpdateManyArgs]
   >();
   const findOrganization = jest.fn();
-  const findRole = jest.fn();
+  const findRole = jest.fn<Promise<unknown>, [Prisma.RoleFindFirstArgs]>();
   const findBranch = jest.fn();
   const executeAudit = jest.fn();
   const recordAudit = jest.fn();
@@ -101,6 +116,7 @@ describe('UsersService', () => {
     [TemporaryPasswordEmail]
   >();
   const withTenant = jest.fn();
+  const advisoryLock = jest.fn();
   const mockedHash = jest.mocked(hashPassword);
   let auditedEvents: AuditEvent[];
   let service: UsersService;
@@ -109,11 +125,14 @@ describe('UsersService', () => {
     jest.clearAllMocks();
     auditedEvents = [];
     const transaction = {
+      $queryRaw: advisoryLock,
       usuarios: {
+        count: countUsers,
         create: createUser,
         findFirst: findUser,
         findUniqueOrThrow: findUserOrThrow,
         update: updateUser,
+        updateMany: updateUsers,
       },
       personal: {
         create: createPersonnel,
@@ -152,6 +171,9 @@ describe('UsersService', () => {
     });
     mockedHash.mockResolvedValue('temporary-argon-hash');
     sendTemporaryPassword.mockResolvedValue();
+    updateUsers.mockResolvedValue({ count: 1 });
+    countUsers.mockResolvedValue(1);
+    advisoryLock.mockResolvedValue([{ locked: true }]);
     withTenant.mockImplementation(
       (
         _scope: unknown,
@@ -185,6 +207,7 @@ describe('UsersService', () => {
     });
     findBranch.mockResolvedValue({ id: targetUser.sucursales.id });
     findUserOrThrow.mockResolvedValue(targetUser);
+    updateUsers.mockResolvedValue({ count: 1 });
 
     const result = await service.create(
       {
@@ -203,9 +226,18 @@ describe('UsersService', () => {
       hash_contrasena: 'temporary-argon-hash',
       organizacion_id: actor.organization.id,
     });
+    const roleWhere = findRole.mock.calls[0]?.[0].where;
+    expect(roleWhere).toMatchObject({
+      codigo: targetUser.roles.codigo,
+      activo: true,
+    });
+    expect(roleWhere?.OR).toContainEqual({
+      es_sistema: false,
+      organizacion_id: actor.organization.id,
+    });
     const email = sendTemporaryPassword.mock.calls[0]?.[0];
     expect(email?.temporaryPassword).toHaveLength(24);
-    expect(result.delivery.sent).toBe(true);
+    expect(result.delivery.status).toBe('DELIVERED');
     expect(auditedEvents[0]).toMatchObject({
       action: USER_AUDIT_ACTIONS.CREATED,
       actorId: actor.id,
@@ -241,10 +273,12 @@ describe('UsersService', () => {
       id: targetUser.roles.id,
       codigo: 'ADMINISTRATIVA',
     });
+
     findOrganization.mockResolvedValue({
       id: actor.organization.id,
       tipo: 'CASA_CENTRAL',
     });
+
     updatePersonnel.mockResolvedValue({ id: targetUser.personal.id });
     deleteBranchAccess.mockResolvedValue({ count: 1 });
     updateSessions.mockResolvedValue({ count: 2 });
@@ -325,7 +359,85 @@ describe('UsersService', () => {
         },
         franchiseActor,
       ),
-    ).rejects.toBeInstanceOf(ForbiddenException);
+    ).rejects.toMatchObject({
+      response: { code: 'CROSS_TENANT_ACCESS' },
+    });
     expect(executeAudit).not.toHaveBeenCalled();
+  });
+
+  it('persists a failed invitation attempt and does not return success', async () => {
+    createUser.mockResolvedValue({ id: targetUser.id });
+    createPersonnel.mockResolvedValue({ id: targetUser.personal.id });
+    findOrganization.mockResolvedValue({
+      id: actor.organization.id,
+      tipo: 'CASA_CENTRAL',
+    });
+    findRole.mockResolvedValue({
+      id: targetUser.roles.id,
+      codigo: targetUser.roles.codigo,
+    });
+    findUserOrThrow.mockResolvedValue(targetUser);
+    sendTemporaryPassword.mockRejectedValue(new Error('smtp unavailable'));
+
+    await expect(
+      service.create(
+        {
+          email: targetUser.correo,
+          fullName: targetUser.personal.nombre_completo,
+          organizationId: actor.organization.id,
+          roleCode: targetUser.roles.codigo,
+          globalAccess: false,
+        },
+        actor,
+      ),
+    ).rejects.toMatchObject({
+      response: { code: 'INVITATION_DELIVERY_FAILED' },
+    });
+    expect(updateUsers.mock.calls[0]?.[0].data).toMatchObject({
+      estado_invitacion: 'FAILED',
+      invitacion_error: 'SMTP_DELIVERY_FAILED',
+    });
+    expect(JSON.stringify(auditedEvents)).not.toContain('temporary-argon-hash');
+  });
+
+  it('regenerates an invitation, revokes sessions and returns no password', async () => {
+    findUser.mockResolvedValue(targetUser);
+    findUserOrThrow.mockResolvedValue(targetUser);
+    updateSessions.mockResolvedValue({ count: 2 });
+
+    const result = await service.resetTemporaryPassword(targetUser.id, actor);
+
+    expect(updateUser.mock.calls[0]?.[0].data).toMatchObject({
+      hash_contrasena: 'temporary-argon-hash',
+      estado_invitacion: 'PENDING',
+      invitacion_version: { increment: 1 },
+    });
+    expect(updateSessions).toHaveBeenCalled();
+    expect(result.delivery.status).toBe('DELIVERED');
+    const deliveredPassword =
+      sendTemporaryPassword.mock.calls[0]?.[0].temporaryPassword;
+    expect(deliveredPassword).toBeTruthy();
+    expect(JSON.stringify(result)).not.toContain(deliveredPassword);
+  });
+
+  it('does not reset the last active administrator credentials', async () => {
+    findUser.mockResolvedValue({
+      ...targetUser,
+      contrasena_configurada_en: new Date('2026-08-29T00:00:00.000Z'),
+      roles: {
+        ...targetUser.roles,
+        codigo: 'ADMINISTRADOR',
+        nombre: 'Administrador',
+      },
+    });
+    countUsers.mockResolvedValue(0);
+
+    await expect(
+      service.resetTemporaryPassword(targetUser.id, actor),
+    ).rejects.toMatchObject({
+      response: { code: 'LAST_ACTIVE_ADMIN' },
+    });
+    expect(updateUser).not.toHaveBeenCalled();
+    expect(sendTemporaryPassword).not.toHaveBeenCalled();
   });
 });

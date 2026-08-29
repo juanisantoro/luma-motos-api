@@ -13,6 +13,8 @@ export type RoleCode = (typeof ROLE_CODES)[keyof typeof ROLE_CODES];
 export const PERMISSION_CODES = {
   USERS_READ: 'usuarios.consultar',
   USERS_MANAGE: 'usuarios.gestionar',
+  ROLES_READ: 'roles.consultar',
+  ROLES_MANAGE: 'roles.gestionar',
   CLIENTS_READ: 'clientes.consultar',
   CLIENTS_MANAGE: 'clientes.gestionar',
   CREDIT_INQUIRIES_READ: 'consultas_crediticias.consultar',
@@ -56,6 +58,8 @@ export const PERMISSION_CODES = {
   COMMISSIONS_PAY: 'comisiones.pagar',
   COMMISSIONS_HISTORY: 'comisiones.historial',
   COMMISSIONS_OWN: 'comisiones.propias',
+  COMMISSIONS_MANAGE: 'comisiones.gestionar',
+  REPORTS_READ: 'reportes.consultar',
 } as const;
 
 export const AUDIT_ACTIONS = {

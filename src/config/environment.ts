@@ -50,13 +50,41 @@ const environmentSchema = Joi.object<EnvironmentVariables>({
     .min(900)
     .max(604_800)
     .default(86_400),
-  SMTP_HOST: Joi.string().hostname().optional(),
-  SMTP_PORT: Joi.number().port().optional(),
-  SMTP_SECURE: Joi.boolean().optional(),
-  SMTP_USER: Joi.string().max(254).optional(),
-  SMTP_PASSWORD: Joi.string().min(1).optional(),
-  SMTP_FROM_EMAIL: Joi.string().email().optional(),
-  SMTP_FROM_NAME: Joi.string().max(120).optional(),
+  SMTP_HOST: Joi.string().hostname().when('NODE_ENV', {
+    is: 'production',
+    then: Joi.required(),
+    otherwise: Joi.optional(),
+  }),
+  SMTP_PORT: Joi.number().port().when('NODE_ENV', {
+    is: 'production',
+    then: Joi.required(),
+    otherwise: Joi.optional(),
+  }),
+  SMTP_SECURE: Joi.boolean().when('NODE_ENV', {
+    is: 'production',
+    then: Joi.required(),
+    otherwise: Joi.optional(),
+  }),
+  SMTP_USER: Joi.string().max(254).when('NODE_ENV', {
+    is: 'production',
+    then: Joi.required(),
+    otherwise: Joi.optional(),
+  }),
+  SMTP_PASSWORD: Joi.string().min(1).when('NODE_ENV', {
+    is: 'production',
+    then: Joi.required(),
+    otherwise: Joi.optional(),
+  }),
+  SMTP_FROM_EMAIL: Joi.string().email().when('NODE_ENV', {
+    is: 'production',
+    then: Joi.required(),
+    otherwise: Joi.optional(),
+  }),
+  SMTP_FROM_NAME: Joi.string().max(120).when('NODE_ENV', {
+    is: 'production',
+    then: Joi.required(),
+    otherwise: Joi.optional(),
+  }),
   FRONTEND_URL: Joi.string()
     .uri({ scheme: ['http', 'https'] })
     .required(),

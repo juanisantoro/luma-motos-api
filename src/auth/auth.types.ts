@@ -13,8 +13,10 @@ export interface AuthenticatedUser {
     type: tipo_organizacion_luma;
   };
   role: {
+    id: string;
     code: string;
     name: string;
+    system: boolean;
     permissions: string[];
   };
   branch: {

@@ -25,6 +25,7 @@ import { ExpensesModule } from './expenses/expenses.module';
 import { IncomesModule } from './incomes/incomes.module';
 import { SupplierPurchasesModule } from './supplier-purchases/supplier-purchases.module';
 import { CommissionsModule } from './commissions/commissions.module';
+import { RolesModule } from './roles/roles.module';
 
 @Module({
   imports: [
@@ -46,6 +47,7 @@ import { CommissionsModule } from './commissions/commissions.module';
     HealthModule,
     MailModule,
     UsersModule,
+    RolesModule,
     ClientsModule,
     CreditInquiriesModule,
     CatalogModule,

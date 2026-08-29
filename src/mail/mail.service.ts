@@ -22,6 +22,7 @@ export class MailService {
   private readonly transporter: Transporter | null;
   private readonly fromAddress?: string;
   private readonly fromName?: string;
+  private readonly accessUrl: string;
 
   constructor(config: ConfigService<EnvironmentVariables, true>) {
     const host = config.get('SMTP_HOST', { infer: true });
@@ -31,6 +32,10 @@ export class MailService {
     const password = config.get('SMTP_PASSWORD', { infer: true });
     this.fromAddress = config.get('SMTP_FROM_EMAIL', { infer: true });
     this.fromName = config.get('SMTP_FROM_NAME', { infer: true });
+    this.accessUrl = new URL(
+      '/primer-acceso',
+      config.get('FRONTEND_URL', { infer: true }),
+    ).toString();
 
     this.transporter =
       host &&
@@ -86,6 +91,7 @@ export class MailService {
           `Usuario: ${message.email}`,
           `Contraseña temporal: ${message.temporaryPassword}`,
           `Válida hasta: ${expiresAt}`,
+          `Primer acceso: ${this.accessUrl}`,
           '',
           'Debés cambiar esta contraseña antes de iniciar sesión.',
           'Si no esperabas este mensaje, contactá al administrador.',
@@ -97,6 +103,7 @@ export class MailService {
           `<strong>Usuario:</strong> ${escapedEmail}<br>`,
           `<strong>Contraseña temporal:</strong> <code>${escapedPassword}</code><br>`,
           `<strong>Válida hasta:</strong> ${expiresAt}</p>`,
+          `<p><a href="${this.escapeHtml(this.accessUrl)}">Configurar mi contraseña</a></p>`,
           '<p>Debés cambiar esta contraseña antes de iniciar sesión.</p>',
           '<p>Si no esperabas este mensaje, contactá al administrador.</p>',
         ].join(''),
@@ -107,6 +114,10 @@ export class MailService {
         'The temporary password email could not be delivered',
       );
     }
+  }
+
+  isConfigured(): boolean {
+    return Boolean(this.transporter && this.fromAddress && this.fromName);
   }
 
   private escapeHtml(value: string): string {

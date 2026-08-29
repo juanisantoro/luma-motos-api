@@ -1,14 +1,10 @@
-import {
-  BadRequestException,
-  ConflictException,
-  Injectable,
-  UnauthorizedException,
-} from '@nestjs/common';
+import { HttpStatus, Injectable, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { Prisma } from '@prisma/client';
 import { AuditService } from '../audit/audit.service';
 import { EnvironmentVariables } from '../config/environment';
+import { apiError } from '../common/api-error';
 import { PrismaService } from '../prisma/prisma.service';
 import { AUDIT_ACTIONS } from './auth.constants';
 import { AuthenticatedUser, JwtPayload, LoginResponse } from './auth.types';
@@ -29,6 +25,8 @@ const userForAuthenticationSelect = {
   acceso_global: true,
   organizacion_id: true,
   contrasena_configurada_en: true,
+  contrasena_temporal_vence_en: true,
+  estado_invitacion: true,
   organizaciones: {
     select: {
       id: true,
@@ -47,9 +45,11 @@ const userForAuthenticationSelect = {
   },
   roles: {
     select: {
+      id: true,
       codigo: true,
       nombre: true,
       activo: true,
+      es_sistema: true,
       permisos_rol: {
         select: {
           codigo_permiso: true,
@@ -89,10 +89,13 @@ export class AuthService {
     credentials: ChangeTemporaryPasswordDto,
   ): Promise<void> {
     if (credentials.temporaryPassword === credentials.newPassword) {
-      throw new BadRequestException(
+      throw apiError(
+        HttpStatus.BAD_REQUEST,
+        'PASSWORD_POLICY_VIOLATION',
         'The new password must differ from the temporary password',
       );
     }
+    this.assertPasswordPolicy(credentials.newPassword);
 
     const organization = await this.prisma.organizaciones.findUnique({
       where: {
@@ -103,8 +106,10 @@ export class AuthService {
         activa: true,
       },
     });
-    const invalidCredentialsError = new UnauthorizedException(
-      'Invalid or expired temporary credentials',
+    const invalidCredentialsError = apiError(
+      HttpStatus.UNAUTHORIZED,
+      'INVALID_TEMPORARY_CREDENTIALS',
+      'Invalid temporary credentials',
     );
 
     if (!organization?.activa) {
@@ -122,13 +127,25 @@ export class AuthService {
           correo_normalizado: credentials.email,
           organizacion_id: organization.id,
           contrasena_configurada_en: null,
-          contrasena_temporal_vence_en: {
-            gt: new Date(),
-          },
         },
         select: {
           id: true,
           hash_contrasena: true,
+          activo: true,
+          contrasena_temporal_vence_en: true,
+          estado_invitacion: true,
+          invitacion_version: true,
+          roles: {
+            select: {
+              activo: true,
+            },
+          },
+          personal: {
+            select: {
+              puede_iniciar_sesion: true,
+              estado: true,
+            },
+          },
         },
       }),
     );
@@ -147,6 +164,58 @@ export class AuthService {
           reason: 'invalid_or_expired_temporary_credentials',
         },
       });
+      throw invalidCredentialsError;
+    }
+    if (!this.canCompleteFirstAccess(user)) {
+      await this.auditService.record({
+        action: AUDIT_ACTIONS.TEMPORARY_PASSWORD_CHANGE_FAILED,
+        entity: 'usuarios',
+        entityId: user.id,
+        organizationId: organization.id,
+        metadata: {
+          reason: 'account_disabled',
+        },
+      });
+      throw invalidCredentialsError;
+    }
+    if (
+      !user.contrasena_temporal_vence_en ||
+      user.contrasena_temporal_vence_en <= new Date() ||
+      user.estado_invitacion === 'EXPIRED'
+    ) {
+      await this.prisma.withTenant(scope, (transaction) =>
+        transaction.usuarios.updateMany({
+          where: {
+            id: user.id,
+            organizacion_id: organization.id,
+            hash_contrasena: user.hash_contrasena,
+            contrasena_configurada_en: null,
+            contrasena_temporal_vence_en:
+              user.contrasena_temporal_vence_en ?? undefined,
+            estado_invitacion: user.estado_invitacion,
+            invitacion_version: user.invitacion_version,
+          },
+          data: {
+            estado_invitacion: 'EXPIRED',
+          },
+        }),
+      );
+      await this.auditService.record({
+        action: AUDIT_ACTIONS.TEMPORARY_PASSWORD_CHANGE_FAILED,
+        entity: 'usuarios',
+        entityId: user.id,
+        organizationId: organization.id,
+        metadata: {
+          reason: 'temporary_password_expired',
+        },
+      });
+      throw apiError(
+        HttpStatus.FORBIDDEN,
+        'TEMPORARY_PASSWORD_EXPIRED',
+        'Temporary password expired',
+      );
+    }
+    if (user.estado_invitacion !== 'DELIVERED') {
       throw invalidCredentialsError;
     }
 
@@ -168,6 +237,7 @@ export class AuthService {
             organizacion_id: organization.id,
             hash_contrasena: user.hash_contrasena,
             contrasena_configurada_en: null,
+            estado_invitacion: 'DELIVERED',
             contrasena_temporal_vence_en: {
               gt: changedAt,
             },
@@ -176,10 +246,18 @@ export class AuthService {
             hash_contrasena: passwordHash,
             contrasena_configurada_en: changedAt,
             contrasena_temporal_vence_en: null,
+            estado_invitacion: 'ACCEPTED',
+            invitacion_aceptada_en: changedAt,
+            invitacion_error: null,
+            invitacion_version: {
+              increment: 1,
+            },
           },
         });
         if (changed.count !== 1) {
-          throw new ConflictException(
+          throw apiError(
+            HttpStatus.CONFLICT,
+            'TEMPORARY_PASSWORD_ALREADY_USED',
             'The temporary password was already changed or expired',
           );
         }
@@ -202,10 +280,13 @@ export class AuthService {
     user: AuthenticatedUser,
   ): Promise<void> {
     if (credentials.currentPassword === credentials.newPassword) {
-      throw new BadRequestException(
+      throw apiError(
+        HttpStatus.BAD_REQUEST,
+        'PASSWORD_POLICY_VIOLATION',
         'The new password must differ from the current password',
       );
     }
+    this.assertPasswordPolicy(credentials.newPassword);
 
     const current = await this.prisma.withTenant(
       {
@@ -266,6 +347,7 @@ export class AuthService {
             hash_contrasena: passwordHash,
             contrasena_configurada_en: changedAt,
             contrasena_temporal_vence_en: null,
+            estado_invitacion: 'ACCEPTED',
           },
         });
         await transaction.authSession.updateMany({
@@ -294,7 +376,7 @@ export class AuthService {
 
     if (!organization?.activa) {
       await verifyPassword(DUMMY_PASSWORD_HASH, credentials.password);
-      throw new UnauthorizedException('Invalid email or password');
+      throw this.invalidCredentialsError();
     }
 
     const scope = {
@@ -325,7 +407,61 @@ export class AuthService {
           reason: 'invalid_credentials',
         },
       });
-      throw new UnauthorizedException('Invalid email or password');
+      throw this.invalidCredentialsError();
+    }
+
+    if (!user.contrasena_configurada_en) {
+      if (!this.canCompleteFirstAccess(user)) {
+        await this.auditService.record({
+          action: AUDIT_ACTIONS.LOGIN_FAILED,
+          entity: 'usuarios',
+          entityId: user.id,
+          organizationId: organization.id,
+          metadata: {
+            reason: 'account_disabled',
+          },
+        });
+        throw this.invalidCredentialsError();
+      }
+      const expired =
+        !user.contrasena_temporal_vence_en ||
+        user.contrasena_temporal_vence_en <= new Date() ||
+        user.estado_invitacion === 'EXPIRED';
+      await this.auditService.record({
+        action: AUDIT_ACTIONS.LOGIN_FAILED,
+        entity: 'usuarios',
+        entityId: user.id,
+        organizationId: organization.id,
+        metadata: {
+          reason: expired
+            ? 'temporary_password_expired'
+            : 'password_change_required',
+        },
+      });
+      if (expired) {
+        throw apiError(
+          HttpStatus.FORBIDDEN,
+          'TEMPORARY_PASSWORD_EXPIRED',
+          'Temporary password expired',
+        );
+      }
+      if (user.estado_invitacion !== 'DELIVERED') {
+        throw apiError(
+          HttpStatus.UNAUTHORIZED,
+          'INVALID_CREDENTIALS',
+          'Invalid email or password',
+        );
+      }
+      throw apiError(
+        HttpStatus.FORBIDDEN,
+        'PASSWORD_CHANGE_REQUIRED',
+        'Password change required',
+        {
+          organizationCode: user.organizaciones.codigo,
+          email: user.correo,
+          expiresAt: user.contrasena_temporal_vence_en?.toISOString(),
+        },
+      );
     }
 
     if (!this.canSignIn(user)) {
@@ -340,7 +476,7 @@ export class AuthService {
             : 'password_change_required',
         },
       });
-      throw new UnauthorizedException('Invalid email or password');
+      throw this.invalidCredentialsError();
     }
 
     const session = await this.auditService.execute(
@@ -416,7 +552,24 @@ export class AuthService {
     return Boolean(
       user.activo &&
       Boolean(user.contrasena_configurada_en) &&
+      user.estado_invitacion === 'ACCEPTED' &&
       user.organizaciones.activa &&
+      user.roles?.activo &&
+      user.personal?.puede_iniciar_sesion &&
+      user.personal.estado === 'ACTIVO',
+    );
+  }
+
+  private canCompleteFirstAccess(user: {
+    activo: boolean;
+    roles: { activo: boolean } | null;
+    personal: {
+      puede_iniciar_sesion: boolean;
+      estado: string;
+    } | null;
+  }): boolean {
+    return Boolean(
+      user.activo &&
       user.roles?.activo &&
       user.personal?.puede_iniciar_sesion &&
       user.personal.estado === 'ACTIVO',
@@ -441,8 +594,10 @@ export class AuthService {
         type: user.organizaciones.tipo,
       },
       role: {
+        id: user.roles.id,
         code: user.roles.codigo,
         name: user.roles.nombre,
+        system: user.roles.es_sistema,
         permissions: user.roles.permisos_rol.map(
           (permission) => permission.codigo_permiso,
         ),
@@ -455,5 +610,29 @@ export class AuthService {
           }
         : null,
     };
+  }
+
+  private assertPasswordPolicy(password: string): void {
+    const valid =
+      password.length >= 12 &&
+      /[a-z]/.test(password) &&
+      /[A-Z]/.test(password) &&
+      /\d/.test(password) &&
+      /[^A-Za-z0-9]/.test(password);
+    if (!valid) {
+      throw apiError(
+        HttpStatus.BAD_REQUEST,
+        'PASSWORD_POLICY_VIOLATION',
+        'Password must contain uppercase, lowercase, number and symbol',
+      );
+    }
+  }
+
+  private invalidCredentialsError() {
+    return apiError(
+      HttpStatus.UNAUTHORIZED,
+      'INVALID_CREDENTIALS',
+      'Invalid email or password',
+    );
   }
 }

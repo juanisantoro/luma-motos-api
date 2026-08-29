@@ -34,8 +34,10 @@ describe('CreditInquiriesService', () => {
       type: 'CASA_CENTRAL',
     },
     role: {
+      id: '4bd1189b-2bb1-4258-889b-4500de5eeade',
       code: 'ADMINISTRADOR',
       name: 'Administrador',
+      system: true,
       permissions: [
         'consultas_crediticias.consultar',
         'consultas_crediticias.registrar',
@@ -400,8 +402,10 @@ describe('CreditInquiriesService', () => {
     const seller = {
       ...actor,
       role: {
+        id: '10c1cc35-c472-4a99-9dce-ae4ce60ae347',
         code: 'VENDEDOR',
         name: 'Vendedor',
+        system: true,
         permissions: ['consultas_crediticias.registrar'],
       },
     };

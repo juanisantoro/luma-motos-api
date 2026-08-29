@@ -95,8 +95,10 @@ describe('Application security (e2e)', () => {
       type: 'CASA_CENTRAL' as const,
     },
     role: {
+      id: '4bd1189b-2bb1-4258-889b-4500de5eeade',
       code: ROLE_CODES.VENDEDOR,
       name: 'Vendedor',
+      system: true,
       permissions: ['clientes.consultar'],
     },
     branch: null,
@@ -106,6 +108,7 @@ describe('Application security (e2e)', () => {
     correo: authenticatedUser.email,
     activo: true,
     contrasena_configurada_en: new Date('2026-08-29T00:00:00.000Z'),
+    estado_invitacion: 'ACCEPTED',
     acceso_global: false,
     organizaciones: {
       id: authenticatedUser.organization.id,
@@ -120,9 +123,11 @@ describe('Application security (e2e)', () => {
       estado: 'ACTIVO',
     },
     roles: {
+      id: authenticatedUser.role.id,
       codigo: ROLE_CODES.VENDEDOR,
       nombre: 'Vendedor',
       activo: true,
+      es_sistema: true,
       permisos_rol: [{ codigo_permiso: 'clientes.consultar' }],
     },
     sucursales: null,

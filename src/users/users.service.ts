@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  HttpStatus,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -17,6 +18,7 @@ import { hashPassword } from '../auth/password-hashing';
 import { createTemporaryPassword } from '../auth/temporary-password';
 import { EnvironmentVariables } from '../config/environment';
 import { MailService } from '../mail/mail.service';
+import { apiError } from '../common/api-error';
 import { PrismaService, type TenantScope } from '../prisma/prisma.service';
 import { BranchListQueryDto } from './dto/branch-list-query.dto';
 import { CreateUserDto } from './dto/create-user.dto';
@@ -35,6 +37,12 @@ const managedUserSelect = {
   ultimo_inicio_sesion_en: true,
   contrasena_configurada_en: true,
   contrasena_temporal_vence_en: true,
+  estado_invitacion: true,
+  invitacion_ultimo_intento_en: true,
+  invitacion_enviada_en: true,
+  invitacion_aceptada_en: true,
+  invitacion_error: true,
+  invitacion_version: true,
   organizacion_id: true,
   organizaciones: {
     select: {
@@ -51,6 +59,8 @@ const managedUserSelect = {
       codigo: true,
       nombre: true,
       activo: true,
+      es_sistema: true,
+      version: true,
       permisos_rol: {
         orderBy: {
           codigo_permiso: 'asc',
@@ -137,6 +147,37 @@ export class UsersService {
             },
           ]
         : undefined,
+      AND:
+        query.invitationStatus === 'EXPIRED'
+          ? [
+              {
+                contrasena_configurada_en: null,
+                contrasena_temporal_vence_en: {
+                  lte: new Date(),
+                },
+              },
+            ]
+          : query.invitationStatus
+            ? [
+                {
+                  estado_invitacion: query.invitationStatus,
+                },
+                ...(query.invitationStatus === 'ACCEPTED'
+                  ? []
+                  : [
+                      {
+                        OR: [
+                          { contrasena_temporal_vence_en: null },
+                          {
+                            contrasena_temporal_vence_en: {
+                              gt: new Date(),
+                            },
+                          },
+                        ],
+                      },
+                    ]),
+              ]
+            : undefined,
     };
     const skip = (query.page - 1) * query.limit;
     const [total, users] = await this.prisma.withTenant(scope, (transaction) =>
@@ -201,7 +242,11 @@ export class UsersService {
             transaction,
             input.organizationId,
           );
-          const role = await this.requireRole(transaction, input.roleCode);
+          const role = await this.requireRole(
+            transaction,
+            input.roleCode,
+            input.organizationId,
+          );
           const branch = await this.requireBranch(
             transaction,
             input.branchId,
@@ -225,6 +270,8 @@ export class UsersService {
               rol_id: role.id,
               sucursal_id: branch?.id,
               contrasena_temporal_vence_en: expiresAt,
+              estado_invitacion: 'PENDING',
+              invitacion_ultimo_intento_en: new Date(),
             },
             select: {
               id: true,
@@ -273,7 +320,7 @@ export class UsersService {
         },
       );
 
-      await this.sendTemporaryPassword(
+      const deliveredUser = await this.sendTemporaryPassword(
         user,
         actor,
         temporaryPassword,
@@ -281,8 +328,9 @@ export class UsersService {
         'creation',
       );
       return {
-        user: this.toResponse(user),
+        user: this.toResponse(deliveredUser),
         delivery: {
+          status: 'DELIVERED' as const,
           sent: true,
           expiresAt,
         },
@@ -319,7 +367,9 @@ export class UsersService {
       current.id === actor.id &&
       (input.roleCode !== undefined || input.globalAccess !== undefined)
     ) {
-      throw new ForbiddenException(
+      throw apiError(
+        HttpStatus.FORBIDDEN,
+        'SELF_ADMIN_ACCESS_CHANGE_FORBIDDEN',
         'You cannot change your own role or global access',
       );
     }
@@ -341,13 +391,6 @@ export class UsersService {
       throw new BadRequestException('The request does not change user access');
     }
 
-    await this.assertLastGlobalAdministrator(
-      current,
-      newRoleCode,
-      newGlobalAccess,
-      current.activo,
-      actor,
-    );
     const auditEvent: AuthenticatedAuditEvent = {
       action: USER_AUDIT_ACTIONS.ACCESS_UPDATED,
       entity: 'usuarios',
@@ -372,7 +415,19 @@ export class UsersService {
     };
 
     return this.auditService.execute(auditEvent, async (transaction) => {
-      const role = await this.requireRole(transaction, newRoleCode);
+      await this.assertLastGlobalAdministrator(
+        transaction,
+        current,
+        newRoleCode,
+        current.activo,
+        Boolean(current.contrasena_configurada_en),
+        actor,
+      );
+      const role = await this.requireRole(
+        transaction,
+        newRoleCode,
+        current.organizacion_id,
+      );
       const branch = await this.requireBranch(
         transaction,
         newBranchId ?? undefined,
@@ -466,21 +521,17 @@ export class UsersService {
       throw new BadRequestException('The user already has that status');
     }
     if (current.id === actor.id && !input.active) {
-      throw new ForbiddenException('You cannot deactivate your own account');
+      throw apiError(
+        HttpStatus.FORBIDDEN,
+        'SELF_ADMIN_ACCESS_CHANGE_FORBIDDEN',
+        'You cannot deactivate your own account',
+      );
     }
     if (input.active && !current.contrasena_configurada_en) {
       throw new ConflictException(
         'The user must change the temporary password first',
       );
     }
-
-    await this.assertLastGlobalAdministrator(
-      current,
-      current.roles?.codigo ?? '',
-      current.acceso_global,
-      input.active,
-      actor,
-    );
 
     return this.auditService.execute(
       {
@@ -502,6 +553,14 @@ export class UsersService {
         },
       },
       async (transaction) => {
+        await this.assertLastGlobalAdministrator(
+          transaction,
+          current,
+          current.roles?.codigo ?? '',
+          input.active,
+          Boolean(current.contrasena_configurada_en),
+          actor,
+        );
         await transaction.usuarios.update({
           where: {
             id_organizacion_id: {
@@ -572,6 +631,14 @@ export class UsersService {
         },
       },
       async (transaction) => {
+        await this.assertLastGlobalAdministrator(
+          transaction,
+          current,
+          current.roles?.codigo ?? '',
+          current.activo,
+          false,
+          actor,
+        );
         await transaction.usuarios.update({
           where: {
             id_organizacion_id: {
@@ -583,6 +650,14 @@ export class UsersService {
             hash_contrasena: passwordHash,
             contrasena_configurada_en: null,
             contrasena_temporal_vence_en: expiresAt,
+            estado_invitacion: 'PENDING',
+            invitacion_ultimo_intento_en: new Date(),
+            invitacion_enviada_en: null,
+            invitacion_aceptada_en: null,
+            invitacion_error: null,
+            invitacion_version: {
+              increment: 1,
+            },
           },
         });
         await this.revokeSessions(transaction, current.id);
@@ -598,7 +673,7 @@ export class UsersService {
       },
     );
 
-    await this.sendTemporaryPassword(
+    const deliveredUser = await this.sendTemporaryPassword(
       user,
       actor,
       temporaryPassword,
@@ -606,59 +681,13 @@ export class UsersService {
       'reset',
     );
     return {
-      user: this.toResponse(user),
+      user: this.toResponse(deliveredUser),
       delivery: {
+        status: 'DELIVERED' as const,
         sent: true,
+        expiresAt,
       },
-      expiresAt,
     };
-  }
-
-  async findRoles(actor: AuthenticatedUser) {
-    return this.prisma
-      .withTenant(this.scope(actor), (transaction) =>
-        transaction.role.findMany({
-          where: {
-            activo: true,
-          },
-          orderBy: {
-            nombre: 'asc',
-          },
-          select: {
-            id: true,
-            codigo: true,
-            nombre: true,
-            descripcion: true,
-            permisos_rol: {
-              orderBy: {
-                codigo_permiso: 'asc',
-              },
-              select: {
-                permisos: {
-                  select: {
-                    codigo: true,
-                    modulo: true,
-                    descripcion: true,
-                  },
-                },
-              },
-            },
-          },
-        }),
-      )
-      .then((roles) =>
-        roles.map((role) => ({
-          id: role.id,
-          code: role.codigo,
-          name: role.nombre,
-          description: role.descripcion,
-          permissions: role.permisos_rol.map((entry) => ({
-            code: entry.permisos.codigo,
-            module: entry.permisos.modulo,
-            description: entry.permisos.descripcion,
-          })),
-        })),
-      );
   }
 
   async findOrganizations(actor: AuthenticatedUser) {
@@ -740,7 +769,9 @@ export class UsersService {
       !actor.globalAccess &&
       organizationId !== actor.organization.id
     ) {
-      throw new ForbiddenException(
+      throw apiError(
+        HttpStatus.FORBIDDEN,
+        'CROSS_TENANT_ACCESS',
         'You cannot manage users from another organization',
       );
     }
@@ -820,11 +851,22 @@ export class UsersService {
   private async requireRole(
     transaction: Prisma.TransactionClient,
     roleCode: string,
+    organizationId: string,
   ) {
     const role = await transaction.role.findFirst({
       where: {
         codigo: roleCode,
         activo: true,
+        OR: [
+          {
+            es_sistema: true,
+            organizacion_id: null,
+          },
+          {
+            es_sistema: false,
+            organizacion_id: organizationId,
+          },
+        ],
       },
       select: {
         id: true,
@@ -832,7 +874,11 @@ export class UsersService {
       },
     });
     if (!role) {
-      throw new BadRequestException('Role is invalid or inactive');
+      throw apiError(
+        HttpStatus.BAD_REQUEST,
+        'ROLE_INACTIVE',
+        'Role is invalid, inactive, or belongs to another organization',
+      );
     }
     return role;
   }
@@ -880,54 +926,65 @@ export class UsersService {
   }
 
   private async assertLastGlobalAdministrator(
+    transaction: Prisma.TransactionClient,
     current: ManagedUser,
     nextRoleCode: string,
-    nextGlobalAccess: boolean,
     nextActive: boolean,
+    nextPasswordConfigured: boolean,
     actor: AuthenticatedUser,
   ): Promise<void> {
+    await transaction.$queryRaw`
+      SELECT pg_advisory_xact_lock(
+        hashtextextended(${current.organizacion_id}::text, 0)
+      )
+    `;
+    const lockedCurrent = await this.findManagedUser(
+      transaction,
+      current.id,
+      actor,
+    );
     const currentlyProtectsAccess =
-      current.activo &&
-      current.acceso_global &&
-      current.roles?.codigo === ROLE_CODES.ADMINISTRADOR;
+      lockedCurrent.activo &&
+      Boolean(lockedCurrent.contrasena_configurada_en) &&
+      lockedCurrent.roles?.activo &&
+      lockedCurrent.personal?.puede_iniciar_sesion &&
+      lockedCurrent.personal.estado === 'ACTIVO' &&
+      lockedCurrent.roles.codigo === ROLE_CODES.ADMINISTRADOR;
     const willProtectAccess =
       nextActive &&
-      nextGlobalAccess &&
+      nextPasswordConfigured &&
       nextRoleCode === ROLE_CODES.ADMINISTRADOR;
     if (!currentlyProtectsAccess || willProtectAccess) {
       return;
     }
 
-    const replacements = await this.prisma.withTenant(
-      this.scope(actor),
-      (transaction) =>
-        transaction.usuarios.count({
-          where: {
-            id: {
-              not: current.id,
-            },
-            organizacion_id: current.organizacion_id,
-            activo: true,
-            acceso_global: true,
-            contrasena_configurada_en: {
-              not: null,
-            },
-            roles: {
-              codigo: ROLE_CODES.ADMINISTRADOR,
-              activo: true,
-            },
-            personal: {
-              is: {
-                estado: 'ACTIVO',
-                puede_iniciar_sesion: true,
-              },
-            },
+    const replacements = await transaction.usuarios.count({
+      where: {
+        id: {
+          not: lockedCurrent.id,
+        },
+        organizacion_id: lockedCurrent.organizacion_id,
+        activo: true,
+        contrasena_configurada_en: {
+          not: null,
+        },
+        roles: {
+          codigo: ROLE_CODES.ADMINISTRADOR,
+          activo: true,
+        },
+        personal: {
+          is: {
+            estado: 'ACTIVO',
+            puede_iniciar_sesion: true,
           },
-        }),
-    );
+        },
+      },
+    });
     if (replacements === 0) {
-      throw new ConflictException(
-        'At least one active global administrator must remain',
+      throw apiError(
+        HttpStatus.CONFLICT,
+        'LAST_ACTIVE_ADMIN',
+        'At least one active administrator must remain',
       );
     }
   }
@@ -938,12 +995,13 @@ export class UsersService {
     temporaryPassword: string,
     expiresAt: Date,
     reason: 'creation' | 'reset',
-  ): Promise<void> {
+  ): Promise<ManagedUser> {
     const auditBase = {
       entity: 'usuarios',
       entityId: user.id,
       actorId: actor.id,
       organizationId: actor.organization.id,
+      globalAccess: actor.globalAccess,
       targetOrganizationId: this.targetOrganization(
         actor,
         user.organizacion_id,
@@ -959,25 +1017,79 @@ export class UsersService {
         expiresAt,
         reason,
       });
-    } catch (error: unknown) {
-      await this.auditService.record({
-        ...auditBase,
-        action: USER_AUDIT_ACTIONS.TEMPORARY_PASSWORD_EMAIL_FAILED,
-        metadata: {
-          reason,
+    } catch {
+      await this.auditService.execute(
+        {
+          ...auditBase,
+          action: USER_AUDIT_ACTIONS.TEMPORARY_PASSWORD_EMAIL_FAILED,
+          metadata: {
+            reason,
+          },
         },
-      });
-      throw error;
+        async (transaction) => {
+          await transaction.usuarios.updateMany({
+            where: {
+              id: user.id,
+              organizacion_id: user.organizacion_id,
+              invitacion_version: user.invitacion_version,
+            },
+            data: {
+              estado_invitacion: 'FAILED',
+              invitacion_ultimo_intento_en: new Date(),
+              invitacion_error: 'SMTP_DELIVERY_FAILED',
+            },
+          });
+        },
+      );
+      throw apiError(
+        HttpStatus.SERVICE_UNAVAILABLE,
+        'INVITATION_DELIVERY_FAILED',
+        'The invitation email could not be delivered',
+      );
     }
 
-    await this.auditService.record({
-      ...auditBase,
-      action: USER_AUDIT_ACTIONS.TEMPORARY_PASSWORD_EMAIL_SENT,
-      metadata: {
-        reason,
-        expiresAt: expiresAt.toISOString(),
+    return this.auditService.execute(
+      {
+        ...auditBase,
+        action: USER_AUDIT_ACTIONS.TEMPORARY_PASSWORD_EMAIL_SENT,
+        metadata: {
+          reason,
+          expiresAt: expiresAt.toISOString(),
+        },
       },
-    });
+      async (transaction) => {
+        const sentAt = new Date();
+        const updated = await transaction.usuarios.updateMany({
+          where: {
+            id: user.id,
+            organizacion_id: user.organizacion_id,
+            invitacion_version: user.invitacion_version,
+          },
+          data: {
+            estado_invitacion: 'DELIVERED',
+            invitacion_ultimo_intento_en: sentAt,
+            invitacion_enviada_en: sentAt,
+            invitacion_error: null,
+          },
+        });
+        if (updated.count !== 1) {
+          throw apiError(
+            HttpStatus.CONFLICT,
+            'VERSION_CONFLICT',
+            'Invitation was superseded by another request',
+          );
+        }
+        return transaction.usuarios.findUniqueOrThrow({
+          where: {
+            id_organizacion_id: {
+              id: user.id,
+              organizacion_id: user.organizacion_id,
+            },
+          },
+          select: managedUserSelect,
+        });
+      },
+    );
   }
 
   private normalizeName(name: string): string {
@@ -992,6 +1104,13 @@ export class UsersService {
       globalAccess: user.acceso_global,
       passwordChangeRequired: user.contrasena_configurada_en === null,
       temporaryPasswordExpiresAt: user.contrasena_temporal_vence_en,
+      invitation: {
+        status: this.invitationStatus(user),
+        lastAttemptAt: user.invitacion_ultimo_intento_en,
+        sentAt: user.invitacion_enviada_en,
+        expiresAt: user.contrasena_temporal_vence_en,
+        acceptedAt: user.invitacion_aceptada_en,
+      },
       createdAt: user.creado_en,
       updatedAt: user.actualizado_en,
       lastLoginAt: user.ultimo_inicio_sesion_en,
@@ -1008,6 +1127,8 @@ export class UsersService {
             code: user.roles.codigo,
             name: user.roles.nombre,
             active: user.roles.activo,
+            system: user.roles.es_sistema,
+            version: user.roles.version,
             permissions: user.roles.permisos_rol.map(
               (permission) => permission.codigo_permiso,
             ),
@@ -1032,5 +1153,16 @@ export class UsersService {
           }
         : null,
     };
+  }
+
+  private invitationStatus(user: ManagedUser) {
+    if (
+      user.contrasena_configurada_en === null &&
+      user.contrasena_temporal_vence_en &&
+      user.contrasena_temporal_vence_en <= new Date()
+    ) {
+      return 'EXPIRED' as const;
+    }
+    return user.estado_invitacion;
   }
 }

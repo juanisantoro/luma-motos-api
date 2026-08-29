@@ -2,6 +2,7 @@ import { ServiceUnavailableException } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { PrismaService } from '../prisma/prisma.service';
 import { HealthService } from './health.service';
+import { MailService } from '../mail/mail.service';
 
 describe('HealthService', () => {
   const queryRaw = jest.fn();
@@ -17,6 +18,10 @@ describe('HealthService', () => {
           provide: PrismaService,
           useValue: { $queryRaw: queryRaw },
         },
+        {
+          provide: MailService,
+          useValue: { isConfigured: () => true },
+        },
       ],
     }).compile();
 
@@ -31,6 +36,7 @@ describe('HealthService', () => {
       checks: {
         application: 'up',
         database: 'up',
+        smtp: 'configured',
       },
     });
   });
@@ -47,6 +53,7 @@ describe('HealthService', () => {
         checks: {
           application: 'up',
           database: 'down',
+          smtp: 'configured',
         },
       },
     });

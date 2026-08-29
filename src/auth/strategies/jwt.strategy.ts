@@ -66,6 +66,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
             contrasena_configurada_en: {
               not: null,
             },
+            estado_invitacion: 'ACCEPTED',
             organizaciones: {
               activa: true,
             },
@@ -83,6 +84,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
             activo: true,
             acceso_global: true,
             contrasena_configurada_en: true,
+            estado_invitacion: true,
             organizaciones: {
               select: {
                 id: true,
@@ -101,9 +103,11 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
             },
             roles: {
               select: {
+                id: true,
                 codigo: true,
                 nombre: true,
                 activo: true,
+                es_sistema: true,
                 permisos_rol: {
                   select: {
                     codigo_permiso: true,
@@ -167,6 +171,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     if (
       !result?.activo ||
       !result.contrasena_configurada_en ||
+      result.estado_invitacion !== 'ACCEPTED' ||
       !result.organizaciones.activa ||
       !result.roles?.activo ||
       !result.personal?.puede_iniciar_sesion ||
@@ -190,8 +195,10 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
           type: result.organizaciones.tipo,
         },
         role: {
+          id: result.roles.id,
           code: result.roles.codigo,
           name: result.roles.nombre,
+          system: result.roles.es_sistema,
           permissions: result.roles.permisos_rol.map(
             (permission) => permission.codigo_permiso,
           ),

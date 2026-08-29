@@ -1,4 +1,3 @@
-import { UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { Prisma } from '@prisma/client';
@@ -49,6 +48,8 @@ describe('AuthService', () => {
     hash_contrasena: 'argon-hash',
     activo: true,
     contrasena_configurada_en: new Date('2026-08-29T00:00:00.000Z'),
+    contrasena_temporal_vence_en: null,
+    estado_invitacion: 'ACCEPTED',
     acceso_global: true,
     organizacion_id: '8fa94171-13b3-40b5-8c33-1f7d8ea94c75',
     organizaciones: {
@@ -64,9 +65,11 @@ describe('AuthService', () => {
       estado: 'ACTIVO',
     },
     roles: {
+      id: '4bd1189b-2bb1-4258-889b-4500de5eeade',
       codigo: 'ADMINISTRADOR',
       nombre: 'Administrador',
       activo: true,
+      es_sistema: true,
       permisos_rol: [
         { codigo_permiso: 'usuarios.consultar' },
         { codigo_permiso: 'usuarios.gestionar' },
@@ -155,8 +158,10 @@ describe('AuthService', () => {
           type: databaseUser.organizaciones.tipo,
         },
         role: {
+          id: databaseUser.roles.id,
           code: databaseUser.roles.codigo,
           name: databaseUser.roles.nombre,
+          system: true,
           permissions: ['usuarios.consultar', 'usuarios.gestionar'],
         },
         branch: null,
@@ -178,7 +183,14 @@ describe('AuthService', () => {
     findUser.mockResolvedValue({
       id: databaseUser.id,
       hash_contrasena: 'temporary-argon-hash',
+      activo: true,
+      contrasena_temporal_vence_en: new Date('2026-08-30T00:00:00.000Z'),
+      estado_invitacion: 'DELIVERED',
+      invitacion_version: 1,
+      roles: { activo: true },
+      personal: { puede_iniciar_sesion: true, estado: 'ACTIVO' },
     });
+
     mockedVerify.mockResolvedValue(true);
     mockedHash.mockResolvedValue('new-argon-hash');
     updateUsers.mockResolvedValue({ count: 1 });
@@ -188,7 +200,7 @@ describe('AuthService', () => {
       organizationCode: 'LUMA_CENTRAL',
       email: databaseUser.correo,
       temporaryPassword: 'temporary-password',
-      newPassword: 'a-new-secure-password',
+      newPassword: 'New-secure-password1!',
     });
 
     expect(updateUsers.mock.calls[0]?.[0].data).toMatchObject({
@@ -212,9 +224,11 @@ describe('AuthService', () => {
         organizationCode: 'LUMA_CENTRAL',
         email: databaseUser.correo,
         temporaryPassword,
-        newPassword: 'a-new-secure-password',
+        newPassword: 'New-secure-password1!',
       }),
-    ).rejects.toBeInstanceOf(UnauthorizedException);
+    ).rejects.toMatchObject({
+      response: { code: 'INVALID_TEMPORARY_CREDENTIALS' },
+    });
 
     expect(recordedEvents[0]).toMatchObject({
       action: AUDIT_ACTIONS.TEMPORARY_PASSWORD_CHANGE_FAILED,
@@ -235,9 +249,9 @@ describe('AuthService', () => {
       password: 'incorrect-password',
     });
 
-    await expect(login).rejects.toEqual(
-      new UnauthorizedException('Invalid email or password'),
-    );
+    await expect(login).rejects.toMatchObject({
+      response: { code: 'INVALID_CREDENTIALS' },
+    });
     expect(mockedVerify).toHaveBeenCalledWith(
       expect.stringContaining('$argon2id$'),
       'incorrect-password',
@@ -259,7 +273,9 @@ describe('AuthService', () => {
         email: databaseUser.correo,
         password: 'a-valid-password',
       }),
-    ).rejects.toBeInstanceOf(UnauthorizedException);
+    ).rejects.toMatchObject({
+      response: { code: 'INVALID_CREDENTIALS' },
+    });
     expect(signAsync).not.toHaveBeenCalled();
   });
 
@@ -279,7 +295,9 @@ describe('AuthService', () => {
         email: databaseUser.correo,
         password: 'a-valid-password',
       }),
-    ).rejects.toBeInstanceOf(UnauthorizedException);
+    ).rejects.toMatchObject({
+      response: { code: 'INVALID_CREDENTIALS' },
+    });
     expect(signAsync).not.toHaveBeenCalled();
   });
 
@@ -293,7 +311,9 @@ describe('AuthService', () => {
         email: databaseUser.correo,
         password: 'incorrect-password',
       }),
-    ).rejects.toBeInstanceOf(UnauthorizedException);
+    ).rejects.toMatchObject({
+      response: { code: 'INVALID_CREDENTIALS' },
+    });
 
     expect(recordedEvents[0]).toMatchObject({
       action: AUDIT_ACTIONS.LOGIN_FAILED,
@@ -316,8 +336,10 @@ describe('AuthService', () => {
         type: 'CASA_CENTRAL',
       },
       role: {
+        id: databaseUser.roles.id,
         code: databaseUser.roles.codigo,
         name: databaseUser.roles.nombre,
+        system: true,
         permissions: ['usuarios.consultar'],
       },
       branch: null,
@@ -333,6 +355,138 @@ describe('AuthService', () => {
     expect(recordedEvents[0]).toMatchObject({
       action: AUDIT_ACTIONS.LOGOUT,
       actorId: databaseUser.id,
+    });
+  });
+
+  it('blocks temporary login with a typed password-change response and no JWT', async () => {
+    findUser.mockResolvedValue({
+      ...databaseUser,
+      contrasena_configurada_en: null,
+      contrasena_temporal_vence_en: new Date('2099-08-30T00:00:00.000Z'),
+      estado_invitacion: 'DELIVERED',
+    });
+    mockedVerify.mockResolvedValue(true);
+
+    await expect(
+      service.login({
+        organizationCode: 'LUMA_CENTRAL',
+        email: databaseUser.correo,
+        password: 'temporary-password',
+      }),
+    ).rejects.toMatchObject({
+      response: {
+        code: 'PASSWORD_CHANGE_REQUIRED',
+        details: {
+          organizationCode: 'LUMA_CENTRAL',
+          email: databaseUser.correo,
+        },
+      },
+    });
+    expect(createSession).not.toHaveBeenCalled();
+    expect(signAsync).not.toHaveBeenCalled();
+  });
+
+  it('reports a matching expired temporary password without issuing a JWT', async () => {
+    findUser.mockResolvedValue({
+      ...databaseUser,
+      contrasena_configurada_en: null,
+      contrasena_temporal_vence_en: new Date('2020-08-30T00:00:00.000Z'),
+      estado_invitacion: 'DELIVERED',
+    });
+    mockedVerify.mockResolvedValue(true);
+
+    await expect(
+      service.login({
+        organizationCode: 'LUMA_CENTRAL',
+        email: databaseUser.correo,
+        password: 'expired-temporary-password',
+      }),
+    ).rejects.toMatchObject({
+      response: { code: 'TEMPORARY_PASSWORD_EXPIRED' },
+    });
+    expect(signAsync).not.toHaveBeenCalled();
+  });
+
+  it('rejects a concurrent replay after the temporary credential was consumed', async () => {
+    findUser.mockResolvedValue({
+      id: databaseUser.id,
+      hash_contrasena: 'temporary-argon-hash',
+      activo: true,
+      contrasena_temporal_vence_en: new Date('2099-08-30T00:00:00.000Z'),
+      estado_invitacion: 'DELIVERED',
+      invitacion_version: 1,
+      roles: { activo: true },
+      personal: { puede_iniciar_sesion: true, estado: 'ACTIVO' },
+    });
+    mockedVerify.mockResolvedValue(true);
+    mockedHash.mockResolvedValue('new-argon-hash');
+    updateUsers.mockResolvedValue({ count: 0 });
+
+    await expect(
+      service.changeTemporaryPassword({
+        organizationCode: 'LUMA_CENTRAL',
+        email: databaseUser.correo,
+        temporaryPassword: 'temporary-password',
+        newPassword: 'New-secure-password1!',
+      }),
+    ).rejects.toMatchObject({
+      response: { code: 'TEMPORARY_PASSWORD_ALREADY_USED' },
+    });
+    expect(createSession).not.toHaveBeenCalled();
+  });
+
+  it('does not expose the temporary-password flow for a disabled account', async () => {
+    findUser.mockResolvedValue({
+      ...databaseUser,
+      activo: false,
+      contrasena_configurada_en: null,
+      contrasena_temporal_vence_en: new Date('2099-08-30T00:00:00.000Z'),
+      estado_invitacion: 'DELIVERED',
+    });
+    mockedVerify.mockResolvedValue(true);
+
+    await expect(
+      service.login({
+        organizationCode: 'LUMA_CENTRAL',
+        email: databaseUser.correo,
+        password: 'temporary-password',
+      }),
+    ).rejects.toMatchObject({
+      response: { code: 'INVALID_CREDENTIALS' },
+    });
+    expect(signAsync).not.toHaveBeenCalled();
+  });
+
+  it('expires only the invitation version whose credential was verified', async () => {
+    const expiresAt = new Date('2020-08-30T00:00:00.000Z');
+    findUser.mockResolvedValue({
+      id: databaseUser.id,
+      hash_contrasena: 'expired-temporary-argon-hash',
+      activo: true,
+      contrasena_temporal_vence_en: expiresAt,
+      estado_invitacion: 'DELIVERED',
+      invitacion_version: 4,
+      roles: { activo: true },
+      personal: { puede_iniciar_sesion: true, estado: 'ACTIVO' },
+    });
+    mockedVerify.mockResolvedValue(true);
+    updateUsers.mockResolvedValue({ count: 1 });
+
+    await expect(
+      service.changeTemporaryPassword({
+        organizationCode: 'LUMA_CENTRAL',
+        email: databaseUser.correo,
+        temporaryPassword: 'expired-temporary-password',
+        newPassword: 'New-secure-password1!',
+      }),
+    ).rejects.toMatchObject({
+      response: { code: 'TEMPORARY_PASSWORD_EXPIRED' },
+    });
+    expect(updateUsers.mock.calls[0]?.[0].where).toMatchObject({
+      hash_contrasena: 'expired-temporary-argon-hash',
+      contrasena_temporal_vence_en: expiresAt,
+      estado_invitacion: 'DELIVERED',
+      invitacion_version: 4,
     });
   });
 });
