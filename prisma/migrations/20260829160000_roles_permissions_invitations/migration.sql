@@ -25,8 +25,10 @@ REFERENCES "organizaciones"("id")
 ON DELETE RESTRICT
 ON UPDATE NO ACTION;
 
-DROP INDEX "roles_codigo_key";
-DROP INDEX "roles_nombre_key";
+ALTER TABLE "roles" DROP CONSTRAINT IF EXISTS "roles_codigo_key";
+ALTER TABLE "roles" DROP CONSTRAINT IF EXISTS "roles_nombre_key";
+DROP INDEX IF EXISTS "roles_codigo_key";
+DROP INDEX IF EXISTS "roles_nombre_key";
 
 CREATE UNIQUE INDEX "roles_sistema_codigo_unico"
 ON "roles"("codigo")

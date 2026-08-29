@@ -19,6 +19,7 @@ describe('JwtStrategy', () => {
     activo: true,
     acceso_global: false,
     contrasena_configurada_en: new Date('2026-08-29T00:00:00.000Z'),
+    estado_invitacion: 'ACCEPTED',
     organizaciones: {
       id: payload.oid,
       codigo: 'LUMA_CENTRAL',

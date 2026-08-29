@@ -13,6 +13,12 @@ const branches = [
   { codigo: 'DEL_VISO', nombre: 'Del Viso' },
 ] as const;
 
+const financialInstitutions = [
+  'Banco Columbia',
+  'Credicuotas',
+  'Banco del Sol',
+] as const;
+
 const roles = [
   {
     codigo: 'VENDEDOR',
@@ -374,6 +380,30 @@ async function main(): Promise<void> {
           },
           update: {
             nombre: branch.nombre,
+          },
+        });
+      }
+
+      for (const legalName of financialInstitutions) {
+        const normalizedName = legalName
+          .trim()
+          .replace(/\s+/g, ' ')
+          .toLocaleLowerCase('es-AR');
+        await transaction.financieras.upsert({
+          where: {
+            organizacion_id_nombre_normalizado: {
+              organizacion_id: organization.id,
+              nombre_normalizado: normalizedName,
+            },
+          },
+          create: {
+            razon_social: legalName,
+            nombre_normalizado: normalizedName,
+            organizacion_id: organization.id,
+          },
+          update: {
+            razon_social: legalName,
+            activo: true,
           },
         });
       }
