@@ -288,12 +288,14 @@ El comando marca el esquema integral existente sin ejecutar ese DDL. No usarlo e
 
 `render.yaml` define un Web Service con:
 
-- Build: `npm ci && npm run prisma:generate && npm run build`
+- Build: `npm ci --include=dev && npm run render:build`
 - Pre-deploy: `npm run prisma:migrate:deploy && npm run prisma:seed`
 - Start: `npm run start:prod`
 - Health check: `/api/health`
 
 Crear el servicio mediante **New > Blueprint** apuntando a este repositorio. En Render completar `DATABASE_URL`, `DIRECT_URL`, `FRONTEND_URL`, `SMTP_USER`, `SMTP_PASSWORD` y `SMTP_FROM_EMAIL`; `JWT_SECRET` se genera como secreto. No cargar secretos en `render.yaml`.
+
+El build necesita `@nestjs/cli`, TypeScript y Prisma CLI, que permanecen correctamente en `devDependencies`. `--include=dev` fuerza su instalación aunque Render exponga `NODE_ENV=production` o `NPM_CONFIG_PRODUCTION=true`; no mover estas herramientas a dependencias de runtime. Si el servicio fue creado manualmente o tiene un comando sobrescrito en el dashboard, reemplazar `npm install; npm run build` por el comando de build exacto anterior. `npm ci` valida y respeta `package-lock.json`, y `npm run start:prod` ejecuta únicamente el artefacto compilado `dist/main.js`.
 
 El health check responde `200` solo cuando la aplicación puede consultar PostgreSQL. Ante una caída de base responde `503` con estados sanitizados, sin host, credenciales ni detalles internos.
 
@@ -303,6 +305,7 @@ El health check responde `200` solo cuando la aplicación puede consultar Postgr
 | ------------------------------- | --------------------------------------------- |
 | `npm run start:dev`             | Desarrollo con recarga                        |
 | `npm run build`                 | Compilación productiva                        |
+| `npm run render:build`          | Generar Prisma y compilar para Render         |
 | `npm run start:prod`            | Ejecutar `dist/main.js`                       |
 | `npm run lint`                  | Lint y correcciones seguras                   |
 | `npm test`                      | Pruebas unitarias                             |
