@@ -2,10 +2,8 @@ param(
     [ValidateSet("Simular", "Staging", "Importar", "DatosPrueba")]
     [string]$Modo = "Simular",
 
-    [string]$Libro = (
-        Join-Path $env:USERPROFILE `
-            ".copilot\attachments\ebde4519-6c16-42cb-9586-3fd402b6dfef-Copia de  Agencia Lumamoto SM.xlsx"
-    ),
+    [Parameter(Mandatory = $true)]
+    [string]$Libro,
 
     [string]$Organizacion = "LUMA_CENTRAL",
 
@@ -37,7 +35,8 @@ if ($LASTEXITCODE -ne 0) {
 $argumentos = @(
     $importador,
     "--libro", $Libro,
-    "--organizacion", $Organizacion
+    "--organizacion", $Organizacion,
+    "--variable-entorno-base-datos", "DIRECT_URL"
 )
 
 if ($Modo -eq "Staging") {
@@ -87,13 +86,18 @@ $urlSegura = Read-Host `
     "Pegue la URL directa de Neon (la entrada permanecera oculta)" `
     -AsSecureString
 $puntero = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($urlSegura)
+$directUrlExistia = Test-Path Env:DIRECT_URL
+$directUrlAnterior = $env:DIRECT_URL
 
 try {
     $urlBaseDatos = `
         [Runtime.InteropServices.Marshal]::PtrToStringBSTR($puntero)
     $urlBaseDatos = $urlBaseDatos.Trim()
 
-    if ($urlBaseDatos -match '^(?:\$env:)?DATABASE_URL_UNPOOLED\s*=\s*(.+)$') {
+    if (
+        $urlBaseDatos -match `
+            '^(?:\$env:)?(?:DIRECT_URL|DATABASE_URL_UNPOOLED)\s*=\s*(.+)$'
+    ) {
         $urlBaseDatos = $Matches[1].Trim()
     }
 
@@ -113,7 +117,7 @@ try {
         )
     }
 
-    $env:DATABASE_URL_UNPOOLED = $urlBaseDatos
+    $env:DIRECT_URL = $urlBaseDatos
 
     Write-Host "Ejecutando modo $Modo para $Organizacion..." -ForegroundColor Cyan
     & python @argumentos
@@ -122,6 +126,11 @@ try {
     }
 }
 finally {
-    Remove-Item Env:DATABASE_URL_UNPOOLED -ErrorAction SilentlyContinue
+    if ($directUrlExistia) {
+        $env:DIRECT_URL = $directUrlAnterior
+    }
+    else {
+        Remove-Item Env:DIRECT_URL -ErrorAction SilentlyContinue
+    }
     [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($puntero)
 }

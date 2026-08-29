@@ -237,7 +237,7 @@ No reutilizar la URL compartida previamente por chat: esa credencial quedó expu
 
 ## Modelo de datos y seeds
 
-Prisma está alineado con el esquema integral existente de Luma Motos. La migración baseline representa el esquema original y las migraciones posteriores versionan autenticación y multiorganización. El backend de identidad usa directamente:
+Prisma está alineado con el esquema integral existente de Luma Motos. La migración baseline representa el esquema original y las migraciones posteriores versionan autenticación, multiorganización e importación legacy. Los archivos `database/001_esquema_luma_desde_cero.sql` y `database/002_multiempresa_franquicias.sql` se conservan únicamente como referencia histórica: **no deben ejecutarse de nuevo**. El contenido estructural de `database/003_datos_prueba_excel.sql` está portado a `20260829130000_legacy_import_support`; tampoco se ejecuta manualmente en bases administradas por Prisma.
 
 - `organizaciones`: Casa Central o franquicias.
 - `sucursales`: locales pertenecientes a una organización; una sucursal de franquicia se identifica porque su organización es de tipo `FRANQUICIA`.
@@ -253,7 +253,7 @@ El seed es idempotente y preserva el catálogo existente. Administra `LUMA_CENTR
 
 Las tablas operativas llevan `organizacion_id`, constraints compuestas evitan referencias cruzadas y PostgreSQL aplica Row-Level Security obligatoria. Cada transacción de aplicación configura el tenant con `set_config(..., true)`, limitado a esa transacción para que una conexión pooled de Neon nunca conserve el contexto del request anterior.
 
-Las FK compuestas siguen versionadas en SQL. Seis relaciones redundantes 1:1 se omiten deliberadamente del modelo Prisma porque Prisma 6 no puede representar a la vez la FK simple y su equivalente compuesto; volver a ejecutar `prisma db pull` requiere quitar nuevamente esas relaciones inferidas antes de generar el cliente.
+Las FK compuestas siguen versionadas en SQL. Las relaciones redundantes que comparten columnas con una FK simple se omiten deliberadamente de los modelos legacy nuevos porque Prisma 6 no puede representar ambas de forma segura; volver a ejecutar `prisma db pull` requiere quitar nuevamente esas relaciones inferidas antes de generar el cliente. Los `CHECK`, índices parciales, triggers y políticas RLS también permanecen en SQL. Toda migración generada con `prisma migrate dev` debe revisarse antes de aplicarse para impedir que elimine esos objetos administrados manualmente.
 
 - Una franquicia solo puede leer o modificar su propia organización.
 - Un usuario de Casa Central sin `acceso_global` también queda limitado a su organización.
@@ -269,9 +269,10 @@ npm run prisma:migrate:dev -- --name descripcion_del_cambio
 npm run prisma:seed
 ```
 
-En producción solo se ejecutan migraciones ya versionadas:
+En producción solo se ejecutan migraciones ya versionadas. Confirmar primero la identidad de la base y revisar el estado; no ejecutar `deploy` a ciegas:
 
 ```bash
+npx prisma migrate status
 npm run prisma:migrate:deploy
 ```
 
@@ -283,6 +284,55 @@ npm run prisma:migrate:deploy
 ```
 
 El comando marca el esquema integral existente sin ejecutar ese DDL. No usarlo en una base vacía: allí `prisma:migrate:deploy` debe crear el esquema completo. Las migraciones también conservan funciones, `CHECK` constraints, triggers y las políticas RLS que Prisma no representa. La primera migración habilita `pg_trgm`, requerido por los índices de búsqueda.
+
+### Reconciliación de la importación legacy
+
+Hay dos recorridos soportados:
+
+1. **Base limpia:** configurar `DIRECT_URL`, ejecutar `npx prisma migrate status`, comprobar que la cadena está pendiente en el orden esperado y recién entonces ejecutar `npm run prisma:migrate:deploy`. La migración `20260829130000_legacy_import_support` crea las superficies legacy y `20260829131000_protect_shared_catalog_inserts` protege `INSERT`, `UPDATE` y `DELETE` de marcas/modelos mediante `luma_proteger_catalogo_compartido()`.
+2. **Neon de pruebas donde `003` ya se ejecutó manualmente:** no volver a ejecutar `001`, `002` ni `003`. Primero ejecutar `npx prisma migrate status` y confirmar que `20260829130000_legacy_import_support` no figura aplicada. Verificar de forma read-only que existen `ingresos`, `polizas_seguros`, `prospectos`, `registros_inventario_importados` y las columnas legacy. Si la aplicación manual de `003` terminó correctamente, reconciliar exactamente con:
+
+   ```bash
+   npx prisma migrate resolve --applied 20260829130000_legacy_import_support
+   npx prisma migrate status
+   ```
+
+   Después de revisar que la única migración nueva esperada sea `20260829131000_protect_shared_catalog_inserts` (y cualquier otra migración conocida del backend), ejecutar `npm run prisma:migrate:deploy`. `resolve` solo registra el historial: no crea ni corrige objetos. Si falta cualquier objeto de `003`, no usar `resolve`; la migración legacy es convergente y valida tipos/nullabilidad, pero recrea constraints e índices y debe programarse con una ventana de bloqueo adecuada.
+
+Una comprobación de catálogo read-only mínima para el segundo recorrido es:
+
+```sql
+SELECT
+  to_regclass('public.ingresos') IS NOT NULL AS ingresos,
+  to_regclass('public.polizas_seguros') IS NOT NULL AS polizas,
+  to_regclass('public.prospectos') IS NOT NULL AS prospectos,
+  to_regclass('public.registros_inventario_importados') IS NOT NULL AS inventario,
+  EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = 'movimientos_caja'
+      AND column_name = 'ingreso_id'
+  ) AS movimiento_ingreso;
+```
+
+### Importador Excel
+
+El importador usa `DIRECT_URL`, el mismo nombre documentado para la conexión directa de Prisma. La simulación no escribe en PostgreSQL:
+
+```bash
+python -m pip install -r scripts/requisitos-importacion.txt
+python scripts/importar_excel_luma.py --libro ruta/al/libro.xlsx --organizacion LUMA_CENTRAL
+```
+
+En PowerShell, el wrapper solicita la URL directa de forma oculta y restaura cualquier `DIRECT_URL` previa al finalizar:
+
+```powershell
+.\scripts\importar_datos.ps1 -Modo Simular -Libro C:\ruta\libro.xlsx
+.\scripts\importar_datos.ps1 -Modo DatosPrueba -Libro C:\ruta\libro.xlsx
+```
+
+Los modos que escriben validan que la migración legacy ya esté aplicada. No se versionan credenciales, archivos Excel ni salidas de importación.
 
 ## Despliegue en Render
 

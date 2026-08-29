@@ -87,6 +87,8 @@ DEFERRED_SHEETS = {
 ARGENTINA_TZ = ZoneInfo("America/Argentina/Buenos_Aires")
 IMPORT_NAMESPACE = uuid.UUID("026672d7-a54a-44e4-929f-03713b7d782a")
 TAMANO_LOTE = 250
+IMPORT_DATABASE_ENV_VAR = "DIRECT_URL"
+LEGACY_IMPORT_MIGRATION = "20260829130000_legacy_import_support"
 SENTINEL_VINS = {
     "USADA",
     "USADO",
@@ -195,7 +197,7 @@ def parse_args() -> argparse.Namespace:
         description=(
             "Lee el XLSX de Luma, prepara filas de origen e importa datos "
             "maestros deterministas. --datos-prueba agrega el historico "
-            "trazable despues de aplicar la migracion 003."
+            "trazable despues de aplicar la migracion Prisma de importacion."
         )
     )
     parser.add_argument("--libro", required=True, type=Path)
@@ -206,7 +208,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--variable-entorno-base-datos",
-        default="DATABASE_URL_UNPOOLED",
+        default=IMPORT_DATABASE_ENV_VAR,
         help="Variable de entorno que contiene la URL directa de PostgreSQL.",
     )
     parser.add_argument(
@@ -874,15 +876,12 @@ def ensure_import_schema(
         for table in required:
             cursor.execute("SELECT to_regclass(%s)", (f"public.{table}",))
             if cursor.fetchone()[0] is None:
-                migracion = (
-                    " y 003_datos_prueba_excel.sql"
-                    if datos_prueba
-                    else ""
-                )
                 raise RuntimeError(
                     f"Falta la tabla requerida public.{table}. "
-                    "Aplique primero 001_esquema_luma_desde_cero.sql, "
-                    f"002_multiempresa_franquicias.sql{migracion}."
+                    "No ejecute database/001..003 manualmente. Verifique "
+                    "`npx prisma migrate status` y aplique las migraciones "
+                    "versionadas con `npx prisma migrate deploy` solo despues "
+                    "de reconciliar el historial de la base."
                 )
         if datos_prueba:
             columnas_requeridas = (
@@ -908,8 +907,9 @@ def ensure_import_schema(
                 )
                 if cursor.fetchone() is None:
                     raise RuntimeError(
-                        "Faltan columnas de datos de prueba. Aplique "
-                        "003_datos_prueba_excel.sql despues de 001 y 002."
+                        "Faltan columnas de importacion legacy. Verifique que "
+                        f"la migracion Prisma {LEGACY_IMPORT_MIGRATION} figure "
+                        "como aplicada; no ejecute database/003 manualmente."
                     )
 
 
