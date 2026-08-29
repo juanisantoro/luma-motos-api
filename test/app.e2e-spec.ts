@@ -15,6 +15,7 @@ import { ROLE_CODES } from './../src/auth/auth.constants';
 import { Permissions } from './../src/auth/decorators/permissions.decorator';
 import { Roles } from './../src/auth/decorators/roles.decorator';
 import { PrismaService } from './../src/prisma/prisma.service';
+import { SalesService } from './../src/sales/sales.service';
 import { UsersService } from './../src/users/users.service';
 
 @Controller('authorization-test')
@@ -68,6 +69,9 @@ describe('Application security (e2e)', () => {
     Promise<unknown>,
     [Prisma.organizacionesFindFirstArgs]
   >();
+  const findSalesOperations = jest.fn();
+  const createSalesOperation = jest.fn();
+  const approveSalesOperation = jest.fn();
   let app: INestApplication<App>;
   let jwtService: JwtService;
 
@@ -175,6 +179,20 @@ describe('Application security (e2e)', () => {
     findOrganization.mockResolvedValue({
       id: authenticatedUser.organization.id,
     });
+    findSalesOperations.mockReset();
+    findSalesOperations.mockResolvedValue({
+      items: [],
+      total: 0,
+      page: 1,
+      limit: 20,
+    });
+    createSalesOperation.mockReset();
+    createSalesOperation.mockResolvedValue({ id: 'operation-id' });
+    approveSalesOperation.mockReset();
+    approveSalesOperation.mockResolvedValue({
+      id: 'operation-id',
+      status: 'APROBADA',
+    });
     withTenant.mockReset();
     withTenant.mockImplementation(
       (_scope: unknown, operation: (client: object) => Promise<unknown>) =>
@@ -229,6 +247,20 @@ describe('Application security (e2e)', () => {
         findRoles: jest.fn(),
         findOrganizations: jest.fn(),
         findBranches: jest.fn(),
+      })
+      .overrideProvider(SalesService)
+      .useValue({
+        findAll: findSalesOperations,
+        findOne: jest.fn(),
+        create: createSalesOperation,
+        update: jest.fn(),
+        reserve: jest.fn(),
+        releaseReservation: jest.fn(),
+        submit: jest.fn(),
+        approve: approveSalesOperation,
+        reject: jest.fn(),
+        cancel: jest.fn(),
+        close: jest.fn(),
       })
       .compile();
 
@@ -543,6 +575,78 @@ describe('Application security (e2e)', () => {
         usuario_id: authenticatedUser.id,
       },
     });
+  });
+
+  it('protects the sales contract with explicit read and approval permissions', async () => {
+    findUnique.mockResolvedValue({
+      ...databaseUser,
+      roles: {
+        ...databaseUser.roles,
+        permisos_rol: [{ codigo_permiso: 'ventas.consultar' }],
+      },
+    });
+    const readToken = await accessToken();
+    await request(app.getHttpServer())
+      .get('/api/sales/operations?page=1&limit=20')
+      .set('Authorization', 'Bearer ' + readToken)
+      .expect(200)
+      .expect({ items: [], total: 0, page: 1, limit: 20 });
+    expect(findSalesOperations).toHaveBeenCalled();
+
+    await request(app.getHttpServer())
+      .post(
+        '/api/sales/operations/7d5cc401-544e-4651-9bd6-52495887fecd/approve',
+      )
+      .set('Authorization', 'Bearer ' + readToken)
+      .send({ expectedVersion: 1 })
+      .expect(403);
+    expect(approveSalesOperation).not.toHaveBeenCalled();
+  });
+
+  it('validates sales payloads before invoking the audited service', async () => {
+    findUnique.mockResolvedValue({
+      ...databaseUser,
+      roles: {
+        ...databaseUser.roles,
+        permisos_rol: [{ codigo_permiso: 'ventas.gestionar' }],
+      },
+    });
+    const token = await accessToken();
+    await request(app.getHttpServer())
+      .post('/api/sales/operations')
+      .set('Authorization', 'Bearer ' + token)
+      .send({
+        branchId: '84e778cc-7616-4792-b6db-d89f100bb6f1',
+        clientId: '904e2a34-8285-48fa-b64c-24a80d94f9cb',
+        versionId: '4de88c4c-3382-4f9b-ae60-98147159c977',
+        condition: 'NUEVO',
+        agreedPrice: 100,
+        forcedStatus: 'CERRADA',
+      })
+      .expect(400);
+    expect(createSalesOperation).not.toHaveBeenCalled();
+  });
+
+  it('allows sales approval only with the dedicated permission', async () => {
+    findUnique.mockResolvedValue({
+      ...databaseUser,
+      roles: {
+        codigo: ROLE_CODES.GERENTE,
+        nombre: 'Gerente',
+        activo: true,
+        permisos_rol: [{ codigo_permiso: 'ventas.aprobar' }],
+      },
+    });
+    const token = await accessToken();
+    await request(app.getHttpServer())
+      .post(
+        '/api/sales/operations/7d5cc401-544e-4651-9bd6-52495887fecd/approve',
+      )
+      .set('Authorization', 'Bearer ' + token)
+      .send({ expectedVersion: 1 })
+      .expect(201)
+      .expect({ id: 'operation-id', status: 'APROBADA' });
+    expect(approveSalesOperation).toHaveBeenCalled();
   });
 
   it('blocks authenticated mutation endpoints without audit declaration', async () => {

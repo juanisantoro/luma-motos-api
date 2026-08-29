@@ -17,6 +17,7 @@ import { PrismaModule } from './prisma/prisma.module';
 import { InventoryModule } from './inventory/inventory.module';
 import { SuppliersModule } from './suppliers/suppliers.module';
 import { SupplyModule } from './supply/supply.module';
+import { SalesModule } from './sales/sales.module';
 import { UsersModule } from './users/users.module';
 
 @Module({
@@ -44,6 +45,7 @@ import { UsersModule } from './users/users.module';
     InventoryModule,
     SuppliersModule,
     SupplyModule,
+    SalesModule,
   ],
   providers: [
     {

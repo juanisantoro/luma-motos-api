@@ -25,6 +25,12 @@ export const PERMISSION_CODES = {
   SUPPLY_READ: 'abastecimiento.consultar',
   SUPPLY_MANAGE: 'abastecimiento.gestionar',
   SUPPLY_RECEIVE: 'abastecimiento.recibir',
+  SALES_READ: 'ventas.consultar',
+  SALES_MANAGE: 'ventas.gestionar',
+  SALES_APPROVE: 'ventas.aprobar',
+  SALES_CANCEL: 'ventas.cancelar',
+  SALES_CLOSE: 'ventas.cerrar',
+  STOCK_RESERVATIONS_MANAGE: 'reservas_stock.gestionar',
 } as const;
 
 export const AUDIT_ACTIONS = {

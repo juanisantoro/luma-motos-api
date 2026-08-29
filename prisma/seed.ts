@@ -128,6 +128,42 @@ const managedPermissions = [
     descripcion: 'Recibe solicitudes en tránsito como unidades físicas.',
     roles: ['ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
   },
+  {
+    codigo: 'ventas.consultar',
+    modulo: 'ventas',
+    descripcion: 'Consulta operaciones comerciales y sus reservas.',
+    roles: ['VENDEDOR', 'ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+  },
+  {
+    codigo: 'ventas.gestionar',
+    modulo: 'ventas',
+    descripcion: 'Crea y edita borradores y envía operaciones a aprobación.',
+    roles: ['VENDEDOR', 'ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+  },
+  {
+    codigo: 'ventas.aprobar',
+    modulo: 'ventas',
+    descripcion: 'Aprueba o rechaza operaciones comerciales.',
+    roles: ['GERENTE', 'ADMINISTRADOR'],
+  },
+  {
+    codigo: 'ventas.cancelar',
+    modulo: 'ventas',
+    descripcion: 'Cancela operaciones y libera sus reservas activas.',
+    roles: ['ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+  },
+  {
+    codigo: 'ventas.cerrar',
+    modulo: 'ventas',
+    descripcion: 'Cierra operaciones aprobadas y consume su reserva.',
+    roles: ['ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+  },
+  {
+    codigo: 'reservas_stock.gestionar',
+    modulo: 'reservas_stock',
+    descripcion: 'Reserva y libera unidades para operaciones comerciales.',
+    roles: ['VENDEDOR', 'ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+  },
 ] as const;
 
 async function main(): Promise<void> {
