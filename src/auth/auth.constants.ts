@@ -15,6 +15,16 @@ export const PERMISSION_CODES = {
   USERS_MANAGE: 'usuarios.gestionar',
   CLIENTS_READ: 'clientes.consultar',
   CLIENTS_MANAGE: 'clientes.gestionar',
+  CATALOG_READ: 'catalogo.consultar',
+  CATALOG_MANAGE: 'catalogo.gestionar',
+  INVENTORY_READ: 'inventario.consultar',
+  INVENTORY_MANAGE: 'inventario.gestionar',
+  INVENTORY_TRANSFER: 'inventario.transferir',
+  SUPPLIERS_READ: 'proveedores.consultar',
+  SUPPLIERS_MANAGE: 'proveedores.gestionar',
+  SUPPLY_READ: 'abastecimiento.consultar',
+  SUPPLY_MANAGE: 'abastecimiento.gestionar',
+  SUPPLY_RECEIVE: 'abastecimiento.recibir',
 } as const;
 
 export const AUDIT_ACTIONS = {

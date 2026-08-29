@@ -68,6 +68,66 @@ const managedPermissions = [
     descripcion: 'Crea, actualiza, activa y desactiva clientes.',
     roles: ['VENDEDOR', 'ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
   },
+  {
+    codigo: 'catalogo.consultar',
+    modulo: 'catalogo',
+    descripcion: 'Consulta marcas, modelos, versiones y políticas de precios.',
+    roles: ['VENDEDOR', 'ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+  },
+  {
+    codigo: 'catalogo.gestionar',
+    modulo: 'catalogo',
+    descripcion: 'Gestiona el catálogo y crea nuevas políticas de precios.',
+    roles: ['ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+  },
+  {
+    codigo: 'inventario.consultar',
+    modulo: 'inventario',
+    descripcion: 'Consulta unidades y sus movimientos de inventario.',
+    roles: ['VENDEDOR', 'ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+  },
+  {
+    codigo: 'inventario.gestionar',
+    modulo: 'inventario',
+    descripcion: 'Registra y actualiza unidades físicas de inventario.',
+    roles: ['ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+  },
+  {
+    codigo: 'inventario.transferir',
+    modulo: 'inventario',
+    descripcion: 'Transfiere unidades en stock entre sucursales.',
+    roles: ['ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+  },
+  {
+    codigo: 'proveedores.consultar',
+    modulo: 'proveedores',
+    descripcion: 'Consulta proveedores y disponibilidades informadas.',
+    roles: ['VENDEDOR', 'ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+  },
+  {
+    codigo: 'proveedores.gestionar',
+    modulo: 'proveedores',
+    descripcion: 'Gestiona proveedores y sus disponibilidades.',
+    roles: ['ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+  },
+  {
+    codigo: 'abastecimiento.consultar',
+    modulo: 'abastecimiento',
+    descripcion: 'Consulta solicitudes de abastecimiento.',
+    roles: ['VENDEDOR', 'ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+  },
+  {
+    codigo: 'abastecimiento.gestionar',
+    modulo: 'abastecimiento',
+    descripcion: 'Crea solicitudes y gestiona sus transiciones.',
+    roles: ['ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+  },
+  {
+    codigo: 'abastecimiento.recibir',
+    modulo: 'abastecimiento',
+    descripcion: 'Recibe solicitudes en tránsito como unidades físicas.',
+    roles: ['ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+  },
 ] as const;
 
 async function main(): Promise<void> {
