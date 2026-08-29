@@ -17,6 +17,7 @@ import { Roles } from './../src/auth/decorators/roles.decorator';
 import { PrismaService } from './../src/prisma/prisma.service';
 import { SalesService } from './../src/sales/sales.service';
 import { UsersService } from './../src/users/users.service';
+import { CreditInquiriesService } from './../src/credit-inquiries/credit-inquiries.service';
 
 @Controller('authorization-test')
 class AuthorizationTestController {
@@ -72,6 +73,11 @@ describe('Application security (e2e)', () => {
   const findSalesOperations = jest.fn();
   const createSalesOperation = jest.fn();
   const approveSalesOperation = jest.fn();
+  const findRejectedInquiries = jest.fn();
+  const verifyCreditDocument = jest.fn();
+  const createCreditInquiry = jest.fn();
+  const findFinancialInstitutions = jest.fn();
+  const createFinancialInstitution = jest.fn();
   let app: INestApplication<App>;
   let jwtService: JwtService;
 
@@ -193,10 +199,54 @@ describe('Application security (e2e)', () => {
       id: 'operation-id',
       status: 'APROBADA',
     });
+    findRejectedInquiries.mockReset();
+    findRejectedInquiries.mockResolvedValue({
+      items: [],
+      total: 0,
+      page: 1,
+      limit: 20,
+    });
+    verifyCreditDocument.mockReset();
+    verifyCreditDocument.mockResolvedValue({
+      found: false,
+      clientId: null,
+      isFlagged: false,
+      blocksSale: false,
+      lastRejection: null,
+      summary: {
+        totalAttempts: 0,
+        rejectedAttempts: 0,
+        approvedAttempts: 0,
+        pendingAttempts: 0,
+        firstConsultedAt: null,
+        lastConsultedAt: null,
+      },
+      checkedAt: new Date('2026-08-29T15:00:00.000Z'),
+    });
+    createCreditInquiry.mockReset();
+    createCreditInquiry.mockResolvedValue({
+      id: 'credit-inquiry-id',
+      idempotentReplay: false,
+    });
+    findFinancialInstitutions.mockReset();
+    findFinancialInstitutions.mockResolvedValue({
+      items: [],
+      total: 0,
+      page: 1,
+      limit: 20,
+    });
+    createFinancialInstitution.mockReset();
+    createFinancialInstitution.mockResolvedValue({
+      id: 'financial-institution-id',
+      name: 'Banco Demo',
+      taxId: null,
+      active: true,
+    });
     withTenant.mockReset();
     withTenant.mockImplementation(
       (_scope: unknown, operation: (client: object) => Promise<unknown>) =>
         operation({
+          $queryRaw: jest.fn().mockResolvedValue([{ locked: true }]),
           $executeRaw: executeRaw,
           usuarios: { findUnique },
           authSession: { updateMany: updateSessions },
@@ -261,6 +311,17 @@ describe('Application security (e2e)', () => {
         reject: jest.fn(),
         cancel: jest.fn(),
         close: jest.fn(),
+      })
+      .overrideProvider(CreditInquiriesService)
+      .useValue({
+        findRejected: findRejectedInquiries,
+        verifyDocument: verifyCreditDocument,
+        findClientHistory: jest.fn(),
+        findRegistrants: jest.fn(),
+        findBranches: jest.fn(),
+        create: createCreditInquiry,
+        findFinancialInstitutions,
+        createFinancialInstitution,
       })
       .compile();
 
@@ -611,6 +672,7 @@ describe('Application security (e2e)', () => {
         permisos_rol: [{ codigo_permiso: 'ventas.gestionar' }],
       },
     });
+
     const token = await accessToken();
     await request(app.getHttpServer())
       .post('/api/sales/operations')
@@ -625,6 +687,121 @@ describe('Application security (e2e)', () => {
       })
       .expect(400);
     expect(createSalesOperation).not.toHaveBeenCalled();
+  });
+
+  it('enforces distinct credit inquiry permissions', async () => {
+    const tokenWithoutCreditPermission = await accessToken();
+    await request(app.getHttpServer())
+      .get(
+        '/api/credit-inquiries/verify?documentType=DNI&documentNumber=12345678',
+      )
+      .set('Authorization', 'Bearer ' + tokenWithoutCreditPermission)
+      .expect(403);
+
+    findUnique.mockResolvedValue({
+      ...databaseUser,
+      roles: {
+        ...databaseUser.roles,
+        permisos_rol: [{ codigo_permiso: 'consultas_crediticias.verificar' }],
+      },
+    });
+    const verifyToken = await accessToken();
+    await request(app.getHttpServer())
+      .get(
+        '/api/credit-inquiries/verify?documentType=DNI&documentNumber=12.345.678',
+      )
+      .set('Authorization', 'Bearer ' + verifyToken)
+      .expect(200)
+      .expect(({ body }) => {
+        expect(body).toMatchObject({
+          found: false,
+          isFlagged: false,
+          blocksSale: false,
+        });
+      });
+    expect(verifyCreditDocument).toHaveBeenCalledTimes(1);
+    const verifyCall = verifyCreditDocument.mock.calls[0] as
+      [unknown, { organization: { id: string } }] | undefined;
+    expect(verifyCall?.[0]).toEqual({
+      documentType: 'DNI',
+      documentNumber: '12.345.678',
+    });
+    expect(verifyCall?.[1].organization.id).toBe(
+      authenticatedUser.organization.id,
+    );
+  });
+
+  it('validates credit inquiry payloads and idempotency headers', async () => {
+    findUnique.mockResolvedValue({
+      ...databaseUser,
+      roles: {
+        ...databaseUser.roles,
+        permisos_rol: [{ codigo_permiso: 'consultas_crediticias.registrar' }],
+      },
+    });
+    const token = await accessToken();
+    const payload = {
+      documentType: 'DNI',
+      documentNumber: '12.345.678',
+      fullName: 'Ana Cliente',
+      financialEntityId: 'aa49c8ec-e497-495c-a11f-7d74287f942d',
+      outcome: 'RECHAZADA',
+      reason: 'Scoring insuficiente',
+      consultedAt: '2026-08-29T15:00:00.000Z',
+    };
+
+    await request(app.getHttpServer())
+      .post('/api/credit-inquiries')
+      .set('Authorization', 'Bearer ' + token)
+      .send(payload)
+      .expect(400);
+    await request(app.getHttpServer())
+      .post('/api/credit-inquiries')
+      .set('Authorization', 'Bearer ' + token)
+      .set('Idempotency-Key', 'credit-12345678')
+      .send({ ...payload, unexpected: true })
+      .expect(400);
+    await request(app.getHttpServer())
+      .post('/api/credit-inquiries')
+      .set('Authorization', 'Bearer ' + token)
+      .set('Idempotency-Key', 'credit-12345678')
+      .send(payload)
+      .expect(201)
+      .expect({ id: 'credit-inquiry-id', idempotentReplay: false });
+    expect(createCreditInquiry).toHaveBeenCalledWith(
+      expect.objectContaining({
+        documentNumber: '12.345.678',
+        outcome: 'RECHAZADA',
+      }),
+      'credit-12345678',
+      expect.any(Object),
+    );
+  });
+
+  it('allows read-only users to load credit filter catalogs via OR permissions', async () => {
+    findUnique.mockResolvedValue({
+      ...databaseUser,
+      roles: {
+        ...databaseUser.roles,
+        permisos_rol: [{ codigo_permiso: 'consultas_crediticias.consultar' }],
+      },
+    });
+    const token = await accessToken();
+
+    await request(app.getHttpServer())
+      .get('/api/credit-inquiries/rejected?page=1&limit=20')
+      .set('Authorization', 'Bearer ' + token)
+      .expect(200);
+    await request(app.getHttpServer())
+      .get('/api/financial-institutions?page=1&limit=20')
+      .set('Authorization', 'Bearer ' + token)
+      .expect(200);
+    await request(app.getHttpServer())
+      .get('/api/credit-inquiries/branches?page=1&limit=20')
+      .set('Authorization', 'Bearer ' + token)
+      .expect(200);
+    expect(findRejectedInquiries).toHaveBeenCalled();
+    expect(findFinancialInstitutions).toHaveBeenCalled();
   });
 
   it('allows sales approval only with the dedicated permission', async () => {

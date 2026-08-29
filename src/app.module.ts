@@ -9,6 +9,7 @@ import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
 import { PermissionsGuard } from './auth/guards/permissions.guard';
 import { RolesGuard } from './auth/guards/roles.guard';
 import { ClientsModule } from './clients/clients.module';
+import { CreditInquiriesModule } from './credit-inquiries/credit-inquiries.module';
 import { CatalogModule } from './catalog/catalog.module';
 import { validateEnvironment } from './config/environment';
 import { HealthModule } from './health/health.module';
@@ -41,6 +42,7 @@ import { UsersModule } from './users/users.module';
     MailModule,
     UsersModule,
     ClientsModule,
+    CreditInquiriesModule,
     CatalogModule,
     InventoryModule,
     SuppliersModule,

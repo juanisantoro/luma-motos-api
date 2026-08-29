@@ -69,6 +69,32 @@ const managedPermissions = [
     roles: ['VENDEDOR', 'ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
   },
   {
+    codigo: 'consultas_crediticias.consultar',
+    modulo: 'consultas_crediticias',
+    descripcion:
+      'Consulta el consolidado de rechazos y el historial crediticio.',
+    roles: ['ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+  },
+  {
+    codigo: 'consultas_crediticias.verificar',
+    modulo: 'consultas_crediticias',
+    descripcion:
+      'Verifica antecedentes crediticios por documento antes de una operación.',
+    roles: ['VENDEDOR', 'ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+  },
+  {
+    codigo: 'consultas_crediticias.registrar',
+    modulo: 'consultas_crediticias',
+    descripcion: 'Registra intentos de consulta crediticia.',
+    roles: ['VENDEDOR', 'ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+  },
+  {
+    codigo: 'financieras.gestionar',
+    modulo: 'financieras',
+    descripcion: 'Crea y administra entidades financieras.',
+    roles: ['ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+  },
+  {
     codigo: 'catalogo.consultar',
     modulo: 'catalogo',
     descripcion: 'Consulta marcas, modelos, versiones y políticas de precios.',

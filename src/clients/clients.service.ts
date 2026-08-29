@@ -13,6 +13,10 @@ import {
 import type { AuthenticatedUser } from '../auth/auth.types';
 import { PrismaService, type TenantScope } from '../prisma/prisma.service';
 import { CLIENT_AUDIT_ACTIONS } from './clients.constants';
+import {
+  normalizeClientDocument,
+  normalizeClientName,
+} from './client-normalization';
 import { ClientListQueryDto } from './dto/client-list-query.dto';
 import { CreateClientDto } from './dto/create-client.dto';
 import { UpdateClientStatusDto } from './dto/update-client-status.dto';
@@ -53,10 +57,10 @@ export class ClientsService {
   async findAll(query: ClientListQueryDto, actor: AuthenticatedUser) {
     this.assertOrganizationFilter(actor, query.organizationId);
     const normalizedSearch = query.search
-      ? this.normalizeName(query.search)
+      ? normalizeClientName(query.search)
       : undefined;
     const normalizedDocument = query.search
-      ? this.normalizeDocument(query.search)
+      ? normalizeClientDocument(query.search)
       : undefined;
     const organizationId = actor.globalAccess
       ? query.organizationId
@@ -142,14 +146,24 @@ export class ClientsService {
         auditEvent,
         async (transaction) => {
           await this.requireOrganization(transaction, organizationId);
+          if (input.documentType && input.documentNumber) {
+            await transaction.$queryRaw`
+              SELECT pg_advisory_xact_lock(
+                hashtextextended(
+                  ${`${organizationId}:${input.documentType}:${normalizeClientDocument(input.documentNumber)}`},
+                  0
+                )
+              )
+            `;
+          }
           const created = await transaction.clientes.create({
             data: {
               nombre_completo: input.fullName,
-              nombre_normalizado: this.normalizeName(input.fullName),
+              nombre_normalizado: normalizeClientName(input.fullName),
               tipo_documento: input.documentType,
               numero_documento: input.documentNumber,
               documento_normalizado: input.documentNumber
-                ? this.normalizeDocument(input.documentNumber)
+                ? normalizeClientDocument(input.documentNumber)
                 : undefined,
               telefono: input.phone,
               correo: input.email,
@@ -362,7 +376,7 @@ export class ClientsService {
     if (
       typeof documentType !== 'string' ||
       typeof documentNumber !== 'string' ||
-      this.normalizeDocument(documentNumber).length === 0
+      normalizeClientDocument(documentNumber).length === 0
     ) {
       throw new BadRequestException(
         'Document type and number must be provided together',
@@ -402,13 +416,13 @@ export class ClientsService {
     const data: Prisma.clientesUpdateInput = {};
     if (input.fullName !== undefined) {
       data.nombre_completo = input.fullName;
-      data.nombre_normalizado = this.normalizeName(input.fullName);
+      data.nombre_normalizado = normalizeClientName(input.fullName);
     }
     if (Object.prototype.hasOwnProperty.call(input, 'documentType')) {
       data.tipo_documento = input.documentType;
       data.numero_documento = input.documentNumber;
       data.documento_normalizado = input.documentNumber
-        ? this.normalizeDocument(input.documentNumber)
+        ? normalizeClientDocument(input.documentNumber)
         : null;
     }
     if (Object.prototype.hasOwnProperty.call(input, 'phone')) {
@@ -476,14 +490,6 @@ export class ClientsService {
       hasAddress: client.direccion !== null,
       hasNotes: client.notas !== null,
     };
-  }
-
-  private normalizeName(name: string): string {
-    return name.trim().replace(/\s+/g, ' ').toLocaleLowerCase('es-AR');
-  }
-
-  private normalizeDocument(document: string): string {
-    return document.toUpperCase().replace(/[^A-Z0-9]/g, '');
   }
 
   private rethrowDocumentConflict(error: unknown): never {
