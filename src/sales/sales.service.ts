@@ -22,6 +22,8 @@ import {
   ReleaseSalesReservationDto,
   ReserveSalesUnitDto,
   SalesOperationQueryDto,
+  SalesPricePolicyQueryDto,
+  SalesSellerQueryDto,
   UpdateSalesOperationDto,
   VersionedSalesActionDto,
 } from './sales.dto';
@@ -78,9 +80,22 @@ export class SalesService {
 
   async findAll(query: SalesOperationQueryDto, actor: AuthenticatedUser) {
     this.assertOrganizationSelection(actor, query.organizationId);
+    if (query.mine && query.sellerId)
+      throw new BadRequestException(
+        'mine and sellerId filters cannot be combined',
+      );
     const organizationId =
       query.organizationId ??
       (actor.globalAccess ? undefined : actor.organization.id);
+    const sellerId = query.mine
+      ? await this.prisma.withTenant(this.scope(actor), (tx) =>
+          this.actorPersonnelId(
+            tx,
+            actor,
+            query.organizationId ?? actor.organization.id,
+          ),
+        )
+      : query.sellerId;
     const search = query.search?.trim();
     const operationNumber =
       search && /^\d+$/.test(search) ? BigInt(search) : undefined;
@@ -97,10 +112,10 @@ export class SalesService {
               lte: query.to ? new Date(query.to) : undefined,
             }
           : undefined,
-      asignaciones_personal_operacion: query.sellerId
+      asignaciones_personal_operacion: sellerId
         ? {
             some: {
-              personal_id: query.sellerId,
+              personal_id: sellerId,
               rol_asignacion: 'VENDEDOR',
             },
           }
@@ -152,6 +167,99 @@ export class SalesService {
     return this.prisma.withTenant(this.scope(actor), async (tx) =>
       this.operation(await this.operationOr404(tx, id, actor)),
     );
+  }
+
+  async sellers(query: SalesSellerQueryDto, actor: AuthenticatedUser) {
+    this.assertOrganizationSelection(actor, query.organizationId);
+    const organizationId = query.organizationId ?? actor.organization.id;
+    const search = query.search?.trim();
+    return this.prisma.withTenant(this.scope(actor), async (tx) => {
+      await this.branchOr400(tx, query.branchId, organizationId);
+      const where: Prisma.personalWhereInput = {
+        organizacion_id: organizationId,
+        estado: 'ACTIVO',
+        OR: [
+          { sucursal_principal_id: query.branchId },
+          {
+            acceso_personal_sucursal: {
+              some: { sucursal_id: query.branchId },
+            },
+          },
+        ],
+        AND: search
+          ? [
+              {
+                OR: [
+                  {
+                    nombre_completo: {
+                      contains: search,
+                      mode: 'insensitive',
+                    },
+                  },
+                  {
+                    codigo_empleado: {
+                      contains: search,
+                      mode: 'insensitive',
+                    },
+                  },
+                ],
+              },
+            ]
+          : undefined,
+      };
+      const [total, items] = await Promise.all([
+        tx.personal.count({ where }),
+        tx.personal.findMany({
+          where,
+          select: {
+            id: true,
+            codigo_empleado: true,
+            nombre_completo: true,
+          },
+          orderBy: [{ nombre_normalizado: 'asc' }, { id: 'asc' }],
+          skip: (query.page - 1) * query.limit,
+          take: query.limit,
+        }),
+      ]);
+      return {
+        items: items.map((item) => ({
+          id: item.id,
+          employeeCode: item.codigo_empleado,
+          fullName: item.nombre_completo,
+        })),
+        total,
+        page: query.page,
+        limit: query.limit,
+      };
+    });
+  }
+
+  async pricePolicy(query: SalesPricePolicyQueryDto, actor: AuthenticatedUser) {
+    this.assertOrganizationSelection(actor, query.organizationId);
+    const organizationId = query.organizationId ?? actor.organization.id;
+    return this.prisma.withTenant(this.scope(actor), async (tx) => {
+      await this.branchOr400(tx, query.branchId, organizationId);
+      await this.versionOr400(tx, query.versionId, organizationId);
+      const policy = await this.pricePolicyOr400(
+        tx,
+        query.versionId,
+        query.branchId,
+        organizationId,
+        query.operationDate ? new Date(query.operationDate) : new Date(),
+      );
+      return {
+        id: policy.id,
+        versionId: policy.version_id,
+        branchId: policy.sucursal_id,
+        organizationId: policy.organizacion_id,
+        currency: policy.moneda,
+        listPrice: policy.precio_lista.toString(),
+        minimumPrice: policy.precio_minimo.toString(),
+        validFrom: policy.vigente_desde,
+        validUntil: policy.vigente_hasta,
+        scope: policy.sucursal_id ? 'BRANCH' : 'ORGANIZATION',
+      };
+    });
   }
 
   async create(input: CreateSalesOperationDto, actor: AuthenticatedUser) {

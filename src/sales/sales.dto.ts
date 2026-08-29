@@ -1,5 +1,6 @@
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
+  IsBoolean,
   IsDateString,
   IsEnum,
   IsInt,
@@ -19,12 +20,33 @@ export class SalesOperationQueryDto {
   @IsOptional() @IsUUID() branchId?: string;
   @IsOptional() @IsUUID() clientId?: string;
   @IsOptional() @IsUUID() sellerId?: string;
+  @IsOptional()
+  @Transform(({ value }: { value: unknown }) =>
+    value === 'true' ? true : value === 'false' ? false : value,
+  )
+  @IsBoolean()
+  mine?: boolean;
   @IsOptional() @IsUUID() versionId?: string;
   @IsOptional() @IsString() @MaxLength(80) search?: string;
   @IsOptional() @IsDateString() from?: string;
   @IsOptional() @IsDateString() to?: string;
   @Type(() => Number) @IsInt() @Min(1) page = 1;
   @Type(() => Number) @IsInt() @Min(1) @Max(100) limit = 50;
+  @IsOptional() @IsUUID() organizationId?: string;
+}
+
+export class SalesSellerQueryDto {
+  @IsUUID() branchId!: string;
+  @IsOptional() @IsString() @MaxLength(160) search?: string;
+  @Type(() => Number) @IsInt() @Min(1) page = 1;
+  @Type(() => Number) @IsInt() @Min(1) @Max(100) limit = 50;
+  @IsOptional() @IsUUID() organizationId?: string;
+}
+
+export class SalesPricePolicyQueryDto {
+  @IsUUID() branchId!: string;
+  @IsUUID() versionId!: string;
+  @IsOptional() @IsDateString() operationDate?: string;
   @IsOptional() @IsUUID() organizationId?: string;
 }
 

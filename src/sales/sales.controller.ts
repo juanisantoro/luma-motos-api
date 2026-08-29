@@ -20,6 +20,8 @@ import {
   ReleaseSalesReservationDto,
   ReserveSalesUnitDto,
   SalesOperationQueryDto,
+  SalesPricePolicyQueryDto,
+  SalesSellerQueryDto,
   UpdateSalesOperationDto,
   VersionedSalesActionDto,
 } from './sales.dto';
@@ -36,6 +38,22 @@ export class SalesController {
     @CurrentUser() actor: AuthenticatedUser,
   ) {
     return this.service.findAll(query, actor);
+  }
+
+  @Get('sellers')
+  sellers(
+    @Query() query: SalesSellerQueryDto,
+    @CurrentUser() actor: AuthenticatedUser,
+  ) {
+    return this.service.sellers(query, actor);
+  }
+
+  @Get('price-policy')
+  pricePolicy(
+    @Query() query: SalesPricePolicyQueryDto,
+    @CurrentUser() actor: AuthenticatedUser,
+  ) {
+    return this.service.pricePolicy(query, actor);
   }
 
   @Get(':id')

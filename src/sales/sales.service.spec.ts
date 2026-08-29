@@ -42,6 +42,22 @@ describe('SalesService', () => {
     );
   }
 
+  function queryService(transaction: Prisma.TransactionClient) {
+    return new SalesService(
+      {
+        withTenant: jest
+          .fn()
+          .mockImplementation(
+            (
+              _scope: unknown,
+              work: (client: Prisma.TransactionClient) => Promise<unknown>,
+            ) => work(transaction),
+          ),
+      } as unknown as PrismaService,
+      {} as AuditService,
+    );
+  }
+
   function operation(status: string, rowVersion = 2) {
     return {
       id: operationId,
@@ -459,5 +475,132 @@ describe('SalesService', () => {
     ).rejects.toThrow(
       new BadRequestException('Reservation expiry cannot exceed 30 days'),
     );
+  });
+
+  it('lists active personnel eligible for the selected sales branch', async () => {
+    const count = jest.fn().mockResolvedValue(1);
+    const findMany = jest
+      .fn<
+        Promise<
+          Array<{
+            id: string;
+            codigo_empleado: string;
+            nombre_completo: string;
+          }>
+        >,
+        [Prisma.personalFindManyArgs]
+      >()
+      .mockResolvedValue([
+        {
+          id: '11b5de9b-9bc2-4777-bb78-9c7267b73aca',
+          codigo_empleado: 'VEN-01',
+          nombre_completo: 'Vendedora Demo',
+        },
+      ]);
+    const transaction = {
+      sucursales: { findFirst: jest.fn().mockResolvedValue({ id: unitId }) },
+      personal: { count, findMany },
+    } as unknown as Prisma.TransactionClient;
+
+    await expect(
+      queryService(transaction).sellers(
+        { branchId: unitId, search: 'demo', page: 1, limit: 50 },
+        actor,
+      ),
+    ).resolves.toEqual({
+      items: [
+        {
+          id: '11b5de9b-9bc2-4777-bb78-9c7267b73aca',
+          employeeCode: 'VEN-01',
+          fullName: 'Vendedora Demo',
+        },
+      ],
+      total: 1,
+      page: 1,
+      limit: 50,
+    });
+    expect(findMany.mock.calls[0]?.[0].where).toMatchObject({
+      organizacion_id: organizationId,
+      estado: 'ACTIVO',
+    });
+  });
+
+  it('previews the branch-specific effective price policy', async () => {
+    const validFrom = new Date('2026-08-01T00:00:00.000Z');
+    const transaction = {
+      sucursales: { findFirst: jest.fn().mockResolvedValue({ id: unitId }) },
+      versiones_vehiculos: {
+        findUnique: jest.fn().mockResolvedValue({
+          alcance: 'GLOBAL',
+          organizacion_propietaria_id: null,
+          catalogo_organizaciones: [],
+        }),
+      },
+      politicas_precios_vehiculos: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: '21b5de9b-9bc2-4777-bb78-9c7267b73aca',
+          version_id: '4de88c4c-3382-4f9b-ae60-98147159c977',
+          sucursal_id: unitId,
+          organizacion_id: organizationId,
+          moneda: 'ARS',
+          precio_lista: new Prisma.Decimal(120),
+          precio_minimo: new Prisma.Decimal(110),
+          vigente_desde: validFrom,
+          vigente_hasta: null,
+        }),
+      },
+    } as unknown as Prisma.TransactionClient;
+
+    await expect(
+      queryService(transaction).pricePolicy(
+        {
+          branchId: unitId,
+          versionId: '4de88c4c-3382-4f9b-ae60-98147159c977',
+        },
+        actor,
+      ),
+    ).resolves.toEqual({
+      id: '21b5de9b-9bc2-4777-bb78-9c7267b73aca',
+      versionId: '4de88c4c-3382-4f9b-ae60-98147159c977',
+      branchId: unitId,
+      organizationId,
+      currency: 'ARS',
+      listPrice: '120',
+      minimumPrice: '110',
+      validFrom,
+      validUntil: null,
+      scope: 'BRANCH',
+    });
+  });
+
+  it('resolves mine against the actor personnel id server-side', async () => {
+    const personnelId = '11b5de9b-9bc2-4777-bb78-9c7267b73aca';
+    const findMany = jest
+      .fn<Promise<unknown[]>, [Prisma.operacionesFindManyArgs]>()
+      .mockResolvedValue([]);
+    const transaction = {
+      personal: {
+        findFirst: jest.fn().mockResolvedValue({ id: personnelId }),
+      },
+      operaciones: {
+        count: jest.fn().mockResolvedValue(0),
+        findMany,
+      },
+    } as unknown as Prisma.TransactionClient;
+
+    await expect(
+      queryService(transaction).findAll(
+        { mine: true, page: 1, limit: 50 },
+        actor,
+      ),
+    ).resolves.toEqual({ items: [], total: 0, page: 1, limit: 50 });
+    expect(
+      findMany.mock.calls[0]?.[0].where?.asignaciones_personal_operacion,
+    ).toEqual({
+      some: {
+        personal_id: personnelId,
+        rol_asignacion: 'VENDEDOR',
+      },
+    });
   });
 });
