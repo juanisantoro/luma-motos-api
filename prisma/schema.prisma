@@ -171,7 +171,7 @@ model componentes_pago_operacion {
   consultas_crediticias_componentes_pago_operacion_consulta_crediticia_id_organizacion_idToconsultas_crediticias consultas_crediticias?        @relation("componentes_pago_operacion_consulta_crediticia_id_organizacion_idToconsultas_crediticias", fields: [consulta_crediticia_id, organizacion_id], references: [id, organizacion_id], onDelete: NoAction, onUpdate: NoAction, map: "componente_consulta_organizacion_fk")
   operaciones_componentes_pago_operacion_operacion_id_organizacion_idTooperaciones                               operaciones                   @relation("componentes_pago_operacion_operacion_id_organizacion_idTooperaciones", fields: [operacion_id, organizacion_id], references: [id, organizacion_id], onDelete: NoAction, onUpdate: NoAction, map: "componente_operacion_organizacion_fk")
   consultas_crediticias                                                                                          consultas_crediticias?        @relation(fields: [consulta_crediticia_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  financieras                                                                                                    financieras?                  @relation(fields: [financiera_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  financieras_componentes_pago_operacion_financiera_id_organizacion_idTofinancieras                              financieras?                  @relation("componentes_pago_operacion_financiera_id_organizacion_idTofinancieras", fields: [financiera_id, organizacion_id], references: [id, organizacion_id], onDelete: NoAction, onUpdate: NoAction, map: "componente_financiera_organizacion_fk")
   operaciones                                                                                                    operaciones                   @relation(fields: [operacion_id], references: [id], onUpdate: NoAction)
   organizaciones                                                                                                 organizaciones                @relation(fields: [organizacion_id], references: [id], onUpdate: NoAction, map: "componentes_pago_operacion_organizacion_fk")
   vehiculos_tomados_parte_pago                                                                                   vehiculos_tomados_parte_pago? @relation(fields: [vehiculo_tomado_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
@@ -217,27 +217,34 @@ model consultas_crediticias {
   cliente_id                                                                                                          String                       @db.Uuid
   financiera_id                                                                                                       String                       @db.Uuid
   operacion_id                                                                                                        String?                      @db.Uuid
+  sucursal_id                                                                                                         String                       @db.Uuid
   consultado_en                                                                                                       DateTime                     @db.Timestamptz(6)
   resultado                                                                                                           resultado_crediticio_luma
   motivo                                                                                                              String?
   consultado_por_personal_id                                                                                          String                       @db.Uuid
   referencia_externa                                                                                                  String?                      @db.VarChar(120)
+  clave_idempotencia                                                                                                  String                       @db.VarChar(120)
+  huella_idempotencia                                                                                                 String                       @db.Char(64)
   creado_en                                                                                                           DateTime                     @default(now()) @db.Timestamptz(6)
   actualizado_en                                                                                                      DateTime                     @default(now()) @db.Timestamptz(6)
   organizacion_id                                                                                                     String                       @db.Uuid
   componentes_pago_operacion_componentes_pago_operacion_consulta_crediticia_id_organizacion_idToconsultas_crediticias componentes_pago_operacion[] @relation("componentes_pago_operacion_consulta_crediticia_id_organizacion_idToconsultas_crediticias")
-  componentes_pago_operacion                                                                                          componentes_pago_operacion[]
   clientes_consultas_crediticias_cliente_id_organizacion_idToclientes                                                 clientes                     @relation("consultas_crediticias_cliente_id_organizacion_idToclientes", fields: [cliente_id, organizacion_id], references: [id, organizacion_id], onDelete: NoAction, onUpdate: NoAction, map: "consulta_cliente_organizacion_fk")
+  financieras_consultas_crediticias_financiera_id_organizacion_idTofinancieras                                        financieras                  @relation("consultas_crediticias_financiera_id_organizacion_idTofinancieras", fields: [financiera_id, organizacion_id], references: [id, organizacion_id], onDelete: NoAction, onUpdate: NoAction, map: "consulta_financiera_organizacion_fk")
   operaciones_consultas_crediticias_operacion_id_organizacion_idTooperaciones                                         operaciones?                 @relation("consultas_crediticias_operacion_id_organizacion_idTooperaciones", fields: [operacion_id, organizacion_id], references: [id, organizacion_id], onDelete: NoAction, onUpdate: NoAction, map: "consulta_operacion_organizacion_fk")
   personal_consultas_crediticias_consultado_por_personal_id_organizacion_idTopersonal                                 personal                     @relation("consultas_crediticias_consultado_por_personal_id_organizacion_idTopersonal", fields: [consultado_por_personal_id, organizacion_id], references: [id, organizacion_id], onDelete: NoAction, onUpdate: NoAction, map: "consulta_personal_organizacion_fk")
+  sucursales_consultas_crediticias_sucursal_id_organizacion_idTosucursales                                            sucursales                   @relation("consultas_crediticias_sucursal_id_organizacion_idTosucursales", fields: [sucursal_id, organizacion_id], references: [id, organizacion_id], onDelete: NoAction, onUpdate: NoAction, map: "consulta_sucursal_organizacion_fk")
   clientes                                                                                                            clientes                     @relation(fields: [cliente_id], references: [id], onUpdate: NoAction)
   personal                                                                                                            personal                     @relation(fields: [consultado_por_personal_id], references: [id], onUpdate: NoAction)
-  financieras                                                                                                         financieras                  @relation(fields: [financiera_id], references: [id], onUpdate: NoAction)
   operaciones                                                                                                         operaciones?                 @relation(fields: [operacion_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
   organizaciones                                                                                                      organizaciones               @relation(fields: [organizacion_id], references: [id], onUpdate: NoAction, map: "consultas_crediticias_organizacion_fk")
+  componentes_pago_operacion                                                                                          componentes_pago_operacion[]
 
   @@unique([id, organizacion_id], map: "consultas_crediticias_id_organizacion_unico")
+  @@unique([organizacion_id, clave_idempotencia], map: "consultas_crediticias_organizacion_idempotencia_unico")
   @@index([cliente_id, consultado_en(sort: Desc)], map: "consultas_crediticias_cliente_fecha_indice")
+  @@index([organizacion_id, resultado, consultado_en(sort: Desc)], map: "consultas_crediticias_organizacion_resultado_fecha_indice")
+  @@index([sucursal_id, consultado_en(sort: Desc)], map: "consultas_crediticias_sucursal_fecha_indice")
 }
 
 model cuentas_caja {
@@ -338,16 +345,23 @@ model filas_importacion {
 }
 
 model financieras {
-  id                         String                       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  razon_social               String                       @db.VarChar(180)
-  nombre_normalizado         String                       @unique(map: "financieras_nombre_normalizado_unico") @db.VarChar(180)
-  identificacion_fiscal      String?                      @db.VarChar(30)
-  datos_contacto             Json?
-  activo                     Boolean                      @default(true)
-  creado_en                  DateTime                     @default(now()) @db.Timestamptz(6)
-  actualizado_en             DateTime                     @default(now()) @db.Timestamptz(6)
-  componentes_pago_operacion componentes_pago_operacion[]
-  consultas_crediticias      consultas_crediticias[]
+  id                                                                                               String                       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  razon_social                                                                                     String                       @db.VarChar(180)
+  nombre_normalizado                                                                               String                       @db.VarChar(180)
+  identificacion_fiscal                                                                            String?                      @db.VarChar(30)
+  identificacion_fiscal_normalizada                                                                String?                      @db.VarChar(30)
+  datos_contacto                                                                                   Json?
+  activo                                                                                           Boolean                      @default(true)
+  creado_en                                                                                        DateTime                     @default(now()) @db.Timestamptz(6)
+  actualizado_en                                                                                   DateTime                     @default(now()) @db.Timestamptz(6)
+  organizacion_id                                                                                  String                       @db.Uuid
+  componentes_pago_operacion_componentes_pago_operacion_financiera_id_organizacion_idTofinancieras componentes_pago_operacion[] @relation("componentes_pago_operacion_financiera_id_organizacion_idTofinancieras")
+  consultas_crediticias_consultas_crediticias_financiera_id_organizacion_idTofinancieras           consultas_crediticias[]      @relation("consultas_crediticias_financiera_id_organizacion_idTofinancieras")
+  organizaciones                                                                                   organizaciones               @relation(fields: [organizacion_id], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "financieras_organizacion_fk")
+
+  @@unique([id, organizacion_id], map: "financieras_id_organizacion_unico")
+  @@unique([organizacion_id, nombre_normalizado], map: "financieras_organizacion_nombre_unico")
+  @@index([organizacion_id, activo, razon_social], map: "financieras_organizacion_estado_nombre_indice")
 }
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
@@ -925,6 +939,7 @@ model sucursales {
   movimientos_inventario_movimientos_inventario_sucursal_origen_idTosucursales                          movimientos_inventario[]          @relation("movimientos_inventario_sucursal_origen_idTosucursales")
   operaciones_operaciones_sucursal_id_organizacion_idTosucursales                                       operaciones[]                     @relation("operaciones_sucursal_id_organizacion_idTosucursales")
   operaciones                                                                                           operaciones[]
+  consultas_crediticias_consultas_crediticias_sucursal_id_organizacion_idTosucursales                   consultas_crediticias[]           @relation("consultas_crediticias_sucursal_id_organizacion_idTosucursales")
   personal_personal_sucursal_principal_id_organizacion_idTosucursales                                   personal[]                        @relation("personal_sucursal_principal_id_organizacion_idTosucursales")
   personal                                                                                              personal[]
   politicas_precios_vehiculos                                                                           politicas_precios_vehiculos[]
@@ -1151,6 +1166,7 @@ model organizaciones {
   cuentas_caja                     cuentas_caja[]
   disponibilidad_proveedor         disponibilidad_proveedor[]
   filas_importacion                filas_importacion[]
+  financieras                      financieras[]
   gastos                           gastos[]
   liquidaciones_comisiones         liquidaciones_comisiones[]
   lotes_importacion                lotes_importacion[]
