@@ -28,6 +28,16 @@ const requestInclude = {
   },
   sucursales: true,
   unidades_vehiculos: true,
+  operaciones: {
+    select: {
+      id: true,
+      numero_operacion: true,
+      estado_operacion: true,
+      clientes: {
+        select: { nombre_completo: true, numero_documento: true },
+      },
+    },
+  },
 } satisfies Prisma.solicitudes_abastecimientoInclude;
 const requestUnitInclude = {
   versiones_vehiculos: {
@@ -277,6 +287,69 @@ export class SupplyService {
         const receivedAt = input.receivedAt
           ? new Date(input.receivedAt)
           : new Date();
+        let operation: {
+          id: string;
+          unidad_vehiculo_id: string | null;
+        } | null = null;
+        if (current.operacion_id) {
+          await tx.$queryRaw`
+            SELECT "id"
+            FROM "public"."operaciones"
+            WHERE "id" = CAST(${current.operacion_id} AS uuid)
+              AND "organizacion_id" = CAST(${current.organizacion_id} AS uuid)
+            FOR UPDATE
+          `;
+          operation = await tx.operaciones.findFirst({
+            where: {
+              id: current.operacion_id,
+              organizacion_id: current.organizacion_id,
+              version_id: current.version_id,
+              condicion: current.condicion,
+              sucursal_id: current.sucursal_llegada_id,
+              estado_operacion: {
+                notIn: ['CERRADA', 'CANCELADA', 'RECHAZADA'],
+              },
+            },
+            select: { id: true, unidad_vehiculo_id: true },
+          });
+          if (!operation)
+            throw new ConflictException(
+              'Linked operation is incompatible or cannot receive inventory in its current state',
+            );
+          if (operation.unidad_vehiculo_id)
+            throw new ConflictException(
+              'Linked operation already has a physical unit',
+            );
+          if (current.disponibilidad_proveedor_id)
+            await tx.reservas_stock.updateMany({
+              where: {
+                operacion_id: operation.id,
+                organizacion_id: current.organizacion_id,
+                estado: 'ACTIVO',
+                disponibilidad_proveedor_id:
+                  current.disponibilidad_proveedor_id,
+              },
+              data: {
+                estado: 'CONSUMIDA',
+                liberado_en: receivedAt,
+                motivo_liberacion: 'Disponibilidad recibida y asignada',
+              },
+            });
+        }
+        if (current.disponibilidad_proveedor_id) {
+          const decremented = await tx.disponibilidad_proveedor.updateMany({
+            where: {
+              id: current.disponibilidad_proveedor_id,
+              organizacion_id: current.organizacion_id,
+              cantidad_informada: { gt: 0 },
+            },
+            data: { cantidad_informada: { decrement: 1 } },
+          });
+          if (decremented.count !== 1)
+            throw new ConflictException(
+              'Supplier availability has no remaining quantity',
+            );
+        }
         const unit = await tx.unidades_vehiculos.create({
           data: {
             version_id: current.version_id,
@@ -314,6 +387,54 @@ export class SupplyService {
             organizacion_id: current.organizacion_id,
           },
         });
+        let assignedToOperation = false;
+        if (operation) {
+          await tx.reservas_stock.create({
+            data: {
+              operacion_id: operation.id,
+              unidad_vehiculo_id: unit.id,
+              vence_en: new Date(
+                receivedAt.getTime() + 30 * 24 * 60 * 60 * 1000,
+              ),
+              creado_por_personal_id: personalId,
+              organizacion_id: current.organizacion_id,
+            },
+          });
+          await tx.unidades_vehiculos.update({
+            where: {
+              id_organizacion_id: {
+                id: unit.id,
+                organizacion_id: current.organizacion_id,
+              },
+            },
+            data: { estado_inventario: 'RESERVADO' },
+          });
+          await tx.operaciones.update({
+            where: {
+              id_organizacion_id: {
+                id: operation.id,
+                organizacion_id: current.organizacion_id,
+              },
+            },
+            data: {
+              unidad_vehiculo_id: unit.id,
+              version_fila: { increment: 1 },
+            },
+          });
+          await tx.movimientos_inventario.create({
+            data: {
+              unidad_vehiculo_id: unit.id,
+              operacion_id: operation.id,
+              solicitud_abastecimiento_id: id,
+              tipo_movimiento: tipo_movimiento_inventario_luma.RESERVA,
+              sucursal_origen_id: current.sucursal_llegada_id,
+              realizado_por_personal_id: personalId,
+              notas: 'Asignación automática por recepción de abastecimiento',
+              organizacion_id: current.organizacion_id,
+            },
+          });
+          assignedToOperation = true;
+        }
         const request = await tx.solicitudes_abastecimiento.update({
           where: {
             id_organizacion_id: {
@@ -322,9 +443,10 @@ export class SupplyService {
             },
           },
           data: {
-            estado: 'RECIBIDO',
+            estado: assignedToOperation ? 'ASIGNADO' : 'RECIBIDO',
             unidad_vehiculo_recibida_id: unit.id,
             recibido_en: receivedAt,
+            asignado_en: assignedToOperation ? receivedAt : undefined,
           },
           include: requestInclude,
         });
@@ -452,6 +574,7 @@ export class SupplyService {
         ? { estimatedCost: item.costo_estimado?.toString() ?? null }
         : {}),
       receivedUnitId: item.unidad_vehiculo_recibida_id,
+      chassis: item.unidades_vehiculos?.vin_mostrado ?? null,
       requestedAt: item.solicitado_en,
       confirmedAt: item.confirmado_en,
       orderedAt: item.pedido_en,
@@ -484,6 +607,18 @@ export class SupplyService {
         code: item.sucursales.codigo,
         name: item.sucursales.nombre,
       },
+      operation: item.operaciones
+        ? {
+            id: item.operaciones.id,
+            number: item.operaciones.numero_operacion.toString(),
+            status: item.operaciones.estado_operacion,
+            commercialStatus: item.operaciones.estado_operacion,
+            client: {
+              fullName: item.operaciones.clientes.nombre_completo,
+              documentNumber: item.operaciones.clientes.numero_documento,
+            },
+          }
+        : null,
     };
   }
   private assertOrg(actor: AuthenticatedUser, organizationId?: string) {

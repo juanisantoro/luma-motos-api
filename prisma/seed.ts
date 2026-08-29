@@ -424,7 +424,7 @@ async function main(): Promise<void> {
           select: { id: true },
         });
       if (!existingMotoPolicy) {
-        await transaction.politicas_comisiones.create({
+        const policy = await transaction.politicas_comisiones.create({
           data: {
             organizacion_id: organization.id,
             tipo_vehiculo: 'MOTO',
@@ -432,24 +432,26 @@ async function main(): Promise<void> {
             vigente_desde: new Date('2000-01-01T00:00:00.000Z'),
             estado: 'ACTIVA',
             creado_por_personal_id: commissionSeedActor.id,
-            escalas_comisiones: {
-              create: [
-                { minimo_ventas: 1, maximo_ventas: 5, importe_fijo: 35000 },
-                { minimo_ventas: 6, maximo_ventas: 10, importe_fijo: 40000 },
-                { minimo_ventas: 11, maximo_ventas: 15, importe_fijo: 45000 },
-                { minimo_ventas: 16, maximo_ventas: null, importe_fijo: 50000 },
-              ].map((tier) => ({
-                ...tier,
-                organizacion_id: organization.id,
-              })),
-            },
           },
+          select: { id: true },
+        });
+        await transaction.escalas_comisiones.createMany({
+          data: [
+            { minimo_ventas: 1, maximo_ventas: 5, importe_fijo: 35000 },
+            { minimo_ventas: 6, maximo_ventas: 10, importe_fijo: 40000 },
+            { minimo_ventas: 11, maximo_ventas: 15, importe_fijo: 45000 },
+            { minimo_ventas: 16, maximo_ventas: null, importe_fijo: 50000 },
+          ].map((tier) => ({
+            ...tier,
+            politica_id: policy.id,
+            organizacion_id: organization.id,
+          })),
         });
       }
     },
     {
-      maxWait: 10_000,
-      timeout: 30_000,
+      maxWait: 30_000,
+      timeout: 120_000,
     },
   );
 }
@@ -465,7 +467,9 @@ void main()
     console.error(
       errorCode
         ? `Database seed failed (${errorCode})`
-        : 'Database seed failed',
+        : `Database seed failed: ${
+            error instanceof Error ? error.message : 'Unknown error'
+          }`,
     );
     process.exitCode = 1;
   })

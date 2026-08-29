@@ -100,6 +100,28 @@ describe('Commissions API permissions and DTOs (e2e)', () => {
     );
   });
 
+  it('accepts suggestions for all branches or one UUID branch', async () => {
+    const branchId = '84e778cc-7616-4792-b6db-d89f100bb6f1';
+    await request(app.getHttpServer())
+      .get('/api/commissions/suggestions?period=2026-08&vehicleType=MOTO')
+      .set('x-permissions', 'comisiones.consultar')
+      .expect(200);
+    expect(service.suggestions).toHaveBeenLastCalledWith(
+      expect.objectContaining({ branchId: undefined }),
+      expect.any(Object),
+    );
+    await request(app.getHttpServer())
+      .get(
+        `/api/commissions/suggestions?period=2026-08&vehicleType=MOTO&branchId=${branchId}`,
+      )
+      .set('x-permissions', 'comisiones.consultar')
+      .expect(200);
+    expect(service.suggestions).toHaveBeenLastCalledWith(
+      expect.objectContaining({ branchId }),
+      expect.any(Object),
+    );
+  });
+
   it('does not accept seller scope input on the own commissions endpoint', async () => {
     await request(app.getHttpServer())
       .get(

@@ -8,6 +8,7 @@ import { InventoryBranchesController } from './inventory.controller';
 import { PERMISSIONS_KEY } from '../auth/decorators/permissions.decorator';
 import { PERMISSION_CODES } from '../auth/auth.constants';
 import type { AuthenticatedAuditEvent } from '../audit/audit.service';
+import { CatalogService } from '../catalog/catalog.service';
 
 describe('InventoryService', () => {
   const actor: AuthenticatedUser = {
@@ -114,6 +115,122 @@ describe('InventoryService', () => {
       new BadRequestException('Bulk inventory units must have unique VINs'),
     );
     expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('creates catalog, active policy and same-model physical units in one audited transaction', async () => {
+    const branchId = 'edc9ce1d-dbf3-4691-a2d2-79e4e9563dd2';
+    const versionId = '4de88c4c-3382-4f9b-ae60-98147159c977';
+    const personalId = '904e2a34-8285-48fa-b64c-24a80d94f9cb';
+    const catalog = {
+      provisionVersionWithPolicy: jest.fn().mockResolvedValue({
+        brand: { id: 'brand', nombre: 'Honda' },
+        model: { id: 'model', nombre: 'Wave' },
+        version: { id: versionId, nombre: '110 Full' },
+        policy: {
+          id: 'policy',
+          moneda: 'ARS',
+          precio_lista: new Prisma.Decimal(2500000),
+          precio_minimo: new Prisma.Decimal(2400000),
+          vigente_desde: new Date('2026-08-29'),
+        },
+        pricePolicyCreated: true,
+      }),
+    };
+    const unit = {
+      id: 'unit',
+      version_id: versionId,
+      condicion: 'NUEVO',
+      vin_mostrado: 'ABC123456',
+      vin_normalizado: 'ABC123456',
+      numero_motor: null,
+      patente: null,
+      anio_fabricacion: 2026,
+      kilometraje_km: 0,
+      color: null,
+      sucursal_id: branchId,
+      proveedor_id: null,
+      origen_adquisicion: 'PROVEEDOR',
+      costo_compra: null,
+      estado_inventario: 'EN_STOCK',
+      recibido_en: new Date(),
+      creado_en: new Date(),
+      actualizado_en: new Date(),
+      organizacion_id: actor.organization.id,
+      versiones_vehiculos: {
+        id: versionId,
+        nombre: '110 Full',
+        modelos_vehiculos: {
+          id: 'model',
+          nombre: 'Wave',
+          tipo_vehiculo: 'MOTO',
+          marcas_vehiculos: { id: 'brand', nombre: 'Honda' },
+        },
+      },
+      sucursales: { id: branchId, codigo: 'SM', nombre: 'San Miguel' },
+      proveedores: null,
+    };
+    const createUnit = jest.fn().mockResolvedValue(unit);
+    const transaction = {
+      personal: { findFirst: jest.fn().mockResolvedValue({ id: personalId }) },
+      unidades_vehiculos: {
+        findMany: jest.fn().mockResolvedValue([]),
+        create: createUnit,
+      },
+      versiones_vehiculos: {
+        findUnique: jest.fn().mockResolvedValue({
+          alcance: 'RESTRINGIDO',
+          organizacion_propietaria_id: actor.organization.id,
+          catalogo_organizaciones: [],
+        }),
+      },
+      sucursales: { findFirst: jest.fn().mockResolvedValue({ id: branchId }) },
+      movimientos_inventario: { create: jest.fn().mockResolvedValue({}) },
+    } as unknown as Prisma.TransactionClient;
+    const execute = jest
+      .fn()
+      .mockImplementation(
+        (_event, work: (tx: Prisma.TransactionClient) => unknown) =>
+          work(transaction),
+      );
+    const service = new InventoryService(
+      {} as PrismaService,
+      { execute } as unknown as AuditService,
+      catalog as unknown as CatalogService,
+    );
+
+    const result = await service.createCatalogBulk(
+      {
+        vehicleType: 'MOTO',
+        brandName: 'Honda',
+        modelName: 'Wave',
+        versionName: '110 Full',
+        pricePolicy: {
+          currency: 'ARS',
+          listPrice: 2500000,
+          minimumPrice: 2400000,
+        },
+        condition: 'NUEVO',
+        branchId,
+        acquisitionOrigin: 'PROVEEDOR',
+        units: [{ vin: 'ABC123456', manufactureYear: 2026 }],
+      },
+      actor,
+    );
+
+    expect(result).toMatchObject({
+      replayed: false,
+      count: 1,
+      pricePolicy: { created: true, listPrice: '2500000' },
+    });
+    expect(catalog.provisionVersionWithPolicy).toHaveBeenCalledWith(
+      transaction,
+      expect.objectContaining({ vehicleType: 'MOTO' }),
+      actor.organization.id,
+      personalId,
+      false,
+    );
+    expect(createUnit).toHaveBeenCalledTimes(1);
+    expect(execute).toHaveBeenCalledTimes(1);
   });
 
   it('audits a global create against the selected target organization', async () => {

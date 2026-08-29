@@ -16,6 +16,7 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Permissions } from '../auth/decorators/permissions.decorator';
 import {
   AvailabilityQueryDto,
+  CreateCatalogAvailabilityDto,
   SupplierInputDto,
   SupplierQueryDto,
   UpdateSupplierDto,
@@ -71,5 +72,17 @@ export class SuppliersController {
     @CurrentUser() actor: AuthenticatedUser,
   ) {
     return this.service.upsertAvailability(input, actor);
+  }
+  @Post('supplier-availability/catalog')
+  @Permissions(
+    PERMISSION_CODES.SUPPLIERS_MANAGE,
+    PERMISSION_CODES.CATALOG_MANAGE,
+  )
+  @AuditedMutation()
+  createCatalogAvailability(
+    @Body() input: CreateCatalogAvailabilityDto,
+    @CurrentUser() actor: AuthenticatedUser,
+  ) {
+    return this.service.createCatalogAvailability(input, actor);
   }
 }

@@ -389,9 +389,9 @@ export class SalesService {
         organizacion_id: organizationId,
         estado: 'ACTIVO',
         usuario_id: undefined,
-        usuarios:
+        roles:
           assignmentRole === SalesAssignmentRole.VENDEDOR
-            ? { activo: true, roles: { codigo: ROLE_CODES.VENDEDOR } }
+            ? { activo: true, codigo: ROLE_CODES.VENDEDOR }
             : undefined,
         OR: [
           { sucursal_principal_id: query.branchId },
@@ -2152,9 +2152,13 @@ export class SalesService {
         orderBy: [{ vigente_desde: 'desc' }, { creado_en: 'desc' }],
       }));
     if (!policy)
-      throw new BadRequestException(
-        'No active price policy exists for the operation',
-      );
+      throw new BadRequestException({
+        code: 'ACTIVE_PRICE_POLICY_REQUIRED',
+        message:
+          'La versión seleccionada no tiene una política de precio activa para la sucursal. Configure precio de lista y mínimo antes de crear la operación.',
+        versionId,
+        branchId,
+      });
     return policy;
   }
 
@@ -2285,9 +2289,9 @@ export class SalesService {
         id,
         organizacion_id: organizationId,
         estado: 'ACTIVO',
-        usuarios:
+        roles:
           assignmentRole === SalesAssignmentRole.VENDEDOR
-            ? { activo: true, roles: { codigo: ROLE_CODES.VENDEDOR } }
+            ? { activo: true, codigo: ROLE_CODES.VENDEDOR }
             : undefined,
         OR: [
           { sucursal_principal_id: branchId },

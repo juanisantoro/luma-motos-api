@@ -8,9 +8,11 @@ import {
 import { Prisma } from '@prisma/client';
 import { AuditService, AuthenticatedAuditEvent } from '../audit/audit.service';
 import { AuthenticatedUser } from '../auth/auth.types';
+import { CatalogService } from '../catalog/catalog.service';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   AvailabilityQueryDto,
+  CreateCatalogAvailabilityDto,
   SupplierInputDto,
   SupplierQueryDto,
   UpdateSupplierDto,
@@ -43,6 +45,7 @@ export class SuppliersService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
+    private readonly catalog: CatalogService,
   ) {}
   async findAll(query: SupplierQueryDto, actor: AuthenticatedUser) {
     this.assertOrg(actor, query.organizationId);
@@ -233,6 +236,80 @@ export class SuppliersService {
       organizationId,
     );
   }
+  async createCatalogAvailability(
+    input: CreateCatalogAvailabilityDto,
+    actor: AuthenticatedUser,
+  ) {
+    this.assertOrg(actor, input.organizationId);
+    const organizationId = input.organizationId ?? actor.organization.id;
+    const reportedAt = input.reportedAt
+      ? new Date(input.reportedAt)
+      : new Date();
+    const expiresAt = input.expiresAt ? new Date(input.expiresAt) : null;
+    if (expiresAt && expiresAt <= reportedAt)
+      throw new BadRequestException('Expiry must be after report time');
+    return this.mutate(
+      actor,
+      'CATALOG_POLICY_AVAILABILITY_CREATED',
+      'disponibilidad_proveedor',
+      async (tx) => {
+        await this.supplierOr400(tx, input.supplierId, organizationId);
+        const personalId = await this.personalId(tx, actor, organizationId);
+        const { brand, model, version, policy, pricePolicyCreated } =
+          await this.catalog.provisionVersionWithPolicy(
+            tx,
+            input,
+            organizationId,
+            personalId,
+            actor.globalAccess,
+          );
+        const availability = await tx.disponibilidad_proveedor.upsert({
+          where: {
+            proveedor_id_version_id_condicion: {
+              proveedor_id: input.supplierId,
+              version_id: version.id,
+              condicion: input.condition,
+            },
+          },
+          create: {
+            proveedor_id: input.supplierId,
+            version_id: version.id,
+            condicion: input.condition,
+            cantidad_informada: input.reportedQuantity,
+            informado_en: reportedAt,
+            vence_en: expiresAt,
+            notas: input.notes,
+            organizacion_id: organizationId,
+          },
+          update: {
+            cantidad_informada: input.reportedQuantity,
+            informado_en: reportedAt,
+            vence_en: expiresAt,
+            notas: input.notes,
+          },
+          include: availabilityInclude,
+        });
+        return {
+          catalog: {
+            brand: { id: brand.id, name: brand.nombre },
+            model: { id: model.id, name: model.nombre },
+            version: { id: version.id, name: version.nombre },
+          },
+          pricePolicy: {
+            id: policy.id,
+            currency: policy.moneda,
+            listPrice: policy.precio_lista.toString(),
+            minimumPrice: policy.precio_minimo.toString(),
+            validFrom: policy.vigente_desde,
+            created: pricePolicyCreated,
+          },
+          availability: this.availabilityResponse(availability, new Date()),
+        };
+      },
+      undefined,
+      organizationId,
+    );
+  }
   private createSupplierData(
     input: SupplierInputDto,
     organizationId: string,
@@ -370,6 +447,25 @@ export class SuppliersService {
   }
   private normalName(value: string) {
     return value.trim().replace(/\s+/g, ' ').toLocaleLowerCase('es-AR');
+  }
+  private async personalId(
+    tx: Prisma.TransactionClient,
+    actor: AuthenticatedUser,
+    organizationId: string,
+  ) {
+    const row = await tx.personal.findFirst({
+      where: {
+        usuario_id: actor.id,
+        organizacion_id: organizationId,
+        estado: 'ACTIVO',
+      },
+      select: { id: true },
+    });
+    if (!row)
+      throw new ForbiddenException(
+        'Actor does not have an active personnel profile in the organization',
+      );
+    return row.id;
   }
   private assertOrg(actor: AuthenticatedUser, organizationId?: string) {
     if (organizationId && !actor.globalAccess)

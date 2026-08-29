@@ -15,6 +15,7 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Permissions } from '../auth/decorators/permissions.decorator';
 import {
   BulkInventoryUnitsDto,
+  CreateCatalogInventoryDto,
   InventoryBranchQueryDto,
   InventoryMovementQueryDto,
   CreateInventoryUnitDto,
@@ -56,6 +57,18 @@ export class InventoryController {
     @CurrentUser() actor: AuthenticatedUser,
   ) {
     return this.service.createBulk(input, actor);
+  }
+  @Post('catalog-bulk')
+  @Permissions(
+    PERMISSION_CODES.INVENTORY_MANAGE,
+    PERMISSION_CODES.CATALOG_MANAGE,
+  )
+  @AuditedMutation()
+  createCatalogBulk(
+    @Body() input: CreateCatalogInventoryDto,
+    @CurrentUser() actor: AuthenticatedUser,
+  ) {
+    return this.service.createCatalogBulk(input, actor);
   }
   @Patch(':id')
   @Permissions(PERMISSION_CODES.INVENTORY_MANAGE)

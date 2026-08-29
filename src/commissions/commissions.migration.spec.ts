@@ -12,6 +12,16 @@ describe('Commission database invariants', () => {
     ),
     'utf8',
   );
+  const legacyIndexMigration = readFileSync(
+    join(
+      process.cwd(),
+      'prisma',
+      'migrations',
+      '20260829205000_drop_legacy_commission_index',
+      'migration.sql',
+    ),
+    'utf8',
+  );
 
   it('forces tenant RLS for policy and tier tables', () => {
     expect(migration).toContain(
@@ -40,8 +50,11 @@ describe('Commission database invariants', () => {
     );
   });
 
-  it('drops the legacy index and preserves paid legacy rows safely', () => {
+  it('drops either legacy uniqueness representation and preserves paid rows safely', () => {
     expect(migration).toMatch(
+      /DROP CONSTRAINT IF EXISTS\s+"liquidaciones_comisiones_personal_id_sucursal_id_periodo_de_key"/,
+    );
+    expect(legacyIndexMigration).toMatch(
       /DROP INDEX IF EXISTS\s+"liquidaciones_comisiones_personal_id_sucursal_id_periodo_de_key"/,
     );
     expect(migration).toContain('"pago_legacy" = ("estado_pago" = \'PAGADO\')');

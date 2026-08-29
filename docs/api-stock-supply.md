@@ -26,7 +26,8 @@ BLOQUEADO|DADO_DE_BAJA` (manual PATCH only accepts `EN_STOCK`,
 `GET /catalog/brands` accepts `search`, `active`, `vehicleType`, pagination.
 `GET /catalog/models` accepts `search`, `active`, `brandId`, `vehicleType`,
 pagination. `GET /catalog/versions` accepts `search`, `active`, `brandId`,
-`modelId`, `scope=GLOBAL|RESTRINGIDO`, `vehicleType`, `organizationId`,
+`modelId`, `scope=GLOBAL|RESTRINGIDO`, `vehicleType`, `branchId`, `currentOn`,
+`organizationId`,
 pagination. Restricted versions are visible to their owner and assigned
 organizations. Brands/models are globally managed.
 
@@ -41,7 +42,11 @@ applicable.
 Brand: `{id,name,active,createdAt,updatedAt}`. Model:
 `{id,name,vehicleType,active,brand: Brand,createdAt,updatedAt}`. Version:
 `{id,name,model: Model,scope,ownerOrganizationId,sellableOrganizationIds,
-marker,active,createdAt,updatedAt}`. Price policy:
+marker,active,hasActivePricePolicy,activePricePolicy,createdAt,updatedAt}`.
+`activePricePolicy` is null or
+`{id,branchId,currency,listPrice,minimumPrice,validFrom,validUntil}` and honors
+the requested branch (branch-specific policy first, organization-wide fallback).
+Price policy:
 `{id,versionId,branchId,organizationId,currency,listPrice,minimumPrice,
 validFrom,validUntil,createdAt,updatedAt,version:{id,name,model},branch:
 {id,code,name}|null}`.
@@ -76,6 +81,22 @@ characters, and invalid lengths return `400 VIN is invalid`; duplicate VIN is 40
 atomic; response is exactly `{items,count}`. `PATCH /inventory/units/:id`
 accepts editable unit fields. Repeated normalized VINs inside a bulk request
 return `400 Bulk inventory units must have unique VINs`.
+
+`POST /inventory/units/catalog-bulk` is the preferred inline form when the
+brand/model/version does not exist. It requires both `inventario.gestionar` and
+`catalogo.gestionar` and takes:
+`{vehicleType,brandName,modelName,versionName,pricePolicy:{currency,listPrice,
+minimumPrice,validFrom?},condition,branchId,supplierId?,acquisitionOrigin,
+purchaseCost?,receivedAt?,units:[{vin,engineNumber?,licensePlate?,
+manufactureYear?,mileageKm?,color?}],organizationId?}`. It resolves or creates
+the catalog, creates an active organization-wide initial policy when missing,
+enables the version for the tenant, and inserts all 1--100 physical units and
+reception movements in one transaction. A retry with the same complete VIN set
+returns the existing units with `replayed:true`; partial or conflicting VIN
+reuse returns 409. No catalog assignment, policy, or unit survives a failed
+request.
+Existing shared brands/models can be reused by tenant catalog managers. Creating
+an entirely new shared brand or model additionally requires global access.
 `POST /inventory/units/:id/transfer` takes
 `{destinationBranchId,notes?}` and only transfers `EN_STOCK` to a different
 active branch. `GET /inventory/units/:id/movements?page&limit` is paginated.
@@ -101,6 +122,17 @@ string|null,notes?:string|null,organizationId?}`. Availability response is
 reportedAt,expiresAt,expired,notes,createdAt,updatedAt,supplier:{id,legalName},
 version:{id,name,model:{id,name,vehicleType,brand:{id,name}}}}`.
 
+`POST /supplier-availability/catalog` is the atomic inline-catalog form and
+requires `proveedores.gestionar` plus `catalogo.gestionar`. Body:
+`{supplierId,vehicleType,brandName,modelName,versionName,pricePolicy:{currency,
+listPrice,minimumPrice,validFrom?},condition,reportedQuantity,reportedAt?,
+expiresAt?,notes?,organizationId?}`. It resolves or creates the catalog and
+active price policy, enables the version for the tenant, and upserts availability
+without VIN/chassis in one transaction. Response is
+`{catalog:{brand,model,version},pricePolicy:{...,created},availability}`.
+The same global-access rule applies only when the shared brand/model itself is
+new.
+
 ## Supply requests
 
 `GET /supply-requests` accepts `status,supplierId,versionId,vehicleType,
@@ -110,11 +142,12 @@ arrivalBranchId,supplierReference?,estimatedCost?,notes?,organizationId?}`.
 `operationId`, when present, must belong to the selected organization (400
 `Operation does not belong to the selected organization`).
 
-Supply response includes `supplierAvailabilityId`, `operationId`,
+Supply response includes `supplierAvailabilityId`, `operationId`, `chassis`,
 `organizationId`, all IDs/status/notes, `estimatedCost`, `requestedAt`,
 `confirmedAt`, `orderedAt`, `dispatchedAt`, `receivedAt`, `assignedAt`,
 `createdAt`, `updatedAt`, supplier `{id,legalName}`, version with nested
-model/brand/vehicleType, and branch `{id,code,name}`.
+model/brand/vehicleType, branch `{id,code,name}`, and `operation:null|{id,
+number,status,commercialStatus,client:{fullName,documentNumber}}`.
 
 `POST /supply-requests/:id/transitions` body is exactly
 `{toStatus,supplierReference?,notes?}`. Only forward transitions
@@ -127,7 +160,11 @@ EN_TRANSITO` are valid; `CANCELADA` is allowed only from nonterminal states.
 receivedAt,idempotencyKey,notes`. The branch must equal the request arrival
 branch, otherwise it returns `400 Reception branch must match the supply
 request arrival branch`. Only `EN_TRANSITO` can be received (409 otherwise).
-The locked atomic reception creates one unit and one movement and returns
+The locked atomic reception decrements the linked supplier availability and
+creates one unit and reception movement. When the request is linked to an
+operation it also consumes the provider reservation, creates the physical-unit
+reservation, links the unit to the operation and finishes as `ASIGNADO`, all in
+the same transaction. Without an operation it finishes as `RECIBIDO`. It returns
 `{supplyRequest,unit,inventoryMovement,replayed}`. Repeating it returns the
 same serialized shapes with `replayed:true`; a different normalized VIN returns
 409 `VIN conflicts with the completed supply reception`.

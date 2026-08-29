@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import {
   luma_estado_inventario,
@@ -12,9 +13,11 @@ import {
 } from '@prisma/client';
 import { AuditService, AuthenticatedAuditEvent } from '../audit/audit.service';
 import { AuthenticatedUser } from '../auth/auth.types';
+import { CatalogService } from '../catalog/catalog.service';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   BulkInventoryUnitsDto,
+  CreateCatalogInventoryDto,
   InventoryBranchQueryDto,
   InventoryMovementQueryDto,
   CreateInventoryUnitDto,
@@ -42,6 +45,7 @@ export class InventoryService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
+    @Optional() private readonly catalog?: CatalogService,
   ) {}
   async findAll(query: InventoryQueryDto, actor: AuthenticatedUser) {
     this.assertOrganization(actor, query.organizationId);
@@ -144,6 +148,141 @@ export class InventoryService {
       },
       undefined,
       targetOrganizationId,
+    );
+  }
+  async createCatalogBulk(
+    input: CreateCatalogInventoryDto,
+    actor: AuthenticatedUser,
+  ) {
+    this.assertOrganization(actor, input.organizationId);
+    if (input.pricePolicy.minimumPrice > input.pricePolicy.listPrice)
+      throw new BadRequestException('Minimum price cannot exceed list price');
+    const normalizedVins = input.units.map(
+      (unit) => validateVin(unit.vin).normalizedVin,
+    );
+    if (new Set(normalizedVins).size !== normalizedVins.length)
+      throw new BadRequestException(
+        'Bulk inventory units must have unique VINs',
+      );
+    const organizationId = input.organizationId ?? actor.organization.id;
+    const catalog = this.catalog;
+    if (!catalog)
+      throw new Error('Catalog provisioning service is unavailable');
+    return this.mutate(
+      actor,
+      'CATALOG_POLICY_INVENTORY_CREATED',
+      'unidades_vehiculos',
+      async (tx) => {
+        const personalId = await this.personalId(tx, actor, organizationId);
+        const { brand, model, version, policy, pricePolicyCreated } =
+          await catalog.provisionVersionWithPolicy(
+            tx,
+            input,
+            organizationId,
+            personalId,
+            actor.globalAccess,
+          );
+        const existing = await tx.unidades_vehiculos.findMany({
+          where: { vin_normalizado: { in: normalizedVins } },
+          include: unitInclude,
+          orderBy: { vin_normalizado: 'asc' },
+        });
+        if (existing.length) {
+          const requestedByVin = new Map(
+            input.units.map((unit) => [normalizeVin(unit.vin), unit]),
+          );
+          if (
+            existing.length !== input.units.length ||
+            existing.some((unit) => {
+              const requested = requestedByVin.get(unit.vin_normalizado);
+              return (
+                !requested ||
+                unit.organizacion_id !== organizationId ||
+                unit.version_id !== version.id ||
+                unit.sucursal_id !== input.branchId ||
+                unit.condicion !== input.condition ||
+                unit.proveedor_id !== (input.supplierId ?? null) ||
+                unit.origen_adquisicion !== input.acquisitionOrigin ||
+                Number(unit.costo_compra ?? 0) !== (input.purchaseCost ?? 0) ||
+                unit.motor_normalizado !==
+                  (requested.engineNumber
+                    ? this.normal(requested.engineNumber)
+                    : null) ||
+                unit.patente_normalizada !==
+                  (requested.licensePlate
+                    ? this.normal(requested.licensePlate)
+                    : null) ||
+                unit.anio_fabricacion !== (requested.manufactureYear ?? null) ||
+                unit.kilometraje_km !== (requested.mileageKm ?? 0) ||
+                unit.color !== (requested.color?.trim() ?? null) ||
+                (input.receivedAt !== undefined &&
+                  unit.recibido_en.getTime() !==
+                    new Date(input.receivedAt).getTime())
+              );
+            })
+          )
+            throw new ConflictException(
+              'One or more VINs already exist with different inventory data',
+            );
+          return {
+            replayed: true,
+            catalog: {
+              brand: { id: brand.id, name: brand.nombre },
+              model: { id: model.id, name: model.nombre },
+              version: { id: version.id, name: version.nombre },
+            },
+            pricePolicy: {
+              id: policy.id,
+              currency: policy.moneda,
+              listPrice: policy.precio_lista.toString(),
+              minimumPrice: policy.precio_minimo.toString(),
+              validFrom: policy.vigente_desde,
+              created: false,
+            },
+            items: existing.map((unit) => this.unit(unit, actor)),
+            count: existing.length,
+          };
+        }
+        const items = [];
+        for (const unit of input.units)
+          items.push(
+            await this.createUnit(
+              tx,
+              {
+                ...unit,
+                versionId: version.id,
+                condition: input.condition,
+                branchId: input.branchId,
+                supplierId: input.supplierId,
+                acquisitionOrigin: input.acquisitionOrigin,
+                purchaseCost: input.purchaseCost,
+                receivedAt: input.receivedAt,
+              },
+              actor,
+              organizationId,
+            ),
+          );
+        return {
+          replayed: false,
+          catalog: {
+            brand: { id: brand.id, name: brand.nombre },
+            model: { id: model.id, name: model.nombre },
+            version: { id: version.id, name: version.nombre },
+          },
+          pricePolicy: {
+            id: policy.id,
+            currency: policy.moneda,
+            listPrice: policy.precio_lista.toString(),
+            minimumPrice: policy.precio_minimo.toString(),
+            validFrom: policy.vigente_desde,
+            created: pricePolicyCreated,
+          },
+          items,
+          count: items.length,
+        };
+      },
+      undefined,
+      organizationId,
     );
   }
   async update(

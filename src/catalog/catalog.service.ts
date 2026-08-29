@@ -5,7 +5,11 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { alcance_catalogo_luma, Prisma } from '@prisma/client';
+import {
+  alcance_catalogo_luma,
+  Prisma,
+  tipo_vehiculo_luma,
+} from '@prisma/client';
 import { AuditService, AuthenticatedAuditEvent } from '../audit/audit.service';
 import { AuthenticatedUser } from '../auth/auth.types';
 import { PrismaService } from '../prisma/prisma.service';
@@ -55,12 +59,164 @@ const pricePolicyInclude = {
   sucursales: true,
 } satisfies Prisma.politicas_precios_vehiculosInclude;
 
+export interface ProvisionCatalogPriceInput {
+  vehicleType: tipo_vehiculo_luma;
+  brandName: string;
+  modelName: string;
+  versionName: string;
+  pricePolicy: {
+    currency: string;
+    listPrice: number;
+    minimumPrice: number;
+    validFrom?: string;
+  };
+}
+
 @Injectable()
 export class CatalogService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
   ) {}
+  async provisionVersionWithPolicy(
+    tx: Prisma.TransactionClient,
+    input: ProvisionCatalogPriceInput,
+    organizationId: string,
+    personalId: string,
+    globalAccess: boolean,
+  ) {
+    if (input.pricePolicy.minimumPrice > input.pricePolicy.listPrice)
+      throw new BadRequestException('Minimum price cannot exceed list price');
+    const brandName = input.brandName.trim().replace(/\s+/g, ' ');
+    const modelName = input.modelName.trim().replace(/\s+/g, ' ');
+    const versionName = input.versionName.trim().replace(/\s+/g, ' ');
+    const brandNormalized = this.normalize(brandName);
+    const modelNormalized = this.normalize(modelName);
+    const versionNormalized = this.normalize(versionName);
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`${brandNormalized}:${input.vehicleType}:${modelNormalized}`}, 0))`;
+    let brand = await tx.marcas_vehiculos.findUnique({
+      where: { nombre_normalizado: brandNormalized },
+    });
+    if (!brand) {
+      if (!globalAccess)
+        throw new ForbiddenException(
+          'Global access is required to create a shared vehicle brand',
+        );
+      brand = await tx.marcas_vehiculos.create({
+        data: { nombre: brandName, nombre_normalizado: brandNormalized },
+      });
+    } else if (!brand.activo) {
+      if (!globalAccess)
+        throw new ConflictException('Vehicle brand is inactive');
+      brand = await tx.marcas_vehiculos.update({
+        where: { id: brand.id },
+        data: { activo: true },
+      });
+    }
+    let model = await tx.modelos_vehiculos.findFirst({
+      where: {
+        marca_id: brand.id,
+        tipo_vehiculo: input.vehicleType,
+        nombre_normalizado: modelNormalized,
+      },
+    });
+    if (!model) {
+      if (!globalAccess)
+        throw new ForbiddenException(
+          'Global access is required to create a shared vehicle model',
+        );
+      model = await tx.modelos_vehiculos.create({
+        data: {
+          marca_id: brand.id,
+          tipo_vehiculo: input.vehicleType,
+          nombre: modelName,
+          nombre_normalizado: modelNormalized,
+        },
+      });
+    } else if (!model.activo) {
+      if (!globalAccess)
+        throw new ConflictException('Vehicle model is inactive');
+      model = await tx.modelos_vehiculos.update({
+        where: { id: model.id },
+        data: { activo: true },
+      });
+    }
+    let version = await tx.versiones_vehiculos.findFirst({
+      where: {
+        modelo_id: model.id,
+        nombre_normalizado: versionNormalized,
+        OR: [
+          { alcance: 'GLOBAL' },
+          { organizacion_propietaria_id: organizationId },
+          {
+            catalogo_organizaciones: {
+              some: { organizacion_id: organizationId },
+            },
+          },
+        ],
+      },
+    });
+    if (!version)
+      version = await tx.versiones_vehiculos.create({
+        data: {
+          modelo_id: model.id,
+          nombre: versionName,
+          nombre_normalizado: versionNormalized,
+          alcance: 'RESTRINGIDO',
+          organizacion_propietaria_id: organizationId,
+        },
+      });
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const validFrom = input.pricePolicy.validFrom
+      ? new Date(input.pricePolicy.validFrom)
+      : today;
+    if (validFrom > today)
+      throw new BadRequestException(
+        'Initial price policy must be active today',
+      );
+    let policy = await tx.politicas_precios_vehiculos.findFirst({
+      where: {
+        organizacion_id: organizationId,
+        version_id: version.id,
+        sucursal_id: null,
+        vigente_desde: { lte: today },
+        OR: [{ vigente_hasta: null }, { vigente_hasta: { gte: today } }],
+      },
+      orderBy: [{ vigente_desde: 'desc' }, { creado_en: 'desc' }],
+    });
+    const pricePolicyCreated = !policy;
+    if (!policy)
+      policy = await tx.politicas_precios_vehiculos.create({
+        data: {
+          version_id: version.id,
+          moneda: input.pricePolicy.currency.toUpperCase(),
+          precio_lista: input.pricePolicy.listPrice,
+          precio_minimo: input.pricePolicy.minimumPrice,
+          vigente_desde: validFrom,
+          creado_por_personal_id: personalId,
+          organizacion_id: organizationId,
+        },
+      });
+    if (
+      version.alcance === 'RESTRINGIDO' &&
+      version.organizacion_propietaria_id === organizationId
+    )
+      await tx.catalogo_organizaciones.upsert({
+        where: {
+          organizacion_id_version_id: {
+            organizacion_id: organizationId,
+            version_id: version.id,
+          },
+        },
+        create: {
+          organizacion_id: organizationId,
+          version_id: version.id,
+        },
+        update: { puede_vender: true },
+      });
+    return { brand, model, version, policy, pricePolicyCreated };
+  }
 
   async brands(query: CatalogQueryDto, actor: AuthenticatedUser) {
     this.assertOrganizationFilter(actor, query.organizationId);
@@ -278,22 +434,83 @@ export class CatalogService {
         contains: this.normalize(query.search),
         mode: 'insensitive',
       };
-    return this.page(
-      query,
-      actor,
+    const currentOn = query.currentOn ? new Date(query.currentOn) : new Date();
+    currentOn.setHours(0, 0, 0, 0);
+    const [total, items] = await this.prisma.withTenant(
+      this.scope(actor),
       (tx) =>
         Promise.all([
           tx.versiones_vehiculos.count({ where }),
           tx.versiones_vehiculos.findMany({
             where,
-            select: versionSelect,
+            select: {
+              ...versionSelect,
+              politicas_precios_vehiculos: {
+                where: {
+                  organizacion_id: organizationId,
+                  vigente_desde: { lte: currentOn },
+                  AND: [
+                    {
+                      OR: [
+                        { vigente_hasta: null },
+                        { vigente_hasta: { gte: currentOn } },
+                      ],
+                    },
+                    {
+                      OR: query.branchId
+                        ? [
+                            { sucursal_id: query.branchId },
+                            { sucursal_id: null },
+                          ]
+                        : [{ sucursal_id: null }],
+                    },
+                  ],
+                },
+                select: {
+                  id: true,
+                  sucursal_id: true,
+                  moneda: true,
+                  precio_lista: true,
+                  precio_minimo: true,
+                  vigente_desde: true,
+                  vigente_hasta: true,
+                },
+                orderBy: [{ vigente_desde: 'desc' }, { creado_en: 'desc' }],
+              },
+            },
             orderBy: { nombre_normalizado: 'asc' },
             skip: (query.page - 1) * query.limit,
             take: query.limit,
           }),
         ]),
-      (item) => this.toVersion(item, actor),
     );
+    return {
+      items: items.map((item) => {
+        const policies = item.politicas_precios_vehiculos ?? [];
+        const policy =
+          policies.find(
+            (candidate) => candidate.sucursal_id === query.branchId,
+          ) ?? policies[0];
+        return {
+          ...this.toVersion(item, actor),
+          hasActivePricePolicy: Boolean(policy),
+          activePricePolicy: policy
+            ? {
+                id: policy.id,
+                branchId: policy.sucursal_id,
+                currency: policy.moneda,
+                listPrice: policy.precio_lista.toString(),
+                minimumPrice: policy.precio_minimo.toString(),
+                validFrom: policy.vigente_desde,
+                validUntil: policy.vigente_hasta,
+              }
+            : null,
+        };
+      }),
+      total,
+      page: query.page,
+      limit: query.limit,
+    };
   }
   async version(id: string, actor: AuthenticatedUser) {
     return this.prisma.withTenant(this.scope(actor), async (tx) =>

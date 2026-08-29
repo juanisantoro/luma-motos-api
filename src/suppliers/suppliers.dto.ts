@@ -5,12 +5,15 @@ import {
   IsEnum,
   IsInt,
   IsNotEmpty,
+  IsNumber,
   IsOptional,
   IsString,
   IsUUID,
   Max,
   MaxLength,
   Min,
+  MinLength,
+  ValidateNested,
 } from 'class-validator';
 import { condicion_vehiculo_luma, tipo_vehiculo_luma } from '@prisma/client';
 
@@ -65,6 +68,36 @@ export class AvailabilityQueryDto {
 export class UpsertAvailabilityDto {
   @IsUUID() supplierId!: string;
   @IsUUID() versionId!: string;
+  @IsEnum(condicion_vehiculo_luma) condition!: condicion_vehiculo_luma;
+  @Type(() => Number) @IsInt() @Min(0) reportedQuantity!: number;
+  @IsOptional() @IsDateString() reportedAt?: string;
+  @IsOptional() @IsDateString() expiresAt?: string | null;
+  @IsOptional() @IsString() @MaxLength(2000) notes?: string | null;
+  @IsOptional() @IsUUID() organizationId?: string;
+}
+
+export class SupplierInitialPricePolicyDto {
+  @IsString() @MinLength(3) @MaxLength(3) currency = 'ARS';
+  @Type(() => Number)
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0.01)
+  listPrice!: number;
+  @Type(() => Number)
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0.01)
+  minimumPrice!: number;
+  @IsOptional() @IsDateString() validFrom?: string;
+}
+
+export class CreateCatalogAvailabilityDto {
+  @IsUUID() supplierId!: string;
+  @IsEnum(tipo_vehiculo_luma) vehicleType!: tipo_vehiculo_luma;
+  @IsString() @IsNotEmpty() @MaxLength(120) brandName!: string;
+  @IsString() @IsNotEmpty() @MaxLength(140) modelName!: string;
+  @IsString() @IsNotEmpty() @MaxLength(140) versionName!: string;
+  @ValidateNested()
+  @Type(() => SupplierInitialPricePolicyDto)
+  pricePolicy!: SupplierInitialPricePolicyDto;
   @IsEnum(condicion_vehiculo_luma) condition!: condicion_vehiculo_luma;
   @Type(() => Number) @IsInt() @Min(0) reportedQuantity!: number;
   @IsOptional() @IsDateString() reportedAt?: string;
