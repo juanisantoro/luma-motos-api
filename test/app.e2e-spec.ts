@@ -44,12 +44,30 @@ describe('Application security (e2e)', () => {
     [Prisma.AuthSessionUpdateManyArgs]
   >();
   const executeRaw = jest.fn();
-  const createAuditLog = jest.fn();
+  const createAuditLog = jest.fn<
+    Promise<unknown>,
+    [Prisma.registros_auditoriaCreateArgs]
+  >();
   const countAuditLogs = jest.fn();
   const findAuditLogs = jest.fn();
   const withTenant = jest.fn();
   const findAllUsers = jest.fn();
   const createManagedUser = jest.fn();
+  const countClients = jest.fn<Promise<number>, [Prisma.clientesCountArgs]>();
+  const findClients = jest.fn<
+    Promise<unknown[]>,
+    [Prisma.clientesFindManyArgs]
+  >();
+  const findClient = jest.fn<
+    Promise<unknown>,
+    [Prisma.clientesFindFirstArgs]
+  >();
+  const createClient = jest.fn<Promise<unknown>, [Prisma.clientesCreateArgs]>();
+  const updateClient = jest.fn<Promise<unknown>, [Prisma.clientesUpdateArgs]>();
+  const findOrganization = jest.fn<
+    Promise<unknown>,
+    [Prisma.organizacionesFindFirstArgs]
+  >();
   let app: INestApplication<App>;
   let jwtService: JwtService;
 
@@ -146,6 +164,17 @@ describe('Application security (e2e)', () => {
       user: { id: 'new-user-id' },
       delivery: { sent: true },
     });
+    countClients.mockReset();
+    countClients.mockResolvedValue(0);
+    findClients.mockReset();
+    findClients.mockResolvedValue([]);
+    findClient.mockReset();
+    createClient.mockReset();
+    updateClient.mockReset();
+    findOrganization.mockReset();
+    findOrganization.mockResolvedValue({
+      id: authenticatedUser.organization.id,
+    });
     withTenant.mockReset();
     withTenant.mockImplementation(
       (_scope: unknown, operation: (client: object) => Promise<unknown>) =>
@@ -157,6 +186,16 @@ describe('Application security (e2e)', () => {
             create: createAuditLog,
             count: countAuditLogs,
             findMany: findAuditLogs,
+          },
+          clientes: {
+            count: countClients,
+            findMany: findClients,
+            findFirst: findClient,
+            create: createClient,
+            update: updateClient,
+          },
+          organizaciones: {
+            findFirst: findOrganization,
           },
         }),
     );
@@ -366,6 +405,144 @@ describe('Application security (e2e)', () => {
       })
       .expect(201);
     expect(createManagedUser).toHaveBeenCalled();
+  });
+
+  it('lists only clients from the authenticated tenant', async () => {
+    const token = await accessToken();
+
+    await request(app.getHttpServer())
+      .get('/api/clients?search=ana&active=true&page=1&limit=20')
+      .set('Authorization', 'Bearer ' + token)
+      .expect(200)
+      .expect({
+        items: [],
+        total: 0,
+        page: 1,
+        limit: 20,
+      });
+
+    expect(withTenant).toHaveBeenCalledWith(
+      {
+        organizationId: authenticatedUser.organization.id,
+        globalAccess: false,
+      },
+      expect.any(Function),
+    );
+    expect(countClients.mock.calls[0]?.[0]).toMatchObject({
+      where: {
+        organizacion_id: authenticatedUser.organization.id,
+        activo: true,
+      },
+    });
+  });
+
+  it('rejects organization filters without global access', async () => {
+    const token = await accessToken();
+
+    await request(app.getHttpServer())
+      .get('/api/clients?organizationId=7d5cc401-544e-4651-9bd6-52495887fecd')
+      .set('Authorization', 'Bearer ' + token)
+      .expect(403);
+    expect(countClients).not.toHaveBeenCalled();
+  });
+
+  it('enforces client management permission and payload validation', async () => {
+    const readToken = await accessToken();
+    await request(app.getHttpServer())
+      .post('/api/clients')
+      .set('Authorization', 'Bearer ' + readToken)
+      .send({ fullName: 'Ana Cliente' })
+      .expect(403);
+
+    findUnique.mockResolvedValue({
+      ...databaseUser,
+      roles: {
+        ...databaseUser.roles,
+        permisos_rol: [{ codigo_permiso: 'clientes.gestionar' }],
+      },
+    });
+    const manageToken = await accessToken();
+    await request(app.getHttpServer())
+      .post('/api/clients')
+      .set('Authorization', 'Bearer ' + manageToken)
+      .send({
+        fullName: 'Ana Cliente',
+        documentType: 'DNI',
+      })
+      .expect(400);
+    await request(app.getHttpServer())
+      .post('/api/clients')
+      .set('Authorization', 'Bearer ' + manageToken)
+      .send({
+        fullName: 'Ana Cliente',
+        unexpected: 'rejected',
+      })
+      .expect(400);
+    expect(createClient).not.toHaveBeenCalled();
+  });
+
+  it('creates and audits a valid client with management permission', async () => {
+    findUnique.mockResolvedValue({
+      ...databaseUser,
+      roles: {
+        ...databaseUser.roles,
+        permisos_rol: [{ codigo_permiso: 'clientes.gestionar' }],
+      },
+    });
+    createClient.mockResolvedValue({
+      id: '7d5cc401-544e-4651-9bd6-52495887fecd',
+      tipo_documento: 'DNI',
+      numero_documento: '12.345.678',
+      nombre_completo: 'Ana Cliente',
+      telefono: null,
+      correo: 'ana@example.com',
+      direccion: null,
+      notas: null,
+      activo: true,
+      creado_en: new Date('2026-08-29T10:00:00.000Z'),
+      actualizado_en: new Date('2026-08-29T10:00:00.000Z'),
+      organizacion_id: authenticatedUser.organization.id,
+      organizaciones: {
+        id: authenticatedUser.organization.id,
+        codigo: authenticatedUser.organization.code,
+        nombre: authenticatedUser.organization.name,
+        tipo: authenticatedUser.organization.type,
+      },
+    });
+    const token = await accessToken();
+
+    await request(app.getHttpServer())
+      .post('/api/clients')
+      .set('Authorization', 'Bearer ' + token)
+      .send({
+        fullName: 'Ana Cliente',
+        documentType: 'DNI',
+        documentNumber: '12.345.678',
+        email: 'ANA@EXAMPLE.COM',
+      })
+      .expect(201)
+      .expect(({ body }) => {
+        expect(body).toMatchObject({
+          id: '7d5cc401-544e-4651-9bd6-52495887fecd',
+          fullName: 'Ana Cliente',
+          active: true,
+        });
+      });
+
+    expect(createClient.mock.calls[0]?.[0]).toMatchObject({
+      data: {
+        documento_normalizado: '12345678',
+        correo: 'ana@example.com',
+        organizacion_id: authenticatedUser.organization.id,
+      },
+    });
+    expect(createAuditLog.mock.calls[0]?.[0]).toMatchObject({
+      data: {
+        accion: 'CLIENT_CREATED',
+        entidad: 'clientes',
+        usuario_id: authenticatedUser.id,
+      },
+    });
   });
 
   it('blocks authenticated mutation endpoints without audit declaration', async () => {

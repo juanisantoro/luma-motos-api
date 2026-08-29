@@ -1,0 +1,13 @@
+export const CLIENT_AUDIT_ACTIONS = {
+  CREATED: 'CLIENT_CREATED',
+  UPDATED: 'CLIENT_UPDATED',
+  STATUS_UPDATED: 'CLIENT_STATUS_UPDATED',
+} as const;
+
+export const CLIENT_DOCUMENT_TYPES = [
+  'DNI',
+  'CUIT',
+  'CI',
+  'PASAPORTE',
+  'OTRO',
+] as const;

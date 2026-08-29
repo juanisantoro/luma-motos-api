@@ -107,6 +107,7 @@ model clientes {
 
   @@unique([id, organizacion_id], map: "clientes_id_organizacion_unico")
   @@index([nombre_normalizado(ops: raw("gin_trgm_ops"))], map: "clientes_nombre_trgm_indice", type: Gin)
+  @@index([organizacion_id, activo, creado_en(sort: Desc)], map: "clientes_organizacion_estado_creado_indice")
 }
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.

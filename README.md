@@ -127,6 +127,46 @@ Content-Type: application/json
 
 Un usuario autenticado puede cambiar su contraseña con `POST /api/auth/change-password`, enviando `currentPassword` y `newPassword`. Los cambios de contraseña, rol, sucursal, acceso global o estado revocan todas las sesiones abiertas. Cada modificación y cada resultado de entrega de email queda auditado con actor, organización objetivo y timestamp.
 
+### Gestión segura de clientes
+
+El seed asigna `clientes.consultar` y `clientes.gestionar` a **Vendedor**, **Administrativa**, **Gerente** y **Administrador**. RLS limita cada consulta y mutación a la organización autenticada; solo un usuario con `acceso_global` puede enviar `organizationId` para listar o crear en otra organización.
+
+| Endpoint | Permiso | Uso |
+| --- | --- | --- |
+| `GET /api/clients` | `clientes.consultar` | Listar con paginación y filtros |
+| `GET /api/clients/:id` | `clientes.consultar` | Consultar por UUID |
+| `POST /api/clients` | `clientes.gestionar` | Crear |
+| `PATCH /api/clients/:id` | `clientes.gestionar` | Actualizar datos editables |
+| `PATCH /api/clients/:id/status` | `clientes.gestionar` | Activar o desactivar sin borrar |
+
+El listado acepta `page` (1-1.000.000), `limit` (1-100, por defecto 50), `search` (nombre, documento o email), `active` y `organizationId` (solo acceso global). Responde `{ items, total, page, limit }`, ordenado por creación descendente.
+
+El alta recibe `fullName` y, opcionalmente, `documentType` (`DNI`, `CUIT`, `CI`, `PASAPORTE` u `OTRO`), `documentNumber`, `phone`, `email`, `address`, `notes` y `organizationId`. Tipo y número de documento se envían siempre juntos. La actualización admite los mismos datos editables salvo la organización; enviar ambos campos documentales como `null` elimina el documento. La respuesta usa nombres JSON en inglés:
+
+```json
+{
+  "id": "uuid",
+  "documentType": "DNI",
+  "documentNumber": "12.345.678",
+  "fullName": "Ana Cliente",
+  "phone": null,
+  "email": "ana@example.com",
+  "address": null,
+  "notes": null,
+  "active": true,
+  "createdAt": "2026-08-29T10:00:00.000Z",
+  "updatedAt": "2026-08-29T10:00:00.000Z",
+  "organization": {
+    "id": "uuid",
+    "code": "LUMA_CENTRAL",
+    "name": "Luma Motos Casa Central",
+    "type": "CASA_CENTRAL"
+  }
+}
+```
+
+Los nombres, emails y documentos se normalizan antes de buscar o persistir. Un índice parcial evita repetir la misma pareja tipo/número dentro de una organización, pero permite clientes sin documento. Los errores funcionales son `400` para payload, pareja documental, organización o estado inválidos; `403` para permisos/acceso global insuficientes; `404` para un UUID inexistente o fuera del tenant; y `409` para documento duplicado. Las mutaciones auditan actor, organización, estado y presencia de campos modificados sin copiar datos personales a la auditoría.
+
 ### Brevo SMTP
 
 El envío usa STARTTLS con `smtp-relay.brevo.com:587`. Configurar en `.env` el login SMTP de Brevo, su clave SMTP y un remitente verificado:
@@ -203,10 +243,11 @@ Prisma está alineado con el esquema integral existente de Luma Motos. La migrac
 - `sucursales`: locales pertenecientes a una organización; una sucursal de franquicia se identifica porque su organización es de tipo `FRANQUICIA`.
 - `roles`, `permisos` y `permisos_rol`: autorización administrada como datos versionados.
 - `usuarios` y `personal`: credenciales, estado, identidad, rol, organización y sucursal.
+- `clientes`: identidad comercial, contacto, estado y organización, sin borrado físico.
 - `registros_auditoria`: acción, entidad, organización, usuario actor, valores auditables y timestamp.
 - `sesiones_autenticacion`: sesiones JWT revocables con vencimiento por inactividad.
 
-El seed es idempotente y preserva el catálogo existente. Administra `LUMA_CENTRAL`, sus sucursales **San Miguel** y **Del Viso**, los roles **Vendedor**, **Administrativa**, **Administrador** y **Gerente**, y sincroniza los permisos de auditoría y usuarios descritos arriba. No crea usuarios ni contraseñas.
+El seed es idempotente y preserva el catálogo existente. Administra `LUMA_CENTRAL`, sus sucursales **San Miguel** y **Del Viso**, los roles **Vendedor**, **Administrativa**, **Administrador** y **Gerente**, y sincroniza los permisos de auditoría, usuarios y clientes descritos arriba. No crea usuarios, clientes ni contraseñas.
 
 ### Aislamiento multiorganización
 

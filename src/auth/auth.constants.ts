@@ -13,6 +13,8 @@ export type RoleCode = (typeof ROLE_CODES)[keyof typeof ROLE_CODES];
 export const PERMISSION_CODES = {
   USERS_READ: 'usuarios.consultar',
   USERS_MANAGE: 'usuarios.gestionar',
+  CLIENTS_READ: 'clientes.consultar',
+  CLIENTS_MANAGE: 'clientes.gestionar',
 } as const;
 
 export const AUDIT_ACTIONS = {

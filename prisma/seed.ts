@@ -56,6 +56,18 @@ const managedPermissions = [
       'Crea usuarios y modifica su estado, rol, sucursal y acceso global.',
     roles: ['ADMINISTRADOR'],
   },
+  {
+    codigo: 'clientes.consultar',
+    modulo: 'clientes',
+    descripcion: 'Consulta clientes de las organizaciones habilitadas.',
+    roles: ['VENDEDOR', 'ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+  },
+  {
+    codigo: 'clientes.gestionar',
+    modulo: 'clientes',
+    descripcion: 'Crea, actualiza, activa y desactiva clientes.',
+    roles: ['VENDEDOR', 'ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+  },
 ] as const;
 
 async function main(): Promise<void> {

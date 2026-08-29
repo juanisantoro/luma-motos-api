@@ -8,6 +8,7 @@ import { AuthModule } from './auth/auth.module';
 import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
 import { PermissionsGuard } from './auth/guards/permissions.guard';
 import { RolesGuard } from './auth/guards/roles.guard';
+import { ClientsModule } from './clients/clients.module';
 import { validateEnvironment } from './config/environment';
 import { HealthModule } from './health/health.module';
 import { MailModule } from './mail/mail.module';
@@ -34,6 +35,7 @@ import { UsersModule } from './users/users.module';
     HealthModule,
     MailModule,
     UsersModule,
+    ClientsModule,
   ],
   providers: [
     {
