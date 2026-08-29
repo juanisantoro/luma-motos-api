@@ -14,3 +14,11 @@ coverage/
 .DS_Store
 .idea/
 .vscode/
+
+# Local database import inputs and output
+*.xlsx
+*.xls
+schema-only.sql
+import-output/
+__pycache__/
+*.py[cod]
