@@ -147,7 +147,7 @@ export class ClientsService {
         async (transaction) => {
           await this.requireOrganization(transaction, organizationId);
           if (input.documentType && input.documentNumber) {
-            await transaction.$queryRaw`
+            await transaction.$executeRaw`
               SELECT pg_advisory_xact_lock(
                 hashtextextended(
                   ${`${organizationId}:${input.documentType}:${normalizeClientDocument(input.documentNumber)}`},

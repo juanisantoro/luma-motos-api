@@ -19,6 +19,17 @@ const financialInstitutions = [
   'Banco del Sol',
 ] as const;
 
+const catalogProducts = [
+  {
+    vehicleType: 'AUTO' as const,
+    brand: 'Toyota',
+    model: 'Etios',
+    version: 'XLS',
+    listPrice: 11_800_000,
+    minimumPrice: 10_800_000,
+  },
+] as const;
+
 const roles = [
   {
     codigo: 'VENDEDOR',
@@ -164,13 +175,13 @@ const managedPermissions = [
     codigo: 'abastecimiento.gestionar',
     modulo: 'abastecimiento',
     descripcion: 'Crea solicitudes y gestiona sus transiciones.',
-    roles: ['ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+    roles: ['ADMINISTRATIVA', 'ADMINISTRADOR'],
   },
   {
     codigo: 'abastecimiento.recibir',
     modulo: 'abastecimiento',
     descripcion: 'Recibe solicitudes en tránsito como unidades físicas.',
-    roles: ['ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+    roles: ['ADMINISTRATIVA', 'ADMINISTRADOR'],
   },
   {
     codigo: 'ventas.consultar',
@@ -511,6 +522,103 @@ async function main(): Promise<void> {
           },
           select: { id: true },
         });
+      }
+
+      for (const product of catalogProducts) {
+        const brandNormalized = product.brand.toLocaleLowerCase('es-AR');
+        const modelNormalized = product.model.toLocaleLowerCase('es-AR');
+        const versionNormalized = product.version.toLocaleLowerCase('es-AR');
+        const brand = await transaction.marcas_vehiculos.upsert({
+          where: { nombre_normalizado: brandNormalized },
+          create: {
+            nombre: product.brand,
+            nombre_normalizado: brandNormalized,
+          },
+          update: { activo: true },
+          select: { id: true },
+        });
+        const model = await transaction.modelos_vehiculos.upsert({
+          where: {
+            marca_id_tipo_vehiculo_nombre_normalizado: {
+              marca_id: brand.id,
+              tipo_vehiculo: product.vehicleType,
+              nombre_normalizado: modelNormalized,
+            },
+          },
+          create: {
+            marca_id: brand.id,
+            tipo_vehiculo: product.vehicleType,
+            nombre: product.model,
+            nombre_normalizado: modelNormalized,
+          },
+          update: { activo: true },
+          select: { id: true },
+        });
+        let version = await transaction.versiones_vehiculos.findFirst({
+          where: {
+            modelo_id: model.id,
+            nombre_normalizado: versionNormalized,
+          },
+          select: { id: true },
+        });
+        if (version) {
+          version = await transaction.versiones_vehiculos.update({
+            where: { id: version.id },
+            data: { activo: true },
+            select: { id: true },
+          });
+        } else {
+          version = await transaction.versiones_vehiculos.create({
+            data: {
+              modelo_id: model.id,
+              nombre: product.version,
+              nombre_normalizado: versionNormalized,
+              alcance: 'RESTRINGIDO',
+              organizacion_propietaria_id: organization.id,
+            },
+            select: { id: true },
+          });
+        }
+        await transaction.catalogo_organizaciones.upsert({
+          where: {
+            organizacion_id_version_id: {
+              organizacion_id: organization.id,
+              version_id: version.id,
+            },
+          },
+          create: {
+            organizacion_id: organization.id,
+            version_id: version.id,
+          },
+          update: { puede_vender: true },
+        });
+        const currentPricePolicy =
+          await transaction.politicas_precios_vehiculos.findFirst({
+            where: {
+              organizacion_id: organization.id,
+              version_id: version.id,
+              sucursal_id: null,
+              vigente_desde: { lte: new Date() },
+              OR: [
+                { vigente_hasta: null },
+                { vigente_hasta: { gte: new Date() } },
+              ],
+            },
+            select: { id: true },
+          });
+        if (!currentPricePolicy) {
+          await transaction.politicas_precios_vehiculos.create({
+            data: {
+              version_id: version.id,
+              moneda: 'ARS',
+              precio_lista: product.listPrice,
+              precio_minimo: product.minimumPrice,
+              vigente_desde: new Date('2000-01-01T00:00:00.000Z'),
+              creado_por_personal_id: commissionSeedActor.id,
+              organizacion_id: organization.id,
+            },
+          });
+        }
       }
 
       const existingMotoPolicy =

@@ -5,7 +5,8 @@ All paths are under `/api`, require a bearer token, and use Nest errors:
 strings; money (`purchaseCost`, `estimatedCost`, `listPrice`, `minimumPrice`)
 is always a decimal **string** in responses. Paged lists are
 `{ items, total, page, limit }`, with `page=1`, `limit=50`, maximum 100.
-Tenant `organizationId` selection/filtering requires global access.
+Tenant requests may omit `organizationId` or repeat the authenticated tenant ID.
+Selecting a different organization requires global access.
 
 | Area      | Read                       | Mutate                                                        |
 | --------- | -------------------------- | ------------------------------------------------------------- |
@@ -39,16 +40,26 @@ validUntil?: string|null, organizationId?}`. It returns `400 Minimum price
 cannot exceed list price` or `400 Valid until must be after valid from` when
 applicable.
 
+`GET /catalog/price-policies/effective` requires `versionId` and `branchId`;
+`currentOn` and `organizationId` are optional. It returns the active branch
+override when present and otherwise the active organization-wide policy. The
+same resolver is used by sales operations. Date-only values are interpreted as
+UTC calendar dates, so no timezone conversion can move a policy to the previous
+day.
+
 Brand: `{id,name,active,createdAt,updatedAt}`. Model:
 `{id,name,vehicleType,active,brand: Brand,createdAt,updatedAt}`. Version:
 `{id,name,model: Model,scope,ownerOrganizationId,sellableOrganizationIds,
-marker,active,hasActivePricePolicy,activePricePolicy,createdAt,updatedAt}`.
+marker,active,hasActivePricePolicy,pricingStatus,activePricePolicy,createdAt,
+updatedAt}`. `pricingStatus` is `ACTIVE|MISSING`.
 `activePricePolicy` is null or
 `{id,branchId,currency,listPrice,minimumPrice,validFrom,validUntil}` and honors
-the requested branch (branch-specific policy first, organization-wide fallback).
+the requested branch (branch-specific policy first, organization-wide fallback);
+it also includes `scope=BRANCH|ORGANIZATION` and `status=ACTIVE`.
 Price policy:
 `{id,versionId,branchId,organizationId,currency,listPrice,minimumPrice,
-validFrom,validUntil,createdAt,updatedAt,version:{id,name,model},branch:
+validFrom,validUntil,active,deactivatedAt,scope,createdAt,updatedAt,
+version:{id,name,model},branch:
 {id,code,name}|null}`.
 
 Organization identifiers in version responses are tenant-scoped: global users
@@ -60,6 +71,11 @@ Creation/update bodies are: brands `{name}` / `{name?,active?}`; models
 `{name,brandId,vehicleType}` / `{name?,active?,vehicleType?}`; versions
 `{name,modelId,marker?,scope?,organizationId?,organizationIds?}` /
 `{name?,active?,marker?,scope?,organizationIds?}`.
+Changing a model vehicle type is rejected once versions exist; deactivate it and
+create a new model instead. Creating a price policy always inserts a versioned
+row under a transaction lock. A same-day predecessor is deactivated, an earlier
+open predecessor is closed the previous day, and an overlapping future policy
+returns 409.
 
 ## Inventory
 
@@ -137,10 +153,13 @@ new.
 
 `GET /supply-requests` accepts `status,supplierId,versionId,vehicleType,
 condition,arrivalBranchId,organizationId` and pagination. Create body:
-`{supplierId,supplierAvailabilityId?,operationId?,versionId,condition,
+`{supplierId,supplierAvailabilityId,operationId?,versionId,condition,
 arrivalBranchId,supplierReference?,estimatedCost?,notes?,organizationId?}`.
 `operationId`, when present, must belong to the selected organization (400
-`Operation does not belong to the selected organization`).
+`Operation does not belong to the selected organization`). The linked availability
+is mandatory and must be active, unexpired, positive, and match supplier, version,
+condition, and organization. Sales resolves the supplier from
+`supplierAvailabilityId`; a free supplier selection cannot bypass availability.
 
 Supply response includes `supplierAvailabilityId`, `operationId`, `chassis`,
 `organizationId`, all IDs/status/notes, `estimatedCost`, `requestedAt`,
@@ -154,12 +173,20 @@ number,status,commercialStatus,client:{fullName,documentNumber}}`.
 `PENDIENTE_APROBACION → PENDIENTE_CONFIRMACION → CONFIRMADO → PEDIDO →
 EN_TRANSITO` are valid; `CANCELADA` is allowed only from nonterminal states.
 `RECIBIDO` and `ASIGNADO` return `400 Invalid supply request transition`.
+The product flow maps `CONFIRMADO` to "Confirmar disponibilidad", `PEDIDO` to
+"Realizar pedido", and then permits "Registrar recepción". `EN_TRANSITO` is an
+optional logistics step, not a prerequisite for reception.
+
+Only `ADMINISTRATIVA` and `ADMINISTRADOR` receive
+`abastecimiento.gestionar`/`abastecimiento.recibir`; `VENDEDOR` can read requests
+but receives 403 for workflow mutations.
 
 `POST /supply-requests/:id/receive` requires `{vin,branchId}` and optionally
 `engineNumber,licensePlate,manufactureYear,mileageKm,color,purchaseCost,
 receivedAt,idempotencyKey,notes`. The branch must equal the request arrival
 branch, otherwise it returns `400 Reception branch must match the supply
-request arrival branch`. Only `EN_TRANSITO` can be received (409 otherwise).
+request arrival branch`. `PEDIDO` and `EN_TRANSITO` can be received (409
+otherwise).
 The locked atomic reception decrements the linked supplier availability and
 creates one unit and reception movement. When the request is linked to an
 operation it also consumes the provider reservation, creates the physical-unit
@@ -167,4 +194,6 @@ reservation, links the unit to the operation and finishes as `ASIGNADO`, all in
 the same transaction. Without an operation it finishes as `RECIBIDO`. It returns
 `{supplyRequest,unit,inventoryMovement,replayed}`. Repeating it returns the
 same serialized shapes with `replayed:true`; a different normalized VIN returns
-409 `VIN conflicts with the completed supply reception`.
+409 `VIN conflicts with the completed supply reception`. Supply list/detail
+responses also expose `receivedUnit:null|{id,vin,chassis,inventoryStatus,
+branchId}`.

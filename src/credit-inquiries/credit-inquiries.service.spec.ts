@@ -110,6 +110,7 @@ describe('CreditInquiriesService', () => {
 
   const tx = {
     $queryRaw: jest.fn(),
+    $executeRaw: jest.fn(),
     consultas_crediticias: {
       count: jest.fn(),
       findMany: jest.fn<

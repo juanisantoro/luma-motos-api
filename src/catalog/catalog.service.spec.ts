@@ -91,6 +91,39 @@ describe('CatalogService', () => {
     });
   });
 
+  it('accepts the authenticated tenant organization as an explicit filter', async () => {
+    const result = await serviceWithVersion().versions(
+      {
+        page: 1,
+        limit: 50,
+        organizationId: actor.organization.id,
+        vehicleType: 'MOTO',
+      },
+      actor,
+    );
+
+    expect(result.total).toBe(1);
+    expect(result.items[0]).toMatchObject({
+      id: version.id,
+      sellableOrganizationIds: [actor.organization.id],
+    });
+  });
+
+  it('rejects a peer organization filter for tenant actors', async () => {
+    await expect(
+      serviceWithVersion().versions(
+        {
+          page: 1,
+          limit: 50,
+          organizationId: ownerOrganizationId,
+        },
+        actor,
+      ),
+    ).rejects.toThrow(
+      'Only users with global access can filter by organization',
+    );
+  });
+
   it('keeps complete catalog organization assignments for global actors', async () => {
     const result = await serviceWithVersion().versions(
       { page: 1, limit: 50 },

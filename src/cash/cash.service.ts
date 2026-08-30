@@ -940,7 +940,7 @@ export class CashService {
     key: string,
     hash: string,
   ) {
-    await tx.$queryRaw`
+    await tx.$executeRaw`
       SELECT pg_advisory_xact_lock(
         hashtextextended(${`${organizationId}:${key}`}, 0)
       )

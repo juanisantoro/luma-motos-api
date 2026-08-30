@@ -10,6 +10,7 @@ import {
   IsOptional,
   IsString,
   IsUUID,
+  Matches,
   Max,
   MaxLength,
   Min,
@@ -159,6 +160,7 @@ export class CreatePricePolicyDto {
   @IsString()
   @MinLength(3)
   @MaxLength(3)
+  @Matches(/^[A-Za-z]{3}$/)
   currency!: string;
 
   @Type(() => Number)
@@ -178,6 +180,22 @@ export class CreatePricePolicyDto {
   @ValidateIf((item: CreatePricePolicyDto) => item.validUntil !== null)
   @IsDateString()
   validUntil?: string | null;
+
+  @IsOptional()
+  @IsUUID()
+  organizationId?: string;
+}
+
+export class EffectivePricePolicyQueryDto {
+  @IsUUID()
+  versionId!: string;
+
+  @IsUUID()
+  branchId!: string;
+
+  @IsOptional()
+  @IsDateString()
+  currentOn?: string;
 
   @IsOptional()
   @IsUUID()

@@ -78,6 +78,7 @@ export class InventoryService {
         Promise.all([
           tx.unidades_vehiculos.count({ where }),
           tx.unidades_vehiculos.findMany({
+            relationLoadStrategy: 'join',
             where,
             include: unitInclude,
             orderBy: [{ creado_en: 'desc' }, { id: 'desc' }],
@@ -606,7 +607,11 @@ export class InventoryService {
     actor: AuthenticatedUser,
     organizationId?: string,
   ) {
-    if (organizationId && !actor.globalAccess)
+    if (
+      organizationId &&
+      organizationId !== actor.organization.id &&
+      !actor.globalAccess
+    )
       throw new ForbiddenException(
         'Only users with global access can select an organization',
       );

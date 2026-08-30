@@ -19,6 +19,7 @@ import {
   CreateModelDto,
   CreatePricePolicyDto,
   CreateVersionDto,
+  EffectivePricePolicyQueryDto,
   NameDto,
   UpdateModelDto,
   UpdateNameDto,
@@ -124,6 +125,12 @@ export class CatalogController {
     @CurrentUser() actor: AuthenticatedUser,
   ) {
     return this.service.pricePolicies(query, actor);
+  }
+  @Get('price-policies/effective') effectivePolicy(
+    @Query() query: EffectivePricePolicyQueryDto,
+    @CurrentUser() actor: AuthenticatedUser,
+  ) {
+    return this.service.effectivePricePolicy(query, actor);
   }
   @Post('price-policies')
   @Permissions(PERMISSION_CODES.CATALOG_MANAGE)

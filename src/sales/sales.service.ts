@@ -19,6 +19,10 @@ import { AuditService, AuthenticatedAuditEvent } from '../audit/audit.service';
 import { ROLE_CODES } from '../auth/auth.constants';
 import type { AuthenticatedUser } from '../auth/auth.types';
 import {
+  activePricePolicyRequired,
+  findEffectivePricePolicy,
+} from '../catalog/price-policy';
+import {
   normalizeClientDocument,
   normalizeClientName,
 } from '../clients/client-normalization';
@@ -220,6 +224,7 @@ export class SalesService {
         Promise.all([
           tx.operaciones.count({ where }),
           tx.operaciones.findMany({
+            relationLoadStrategy: 'join',
             where,
             include: operationInclude,
             orderBy: [{ fecha_operacion: 'desc' }, { id: 'desc' }],
@@ -388,7 +393,6 @@ export class SalesService {
       const where: Prisma.personalWhereInput = {
         organizacion_id: organizationId,
         estado: 'ACTIVO',
-        usuario_id: undefined,
         roles:
           assignmentRole === SalesAssignmentRole.VENDEDOR
             ? { activo: true, codigo: ROLE_CODES.VENDEDOR }
@@ -467,7 +471,7 @@ export class SalesService {
         query.versionId,
         query.branchId,
         organizationId,
-        query.operationDate ? new Date(query.operationDate) : new Date(),
+        query.operationDate ?? new Date(),
       );
       return {
         id: policy.id,
@@ -508,9 +512,9 @@ export class SalesService {
           organizationId,
           input.vehicleType,
         );
-        if (input.unitId && input.supplierAvailabilityId)
+        if (Boolean(input.unitId) === Boolean(input.supplierAvailabilityId))
           throw new BadRequestException(
-            'unitId and supplierAvailabilityId cannot be combined',
+            'Exactly one of unitId or supplierAvailabilityId is required',
           );
         if (
           actor.role.code === ROLE_CODES.VENDEDOR &&
@@ -530,7 +534,7 @@ export class SalesService {
           input.versionId,
           input.branchId,
           organizationId,
-          input.operationDate ? new Date(input.operationDate) : new Date(),
+          input.operationDate ?? new Date(),
         );
         const operation = await tx.operaciones.create({
           data: {
@@ -1097,6 +1101,14 @@ export class SalesService {
             input.reason,
             actor,
           );
+        await tx.solicitudes_abastecimiento.updateMany({
+          where: {
+            operacion_id: id,
+            organizacion_id: operation.organizacion_id,
+            estado: { notIn: ['RECIBIDO', 'ASIGNADO', 'CANCELADA'] },
+          },
+          data: { estado: 'CANCELADA' },
+        });
         await tx.operaciones.update({
           where: {
             id_organizacion_id: {
@@ -1388,6 +1400,13 @@ export class SalesService {
     actor: AuthenticatedUser,
   ) {
     const now = new Date();
+    await tx.$queryRaw`
+      SELECT "id"
+      FROM "disponibilidad_proveedor"
+      WHERE "id" = ${availabilityId}::uuid
+        AND "organizacion_id" = ${operation.organizacion_id}::uuid
+      FOR UPDATE
+    `;
     const availability = await tx.disponibilidad_proveedor.findFirst({
       where: {
         id: availabilityId,
@@ -1401,12 +1420,23 @@ export class SalesService {
         id: true,
         proveedor_id: true,
         vence_en: true,
+        cantidad_informada: true,
       },
     });
     if (!availability)
       throw new BadRequestException(
         'Provider availability is invalid, expired, or unavailable',
       );
+    const supplier = await tx.proveedores.findFirst({
+      where: {
+        id: availability.proveedor_id,
+        organizacion_id: operation.organizacion_id,
+        activo: true,
+      },
+      select: { id: true },
+    });
+    if (!supplier)
+      throw new BadRequestException('Supplier is invalid or inactive');
     const personnelId = await this.actorPersonnelId(
       tx,
       actor,
@@ -1417,6 +1447,22 @@ export class SalesService {
       availability.vence_en && availability.vence_en < defaultExpiry
         ? availability.vence_en
         : defaultExpiry;
+    const activeReservations = await tx.reservas_stock.count({
+      where: {
+        disponibilidad_proveedor_id: availability.id,
+        organizacion_id: operation.organizacion_id,
+        estado: 'ACTIVO',
+        vence_en: { gt: now },
+      },
+    });
+    if (activeReservations >= availability.cantidad_informada)
+      throw new ConflictException({
+        statusCode: 409,
+        code: 'SUPPLIER_AVAILABILITY_ALREADY_RESERVED',
+        message: 'Supplier availability has no unreserved quantity',
+        supplierAvailabilityId: availability.id,
+        error: 'Conflict',
+      });
     await tx.reservas_stock.create({
       data: {
         operacion_id: operation.id,
@@ -1429,7 +1475,7 @@ export class SalesService {
     await tx.solicitudes_abastecimiento.create({
       data: {
         operacion_id: operation.id,
-        proveedor_id: availability.proveedor_id,
+        proveedor_id: supplier.id,
         disponibilidad_proveedor_id: availability.id,
         version_id: operation.version_id,
         condicion: operation.condicion,
@@ -1615,26 +1661,28 @@ export class SalesService {
     if (operation.unidad_vehiculo_id)
       return this.assertUsableReservation(tx, operation);
     const reservation = await this.activeReservation(tx, operation.id, true);
-    if (
-      !reservation?.disponibilidad_proveedor_id ||
-      reservation.vence_en <= new Date()
-    )
-      throw new ConflictException(
-        'The operation requires an active stock or provider reservation',
-      );
     const supply = await tx.solicitudes_abastecimiento.findFirst({
       where: {
         operacion_id: operation.id,
-        disponibilidad_proveedor_id: reservation.disponibilidad_proveedor_id,
         organizacion_id: operation.organizacion_id,
         estado: { not: 'CANCELADA' },
       },
-      select: { id: true },
+      select: { id: true, disponibilidad_proveedor_id: true },
     });
     if (!supply)
       throw new ConflictException(
-        'Provider reservation has no active supply request',
+        'The operation requires an active stock reservation or supply request',
       );
+    if (supply.disponibilidad_proveedor_id) {
+      if (
+        reservation?.disponibilidad_proveedor_id !==
+          supply.disponibilidad_proveedor_id ||
+        reservation.vence_en <= new Date()
+      )
+        throw new ConflictException(
+          'Provider availability reservation is missing or expired',
+        );
+    }
     return reservation;
   }
 
@@ -1705,9 +1753,14 @@ export class SalesService {
     const existingForUnit = await this.activeUnitReservation(tx, unitId);
     if (existingForUnit) {
       if (existingForUnit.vence_en > new Date())
-        throw new ConflictException(
-          'The inventory unit is already reserved by another operation',
-        );
+        throw new ConflictException({
+          statusCode: 409,
+          error: 'Conflict',
+          code: 'INVENTORY_UNIT_ALREADY_RESERVED',
+          message:
+            'The inventory unit is already reserved by another operation',
+          unitId,
+        });
       await this.expireReservation(tx, existingForUnit, unit, actor);
       unit = {
         ...unit,
@@ -1715,9 +1768,20 @@ export class SalesService {
       };
     }
     if (unit.estado_inventario !== luma_estado_inventario.EN_STOCK)
-      throw new ConflictException(
-        'Only EN_STOCK inventory units can be reserved',
-      );
+      throw new ConflictException({
+        statusCode: 409,
+        error: 'Conflict',
+        code:
+          unit.estado_inventario === luma_estado_inventario.RESERVADO
+            ? 'INVENTORY_UNIT_ALREADY_RESERVED'
+            : 'INVENTORY_UNIT_NOT_AVAILABLE',
+        message:
+          unit.estado_inventario === luma_estado_inventario.RESERVADO
+            ? 'The inventory unit is already reserved by another operation'
+            : 'Only EN_STOCK inventory units can be reserved',
+        unitId,
+        inventoryStatus: unit.estado_inventario,
+      });
     if (
       unit.version_id !== operation.version_id ||
       unit.condicion !== operation.condicion
@@ -2008,6 +2072,7 @@ export class SalesService {
         throw new NotFoundException('Sales operation not found');
     }
     const operation = await tx.operaciones.findFirst({
+      relationLoadStrategy: 'join',
       where: {
         id,
         organizacion_id: actor.globalAccess ? undefined : actor.organization.id,
@@ -2131,34 +2196,15 @@ export class SalesService {
     versionId: string,
     branchId: string,
     organizationId: string,
-    at: Date,
+    at: Date | string,
   ) {
-    const day = new Date(at);
-    day.setHours(0, 0, 0, 0);
-    const valid = {
-      organizacion_id: organizationId,
-      version_id: versionId,
-      vigente_desde: { lte: day },
-      OR: [{ vigente_hasta: null }, { vigente_hasta: { gte: day } }],
-    } satisfies Prisma.politicas_precios_vehiculosWhereInput;
-    const branchPolicy = await tx.politicas_precios_vehiculos.findFirst({
-      where: { ...valid, sucursal_id: branchId },
-      orderBy: [{ vigente_desde: 'desc' }, { creado_en: 'desc' }],
+    const policy = await findEffectivePricePolicy(tx, {
+      versionId,
+      branchId,
+      organizationId,
+      at,
     });
-    const policy =
-      branchPolicy ??
-      (await tx.politicas_precios_vehiculos.findFirst({
-        where: { ...valid, sucursal_id: null },
-        orderBy: [{ vigente_desde: 'desc' }, { creado_en: 'desc' }],
-      }));
-    if (!policy)
-      throw new BadRequestException({
-        code: 'ACTIVE_PRICE_POLICY_REQUIRED',
-        message:
-          'La versión seleccionada no tiene una política de precio activa para la sucursal. Configure precio de lista y mínimo antes de crear la operación.',
-        versionId,
-        branchId,
-      });
+    if (!policy) throw activePricePolicyRequired(versionId, branchId);
     return policy;
   }
 
@@ -2205,7 +2251,7 @@ export class SalesService {
       throw new BadRequestException(
         'Client document must contain letters or digits',
       );
-    await tx.$queryRaw`
+    await tx.$executeRaw`
       SELECT pg_advisory_xact_lock(
         hashtextextended(
           ${`${organizationId}:${inline.documentType}:${normalizedDocument}`},
@@ -2337,7 +2383,11 @@ export class SalesService {
     actor: AuthenticatedUser,
     organizationId?: string,
   ) {
-    if (organizationId && !actor.globalAccess)
+    if (
+      organizationId &&
+      organizationId !== actor.organization.id &&
+      !actor.globalAccess
+    )
       throw new ForbiddenException(
         'Only users with global access can select an organization',
       );

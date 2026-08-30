@@ -219,6 +219,7 @@ describe('CommissionsService', () => {
     const create = jest.fn().mockResolvedValue(created);
     const transaction = {
       $queryRaw: jest.fn().mockResolvedValue([]),
+      $executeRaw: jest.fn().mockResolvedValue(1),
       personal: {
         findFirst: jest
           .fn()

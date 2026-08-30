@@ -80,6 +80,7 @@ export class SupplyService {
         Promise.all([
           tx.solicitudes_abastecimiento.count({ where }),
           tx.solicitudes_abastecimiento.findMany({
+            relationLoadStrategy: 'join',
             where,
             include: requestInclude,
             orderBy: { solicitado_en: 'desc' },
@@ -122,22 +123,22 @@ export class SupplyService {
               'Operation does not belong to the selected organization',
             );
         }
-        if (input.supplierAvailabilityId) {
-          const availability = await tx.disponibilidad_proveedor.findFirst({
-            where: {
-              id: input.supplierAvailabilityId,
-              proveedor_id: input.supplierId,
-              version_id: input.versionId,
-              condicion: input.condition,
-              organizacion_id: organizationId,
-            },
-            select: { id: true },
-          });
-          if (!availability)
-            throw new BadRequestException(
-              'Supplier availability does not match the request',
-            );
-        }
+        const availability = await tx.disponibilidad_proveedor.findFirst({
+          where: {
+            id: input.supplierAvailabilityId,
+            proveedor_id: input.supplierId,
+            version_id: input.versionId,
+            condicion: input.condition,
+            organizacion_id: organizationId,
+            cantidad_informada: { gt: 0 },
+            OR: [{ vence_en: null }, { vence_en: { gt: new Date() } }],
+          },
+          select: { id: true },
+        });
+        if (!availability)
+          throw new BadRequestException(
+            'Supplier availability is invalid, expired, or unavailable',
+          );
         const item = await tx.solicitudes_abastecimiento.create({
           data: {
             proveedor_id: input.supplierId,
@@ -274,9 +275,9 @@ export class SupplyService {
             replayed: true,
           };
         }
-        if (current.estado !== 'EN_TRANSITO')
+        if (current.estado !== 'PEDIDO' && current.estado !== 'EN_TRANSITO')
           throw new ConflictException(
-            'Only EN_TRANSITO supply requests can be received',
+            'Only PEDIDO or EN_TRANSITO supply requests can be received',
           );
         const vin = validateVin(input.vin);
         const personalId = await this.personalId(
@@ -388,6 +389,7 @@ export class SupplyService {
           },
         });
         let assignedToOperation = false;
+        let receivedUnit = unit;
         if (operation) {
           await tx.reservas_stock.create({
             data: {
@@ -400,7 +402,7 @@ export class SupplyService {
               organizacion_id: current.organizacion_id,
             },
           });
-          await tx.unidades_vehiculos.update({
+          receivedUnit = await tx.unidades_vehiculos.update({
             where: {
               id_organizacion_id: {
                 id: unit.id,
@@ -408,6 +410,7 @@ export class SupplyService {
               },
             },
             data: { estado_inventario: 'RESERVADO' },
+            include: requestUnitInclude,
           });
           await tx.operaciones.update({
             where: {
@@ -452,7 +455,7 @@ export class SupplyService {
         });
         return {
           supplyRequest: this.request(request, actor),
-          unit: this.unit(unit, actor),
+          unit: this.unit(receivedUnit, actor),
           inventoryMovement: this.movement(movement),
           replayed: false,
         };
@@ -575,6 +578,15 @@ export class SupplyService {
         : {}),
       receivedUnitId: item.unidad_vehiculo_recibida_id,
       chassis: item.unidades_vehiculos?.vin_mostrado ?? null,
+      receivedUnit: item.unidades_vehiculos
+        ? {
+            id: item.unidades_vehiculos.id,
+            vin: item.unidades_vehiculos.vin_mostrado,
+            chassis: item.unidades_vehiculos.vin_mostrado,
+            inventoryStatus: item.unidades_vehiculos.estado_inventario,
+            branchId: item.unidades_vehiculos.sucursal_id,
+          }
+        : null,
       requestedAt: item.solicitado_en,
       confirmedAt: item.confirmado_en,
       orderedAt: item.pedido_en,
@@ -622,7 +634,11 @@ export class SupplyService {
     };
   }
   private assertOrg(actor: AuthenticatedUser, organizationId?: string) {
-    if (organizationId && !actor.globalAccess)
+    if (
+      organizationId &&
+      organizationId !== actor.organization.id &&
+      !actor.globalAccess
+    )
       throw new ForbiddenException(
         'Only users with global access can select an organization',
       );

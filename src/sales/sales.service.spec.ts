@@ -9,6 +9,7 @@ import { SalesService } from './sales.service';
 describe('SalesService', () => {
   const operationId = '7d5cc401-544e-4651-9bd6-52495887fecd';
   const unitId = 'edc9ce1d-dbf3-4691-a2d2-79e4e9563dd2';
+  const availabilityId = 'a5ed870b-c3b0-4dcb-8cc8-905e1a0126b9';
   const organizationId = '8fa94171-13b3-40b5-8c33-1f7d8ea94c75';
   const actor: AuthenticatedUser = {
     id: '1f73d68f-6474-48bf-b95a-1f2e20d7b32a',
@@ -208,6 +209,7 @@ describe('SalesService', () => {
       .mockResolvedValue(operation('BORRADOR'));
     const transaction = {
       $queryRaw: jest.fn().mockResolvedValue([]),
+      $executeRaw: jest.fn().mockResolvedValue(1),
       sucursales: { findFirst: jest.fn().mockResolvedValue({ id: 'branch' }) },
       clientes: {
         findFirst: jest.fn().mockResolvedValue(null),
@@ -240,6 +242,26 @@ describe('SalesService', () => {
       asignaciones_personal_operacion: {
         create: jest.fn().mockResolvedValue({}),
       },
+      disponibilidad_proveedor: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: availabilityId,
+          proveedor_id: '0a44e64e-351e-4d9b-9150-5f20e34e4d61',
+          vence_en: null,
+          cantidad_informada: 1,
+        }),
+      },
+      proveedores: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: '0a44e64e-351e-4d9b-9150-5f20e34e4d61',
+        }),
+      },
+      reservas_stock: {
+        count: jest.fn().mockResolvedValue(0),
+        create: jest.fn().mockResolvedValue({}),
+      },
+      solicitudes_abastecimiento: {
+        create: jest.fn().mockResolvedValue({}),
+      },
     } as unknown as Prisma.TransactionClient;
 
     await expect(
@@ -255,6 +277,7 @@ describe('SalesService', () => {
           },
           versionId: operation('BORRADOR').version_id,
           condition: 'NUEVO',
+          supplierAvailabilityId: availabilityId,
           agreedPrice: 100,
           paymentPlatform: 'EFECTIVO',
           submit: false,
@@ -269,6 +292,45 @@ describe('SalesService', () => {
     expect(operationCreate.mock.calls[0]?.[0].data).toMatchObject({
       cliente_id: clientId,
     });
+  });
+
+  it('requires exactly one reservable inventory source', async () => {
+    const transaction = {
+      sucursales: { findFirst: jest.fn().mockResolvedValue({ id: 'branch' }) },
+      clientes: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: '904e2a34-8285-48fa-b64c-24a80d94f9cb',
+        }),
+      },
+      versiones_vehiculos: {
+        findUnique: jest.fn().mockResolvedValue({
+          alcance: 'GLOBAL',
+          organizacion_propietaria_id: null,
+          catalogo_organizaciones: [],
+          modelos_vehiculos: { tipo_vehiculo: 'MOTO' },
+        }),
+      },
+    } as unknown as Prisma.TransactionClient;
+
+    await expect(
+      service(transaction).create(
+        {
+          vehicleType: 'MOTO',
+          branchId: operation('BORRADOR').sucursal_id,
+          clientId: '904e2a34-8285-48fa-b64c-24a80d94f9cb',
+          versionId: operation('BORRADOR').version_id,
+          condition: 'NUEVO',
+          agreedPrice: 100,
+          paymentPlatform: 'EFECTIVO',
+          submit: false,
+        },
+        actor,
+      ),
+    ).rejects.toThrow(
+      new BadRequestException(
+        'Exactly one of unitId or supplierAvailabilityId is required',
+      ),
+    );
   });
 
   it('submits a below-list operation for approval', async () => {

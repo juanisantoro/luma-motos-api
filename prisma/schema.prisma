@@ -1,5 +1,6 @@
 generator client {
-  provider = "prisma-client-js"
+  provider        = "prisma-client-js"
+  previewFeatures = ["relationJoins"]
 }
 
 datasource db {
@@ -855,6 +856,8 @@ model politicas_precios_vehiculos {
   creado_por_personal_id                                                                String              @db.Uuid
   creado_en                                                                             DateTime            @default(now()) @db.Timestamptz(6)
   actualizado_en                                                                        DateTime            @default(now()) @db.Timestamptz(6)
+  activa                                                                                 Boolean             @default(true)
+  desactivada_en                                                                         DateTime?           @db.Timestamptz(6)
   organizacion_id                                                                       String              @db.Uuid
   personal                                                                              personal            @relation(fields: [creado_por_personal_id], references: [id], onUpdate: NoAction)
   organizaciones                                                                        organizaciones      @relation(fields: [organizacion_id], references: [id], onUpdate: NoAction, map: "politicas_precios_vehiculos_organizacion_fk")
@@ -865,6 +868,7 @@ model politicas_precios_vehiculos {
 
   @@unique([id, organizacion_id], map: "politicas_precios_vehiculos_id_organizacion_unico")
   @@index([version_id, sucursal_id, vigente_desde(sort: Desc)], map: "politicas_precios_vehiculos_consulta_indice")
+  @@index([organizacion_id, version_id, sucursal_id, activa, vigente_desde(sort: Desc)], map: "politicas_precios_efectiva_indice")
 }
 
 model proveedores {

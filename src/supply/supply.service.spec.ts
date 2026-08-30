@@ -259,14 +259,14 @@ describe('SupplyService', () => {
       version_id: relations.versiones_vehiculos.id,
       condicion: 'NUEVO',
       sucursal_llegada_id: branchId,
-      estado: 'EN_TRANSITO',
+      estado: 'PEDIDO',
       referencia_proveedor: null,
       costo_estimado: null,
       unidad_vehiculo_recibida_id: null,
       solicitado_en: new Date(),
       confirmado_en: new Date(),
       pedido_en: new Date(),
-      despachado_en: new Date(),
+      despachado_en: null,
       recibido_en: null,
       asignado_en: null,
       creado_en: new Date(),
@@ -407,6 +407,44 @@ describe('SupplyService', () => {
     expect(updateSupplyRequest.mock.calls[0][0].data).toMatchObject({
       estado: 'ASIGNADO',
     });
+  });
+
+  it('rejects reception before the supplier order is placed', async () => {
+    const requestId = '7d5cc401-544e-4651-9bd6-52495887fecd';
+    const branchId = '84e778cc-7616-4792-b6db-d89f100bb6f1';
+    const transaction = {
+      $queryRaw: jest.fn().mockResolvedValue([{ id: requestId }]),
+      solicitudes_abastecimiento: {
+        findFirst: jest.fn().mockResolvedValue({
+          organizacion_id: actor.organization.id,
+          sucursal_llegada_id: branchId,
+          unidad_vehiculo_recibida_id: null,
+          estado: 'CONFIRMADO',
+        }),
+      },
+    } as unknown as Prisma.TransactionClient;
+    const service = new SupplyService(
+      {} as PrismaService,
+      {
+        execute: jest
+          .fn<
+            Promise<unknown>,
+            [
+              AuthenticatedAuditEvent,
+              (client: Prisma.TransactionClient) => Promise<unknown>,
+            ]
+          >()
+          .mockImplementation((_event, work) => work(transaction)),
+      } as unknown as AuditService,
+    );
+
+    await expect(
+      service.receive(requestId, { vin: 'ABC123456', branchId }, actor),
+    ).rejects.toThrow(
+      new ConflictException(
+        'Only PEDIDO or EN_TRANSITO supply requests can be received',
+      ),
+    );
   });
 
   it('rejects a replay with a different VIN', async () => {

@@ -34,7 +34,7 @@ export class SupplyRequestQueryDto {
 }
 export class CreateSupplyRequestDto {
   @IsUUID() supplierId!: string;
-  @IsOptional() @IsUUID() supplierAvailabilityId?: string;
+  @IsUUID() supplierAvailabilityId!: string;
   @IsOptional() @IsUUID() operationId?: string;
   @IsUUID() versionId!: string;
   @IsEnum(condicion_vehiculo_luma) condition!: condicion_vehiculo_luma;

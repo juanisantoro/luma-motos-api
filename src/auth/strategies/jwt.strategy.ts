@@ -57,6 +57,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       },
       async (transaction) => {
         const user = await transaction.usuarios.findUnique({
+          relationLoadStrategy: 'join',
           where: {
             id_organizacion_id: {
               id: payload.sub,

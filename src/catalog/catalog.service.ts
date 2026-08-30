@@ -18,11 +18,19 @@ import {
   CreateModelDto,
   CreatePricePolicyDto,
   CreateVersionDto,
+  EffectivePricePolicyQueryDto,
   NameDto,
   UpdateModelDto,
   UpdateNameDto,
   UpdateVersionDto,
 } from './catalog.dto';
+import {
+  activePricePolicyRequired,
+  findEffectivePricePolicy,
+  previousDate,
+  selectEffectivePricePolicy,
+  toDateOnly,
+} from './price-policy';
 
 const brandSelect = {
   id: true,
@@ -385,7 +393,15 @@ export class CatalogService {
       'CATALOG_MODEL_UPDATED',
       'modelos_vehiculos',
       async (tx) => {
-        await this.modelOr404(tx, id);
+        const current = await this.modelOr404(tx, id);
+        if (
+          input.vehicleType &&
+          input.vehicleType !== current.tipo_vehiculo &&
+          (await tx.versiones_vehiculos.count({ where: { modelo_id: id } })) > 0
+        )
+          throw new ConflictException(
+            'Vehicle type cannot be changed after versions have been created; deactivate the model and create a new one',
+          );
         return this.toModel(
           await tx.modelos_vehiculos.update({
             where: { id },
@@ -434,20 +450,21 @@ export class CatalogService {
         contains: this.normalize(query.search),
         mode: 'insensitive',
       };
-    const currentOn = query.currentOn ? new Date(query.currentOn) : new Date();
-    currentOn.setHours(0, 0, 0, 0);
+    const currentOn = toDateOnly(query.currentOn ?? new Date());
     const [total, items] = await this.prisma.withTenant(
       this.scope(actor),
       (tx) =>
         Promise.all([
           tx.versiones_vehiculos.count({ where }),
           tx.versiones_vehiculos.findMany({
+            relationLoadStrategy: 'join',
             where,
             select: {
               ...versionSelect,
               politicas_precios_vehiculos: {
                 where: {
                   organizacion_id: organizationId,
+                  activa: true,
                   vigente_desde: { lte: currentOn },
                   AND: [
                     {
@@ -487,13 +504,11 @@ export class CatalogService {
     return {
       items: items.map((item) => {
         const policies = item.politicas_precios_vehiculos ?? [];
-        const policy =
-          policies.find(
-            (candidate) => candidate.sucursal_id === query.branchId,
-          ) ?? policies[0];
+        const policy = selectEffectivePricePolicy(policies, query.branchId);
         return {
           ...this.toVersion(item, actor),
           hasActivePricePolicy: Boolean(policy),
+          pricingStatus: policy ? 'ACTIVE' : 'MISSING',
           activePricePolicy: policy
             ? {
                 id: policy.id,
@@ -503,6 +518,8 @@ export class CatalogService {
                 minimumPrice: policy.precio_minimo.toString(),
                 validFrom: policy.vigente_desde,
                 validUntil: policy.vigente_hasta,
+                scope: policy.sucursal_id ? 'BRANCH' : 'ORGANIZATION',
+                status: 'ACTIVE',
               }
             : null,
         };
@@ -650,12 +667,12 @@ export class CatalogService {
     const organizationId =
       query.organizationId ??
       (actor.globalAccess ? undefined : actor.organization.id);
-    const currentOn = query.currentOn ? new Date(query.currentOn) : new Date();
-    currentOn.setHours(0, 0, 0, 0);
+    const currentOn = toDateOnly(query.currentOn ?? new Date());
     const where: Prisma.politicas_precios_vehiculosWhereInput = {
       organizacion_id: organizationId,
       version_id: query.versionId,
       sucursal_id: query.branchId,
+      activa: true,
       vigente_desde: { lte: currentOn },
       OR: [{ vigente_hasta: null }, { vigente_hasta: { gte: currentOn } }],
       versiones_vehiculos: query.vehicleType
@@ -686,6 +703,31 @@ export class CatalogService {
       (item) => this.toPricePolicy(item),
     );
   }
+  async effectivePricePolicy(
+    query: EffectivePricePolicyQueryDto,
+    actor: AuthenticatedUser,
+  ) {
+    this.assertOrganizationFilter(actor, query.organizationId);
+    const organizationId = query.organizationId ?? actor.organization.id;
+    return this.prisma.withTenant(this.scope(actor), async (tx) => {
+      await this.versionAvailableOr400(tx, query.versionId, organizationId);
+      await this.branchOr400(tx, query.branchId, organizationId);
+      const policy = await findEffectivePricePolicy(tx, {
+        versionId: query.versionId,
+        branchId: query.branchId,
+        organizationId,
+        at: query.currentOn ?? new Date(),
+      });
+      if (!policy)
+        throw activePricePolicyRequired(query.versionId, query.branchId);
+      return this.toPricePolicy(
+        await tx.politicas_precios_vehiculos.findUniqueOrThrow({
+          where: { id: policy.id },
+          include: pricePolicyInclude,
+        }),
+      );
+    });
+  }
   async createPricePolicy(
     input: CreatePricePolicyDto,
     actor: AuthenticatedUser,
@@ -694,9 +736,9 @@ export class CatalogService {
     if (input.minimumPrice > input.listPrice)
       throw new BadRequestException('Minimum price cannot exceed list price');
     const organizationId = input.organizationId ?? actor.organization.id;
-    const validFrom = new Date(input.validFrom);
-    const validUntil = input.validUntil ? new Date(input.validUntil) : null;
-    if (validUntil && validUntil <= validFrom)
+    const validFrom = toDateOnly(input.validFrom);
+    const validUntil = input.validUntil ? toDateOnly(input.validUntil) : null;
+    if (validUntil && validUntil < validFrom)
       throw new BadRequestException('Valid until must be after valid from');
     return this.mutate(
       actor,
@@ -707,6 +749,40 @@ export class CatalogService {
         await this.versionAvailableOr400(tx, input.versionId, organizationId);
         if (input.branchId)
           await this.branchOr400(tx, input.branchId, organizationId);
+        const policyScope = input.branchId ?? 'ORGANIZATION';
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`${organizationId}:${input.versionId}:${policyScope}`}, 0))`;
+        const overlapping = await tx.politicas_precios_vehiculos.findMany({
+          where: {
+            organizacion_id: organizationId,
+            version_id: input.versionId,
+            sucursal_id: input.branchId ?? null,
+            activa: true,
+            vigente_desde: validUntil ? { lte: validUntil } : undefined,
+            OR: [
+              { vigente_hasta: null },
+              { vigente_hasta: { gte: validFrom } },
+            ],
+          },
+          orderBy: [{ vigente_desde: 'asc' }, { creado_en: 'asc' }],
+        });
+        for (const policy of overlapping) {
+          const policyStart = toDateOnly(policy.vigente_desde);
+          if (policyStart > validFrom)
+            throw new ConflictException(
+              'Price policy overlaps a future policy; choose a non-overlapping validity range',
+            );
+          if (policyStart.getTime() === validFrom.getTime()) {
+            await tx.politicas_precios_vehiculos.update({
+              where: { id: policy.id },
+              data: { activa: false, desactivada_en: new Date() },
+            });
+          } else {
+            await tx.politicas_precios_vehiculos.update({
+              where: { id: policy.id },
+              data: { vigente_hasta: previousDate(validFrom) },
+            });
+          }
+        }
         return this.toPricePolicy(
           await tx.politicas_precios_vehiculos.create({
             data: {
@@ -717,6 +793,7 @@ export class CatalogService {
               precio_minimo: input.minimumPrice,
               vigente_desde: validFrom,
               vigente_hasta: validUntil,
+              activa: true,
               creado_por_personal_id: personalId,
               organizacion_id: organizationId,
             },
@@ -791,7 +868,11 @@ export class CatalogService {
     actor: AuthenticatedUser,
     organizationId?: string,
   ) {
-    if (organizationId && !actor.globalAccess)
+    if (
+      organizationId &&
+      organizationId !== actor.organization.id &&
+      !actor.globalAccess
+    )
       throw new ForbiddenException(
         'Only users with global access can filter by organization',
       );
@@ -800,7 +881,11 @@ export class CatalogService {
     actor: AuthenticatedUser,
     organizationId?: string,
   ) {
-    if (organizationId && !actor.globalAccess)
+    if (
+      organizationId &&
+      organizationId !== actor.organization.id &&
+      !actor.globalAccess
+    )
       throw new ForbiddenException(
         'Only users with global access can select an organization',
       );
@@ -959,6 +1044,9 @@ export class CatalogService {
       validUntil: item.vigente_hasta,
       createdAt: item.creado_en,
       updatedAt: item.actualizado_en,
+      active: item.activa,
+      deactivatedAt: item.desactivada_en,
+      scope: item.sucursal_id ? 'BRANCH' : 'ORGANIZATION',
       version: {
         id: item.versiones_vehiculos.id,
         name: item.versiones_vehiculos.nombre,

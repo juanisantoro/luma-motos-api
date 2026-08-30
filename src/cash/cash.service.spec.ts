@@ -104,7 +104,7 @@ describe('CashService', () => {
     const findUniqueOrThrow = jest.fn().mockResolvedValue(existing);
     const create = jest.fn();
     const tx = {
-      $queryRaw: jest.fn().mockResolvedValue([{ pg_advisory_xact_lock: null }]),
+      $executeRaw: jest.fn().mockResolvedValue(1),
       movimientos_caja: { findFirst, findUniqueOrThrow, create },
     } as unknown as Prisma.TransactionClient;
     const service = new CashService({} as PrismaService, {} as AuditService);
@@ -137,6 +137,7 @@ describe('CashService', () => {
       );
     const tx = {
       $queryRaw: jest.fn().mockResolvedValue([{ id: 'movement' }]),
+      $executeRaw: jest.fn().mockResolvedValue(1),
       movimientos_caja: { findFirst, create: jest.fn() },
     } as unknown as Prisma.TransactionClient;
     const service = new CashService({} as PrismaService, {} as AuditService);
@@ -223,7 +224,7 @@ describe('CashService', () => {
         [],
     };
     const tx = {
-      $queryRaw: jest.fn().mockResolvedValue([{ pg_advisory_xact_lock: null }]),
+      $executeRaw: jest.fn().mockResolvedValue(1),
       movimientos_caja: {
         findFirst: jest.fn().mockResolvedValue(null),
         createMany,

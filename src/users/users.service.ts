@@ -933,7 +933,7 @@ export class UsersService {
     nextPasswordConfigured: boolean,
     actor: AuthenticatedUser,
   ): Promise<void> {
-    await transaction.$queryRaw`
+    await transaction.$executeRaw`
       SELECT pg_advisory_xact_lock(
         hashtextextended(${current.organizacion_id}::text, 0)
       )

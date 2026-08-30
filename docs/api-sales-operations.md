@@ -60,7 +60,7 @@ inventario, disponibilidad de proveedor y abastecimiento ya filtran por
   "debt": "NO",
   "submit": false,
   "notes": "observaciones optional",
-  "organizationId": "uuid sólo acceso global"
+  "organizationId": "uuid optional; propio o acceso global"
 }
 ```
 
@@ -71,9 +71,17 @@ activo o lo crea y luego crea la operación. No requiere `clientes.gestionar`.
 Una coincidencia existente sólo actualiza nombre, teléfono y presentación del
 documento; una coincidencia inactiva devuelve `409`.
 
-`unitId` y `supplierAvailabilityId` son mutuamente excluyentes. El segundo crea
-reserva de disponibilidad y solicitud de abastecimiento vinculadas. Un borrador
-puede no tener origen, pero no puede enviarse sin reserva física o de proveedor.
+Se exige exactamente uno entre `unitId` y `supplierAvailabilityId`. La unidad
+física debe estar `EN_STOCK`. La disponibilidad debe pertenecer al mismo tenant,
+versión y condición, estar vigente y conservar cantidad informada no reservada
+mayor a cero. La operación, reserva y solicitud de abastecimiento se crean en la
+misma transacción; `supplierId` se resuelve desde la disponibilidad y no se acepta
+como atajo independiente. La cantidad informada se descuenta al recibir.
+
+La reserva física bloquea la unidad y la operación se crea en la misma
+transacción. Si otro request ganó la unidad, responde HTTP 409 con
+`{statusCode:409,code:"INVENTORY_UNIT_ALREADY_RESERVED",message:
+"The inventory unit is already reserved by another operation",unitId}`.
 
 `submit=false` (default) guarda `BORRADOR`; `submit=true` equivale a guardar y
 enviar. También existe `POST /api/sales/operations/:id/submit` con

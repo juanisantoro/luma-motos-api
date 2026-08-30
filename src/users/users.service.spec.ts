@@ -126,6 +126,7 @@ describe('UsersService', () => {
     auditedEvents = [];
     const transaction = {
       $queryRaw: advisoryLock,
+      $executeRaw: advisoryLock,
       usuarios: {
         count: countUsers,
         create: createUser,

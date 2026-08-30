@@ -468,7 +468,11 @@ export class SuppliersService {
     return row.id;
   }
   private assertOrg(actor: AuthenticatedUser, organizationId?: string) {
-    if (organizationId && !actor.globalAccess)
+    if (
+      organizationId &&
+      organizationId !== actor.organization.id &&
+      !actor.globalAccess
+    )
       throw new ForbiddenException(
         'Only users with global access can select an organization',
       );

@@ -141,6 +141,7 @@ export class CommissionsService {
     const period = commissionPeriod(query.period);
     return this.prisma.withTenant(scope(actor), async (tx) => {
       const operations = await tx.operaciones.findMany({
+        relationLoadStrategy: 'join',
         where: {
           organizacion_id: organizationId,
           sucursal_id: query.branchId,
@@ -1475,7 +1476,7 @@ export class CommissionsService {
     organizationId: string,
     vehicleType: tipo_vehiculo_luma,
   ) {
-    await tx.$queryRaw`
+    await tx.$executeRaw`
       SELECT pg_advisory_xact_lock(
         hashtextextended(${`${organizationId}:commission-policy:${vehicleType}`}, 0)
       )
@@ -1486,7 +1487,7 @@ export class CommissionsService {
     tx: Prisma.TransactionClient,
     key: SuggestionKey,
   ) {
-    await tx.$queryRaw`
+    await tx.$executeRaw`
       SELECT pg_advisory_xact_lock(
         hashtextextended(${this.keyString(key)}, 0)
       )

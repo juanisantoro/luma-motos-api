@@ -87,6 +87,7 @@ describe('ClientsService', () => {
     auditedEvents = [];
     transaction = {
       $queryRaw: lockClient,
+      $executeRaw: lockClient,
       clientes: {
         count: countClients,
         findMany: findClients,
