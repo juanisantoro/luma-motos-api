@@ -7,6 +7,7 @@ import {
   AuthenticatedAuditEvent,
 } from '../audit/audit.service';
 import { EnvironmentVariables } from '../config/environment';
+import { MailService } from '../mail/mail.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { AUDIT_ACTIONS } from './auth.constants';
 import { AuthService } from './auth.service';
@@ -19,7 +20,6 @@ jest.mock('./password-hashing', () => ({
 }));
 
 describe('AuthService', () => {
-  const findOrganization = jest.fn();
   const findUser = jest.fn();
   const updateUser = jest.fn<Promise<unknown>, [Prisma.usuariosUpdateArgs]>();
   const createSession = jest.fn();
@@ -37,6 +37,7 @@ describe('AuthService', () => {
     ReturnType<AuditService['record']>,
     Parameters<AuditService['record']>
   >();
+  const sendTemporaryPassword = jest.fn().mockResolvedValue(undefined);
   const mockedVerify = jest.mocked(verifyPassword);
   const mockedHash = jest.mocked(hashPassword);
   let recordedEvents: AuditEvent[];
@@ -80,10 +81,6 @@ describe('AuthService', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    findOrganization.mockResolvedValue({
-      id: databaseUser.organizacion_id,
-      activa: true,
-    });
     recordedEvents = [];
     record.mockImplementation((event) => {
       recordedEvents.push(event);
@@ -116,14 +113,14 @@ describe('AuthService', () => {
 
     service = new AuthService(
       {
-        organizaciones: { findUnique: findOrganization },
-        withTenant: (
+          withTenant: (
           _scope: unknown,
           operation: (client: Prisma.TransactionClient) => Promise<unknown>,
         ) => operation(transactionClient),
       } as unknown as PrismaService,
       { signAsync } as unknown as JwtService,
       { execute, record } as unknown as AuditService,
+      { sendTemporaryPassword } as unknown as MailService,
       {
         get: jest.fn().mockReturnValue(3600),
       } as unknown as ConfigService<EnvironmentVariables, true>,
@@ -136,7 +133,6 @@ describe('AuthService', () => {
     signAsync.mockResolvedValue('signed-access-token');
 
     const result = await service.login({
-      organizationCode: 'LUMA_CENTRAL',
       email: databaseUser.correo,
       password: 'a-valid-password',
     });
@@ -182,11 +178,13 @@ describe('AuthService', () => {
   it('replaces valid temporary credentials with the user password', async () => {
     findUser.mockResolvedValue({
       id: databaseUser.id,
+      organizacion_id: databaseUser.organizacion_id,
       hash_contrasena: 'temporary-argon-hash',
       activo: true,
       contrasena_temporal_vence_en: new Date(Date.now() + 60 * 60 * 1000),
       estado_invitacion: 'DELIVERED',
       invitacion_version: 1,
+      organizaciones: { activa: true },
       roles: { activo: true },
       personal: { puede_iniciar_sesion: true, estado: 'ACTIVO' },
     });
@@ -197,7 +195,6 @@ describe('AuthService', () => {
     updateSessions.mockResolvedValue({ count: 0 });
 
     await service.changeTemporaryPassword({
-      organizationCode: 'LUMA_CENTRAL',
       email: databaseUser.correo,
       temporaryPassword: 'temporary-password',
       newPassword: 'New-secure-password1!',
@@ -214,14 +211,12 @@ describe('AuthService', () => {
     });
   });
 
-  it('audits rejected temporary credentials without storing them', async () => {
+  it('rejects an unknown email without auditing an attempt it cannot attribute to an organization', async () => {
     findUser.mockResolvedValue(null);
-    mockedVerify.mockResolvedValue(false);
     const temporaryPassword = 'invalid-temporary-password';
 
     await expect(
       service.changeTemporaryPassword({
-        organizationCode: 'LUMA_CENTRAL',
         email: databaseUser.correo,
         temporaryPassword,
         newPassword: 'New-secure-password1!',
@@ -230,21 +225,17 @@ describe('AuthService', () => {
       response: { code: 'INVALID_TEMPORARY_CREDENTIALS' },
     });
 
-    expect(recordedEvents[0]).toMatchObject({
-      action: AUDIT_ACTIONS.TEMPORARY_PASSWORD_CHANGE_FAILED,
-      metadata: {
-        reason: 'invalid_or_expired_temporary_credentials',
-      },
-    });
-    expect(JSON.stringify(recordedEvents[0])).not.toContain(temporaryPassword);
+    expect(mockedVerify).toHaveBeenCalledWith(
+      expect.stringContaining('$argon2id$'),
+      temporaryPassword,
+    );
+    expect(recordedEvents).toHaveLength(0);
   });
 
-  it('uses the same public error for unknown credentials and audits the attempt', async () => {
+  it('uses the same public error for an unknown email and does not audit an attempt it cannot attribute to an organization', async () => {
     findUser.mockResolvedValue(null);
-    mockedVerify.mockResolvedValue(false);
 
     const login = service.login({
-      organizationCode: 'LUMA_CENTRAL',
       email: 'unknown@luma.test',
       password: 'incorrect-password',
     });
@@ -256,11 +247,7 @@ describe('AuthService', () => {
       expect.stringContaining('$argon2id$'),
       'incorrect-password',
     );
-    expect(recordedEvents[0]).toMatchObject({
-      action: AUDIT_ACTIONS.LOGIN_FAILED,
-      metadata: { reason: 'invalid_credentials' },
-    });
-    expect(recordedEvents[0]).not.toHaveProperty('actorId');
+    expect(recordedEvents).toHaveLength(0);
   });
 
   it('rejects inactive users even when their password is valid', async () => {
@@ -269,7 +256,6 @@ describe('AuthService', () => {
 
     await expect(
       service.login({
-        organizationCode: 'LUMA_CENTRAL',
         email: databaseUser.correo,
         password: 'a-valid-password',
       }),
@@ -291,7 +277,6 @@ describe('AuthService', () => {
 
     await expect(
       service.login({
-        organizationCode: 'LUMA_CENTRAL',
         email: databaseUser.correo,
         password: 'a-valid-password',
       }),
@@ -307,7 +292,6 @@ describe('AuthService', () => {
 
     await expect(
       service.login({
-        organizationCode: 'LUMA_CENTRAL',
         email: databaseUser.correo,
         password: 'incorrect-password',
       }),
@@ -369,7 +353,6 @@ describe('AuthService', () => {
 
     await expect(
       service.login({
-        organizationCode: 'LUMA_CENTRAL',
         email: databaseUser.correo,
         password: 'temporary-password',
       }),
@@ -377,7 +360,6 @@ describe('AuthService', () => {
       response: {
         code: 'PASSWORD_CHANGE_REQUIRED',
         details: {
-          organizationCode: 'LUMA_CENTRAL',
           email: databaseUser.correo,
         },
       },
@@ -397,7 +379,6 @@ describe('AuthService', () => {
 
     await expect(
       service.login({
-        organizationCode: 'LUMA_CENTRAL',
         email: databaseUser.correo,
         password: 'expired-temporary-password',
       }),
@@ -410,11 +391,13 @@ describe('AuthService', () => {
   it('rejects a concurrent replay after the temporary credential was consumed', async () => {
     findUser.mockResolvedValue({
       id: databaseUser.id,
+      organizacion_id: databaseUser.organizacion_id,
       hash_contrasena: 'temporary-argon-hash',
       activo: true,
       contrasena_temporal_vence_en: new Date('2099-08-30T00:00:00.000Z'),
       estado_invitacion: 'DELIVERED',
       invitacion_version: 1,
+      organizaciones: { activa: true },
       roles: { activo: true },
       personal: { puede_iniciar_sesion: true, estado: 'ACTIVO' },
     });
@@ -424,7 +407,6 @@ describe('AuthService', () => {
 
     await expect(
       service.changeTemporaryPassword({
-        organizationCode: 'LUMA_CENTRAL',
         email: databaseUser.correo,
         temporaryPassword: 'temporary-password',
         newPassword: 'New-secure-password1!',
@@ -447,7 +429,6 @@ describe('AuthService', () => {
 
     await expect(
       service.login({
-        organizationCode: 'LUMA_CENTRAL',
         email: databaseUser.correo,
         password: 'temporary-password',
       }),
@@ -461,11 +442,13 @@ describe('AuthService', () => {
     const expiresAt = new Date('2020-08-30T00:00:00.000Z');
     findUser.mockResolvedValue({
       id: databaseUser.id,
+      organizacion_id: databaseUser.organizacion_id,
       hash_contrasena: 'expired-temporary-argon-hash',
       activo: true,
       contrasena_temporal_vence_en: expiresAt,
       estado_invitacion: 'DELIVERED',
       invitacion_version: 4,
+      organizaciones: { activa: true },
       roles: { activo: true },
       personal: { puede_iniciar_sesion: true, estado: 'ACTIVO' },
     });
@@ -474,7 +457,6 @@ describe('AuthService', () => {
 
     await expect(
       service.changeTemporaryPassword({
-        organizationCode: 'LUMA_CENTRAL',
         email: databaseUser.correo,
         temporaryPassword: 'expired-temporary-password',
         newPassword: 'New-secure-password1!',

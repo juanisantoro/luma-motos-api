@@ -9,6 +9,7 @@ import { Public } from './decorators/public.decorator';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { ChangeTemporaryPasswordDto } from './dto/change-temporary-password.dto';
 import { LoginDto } from './dto/login.dto';
+import { RequestPasswordResetDto } from './dto/request-password-reset.dto';
 
 @Controller('auth')
 export class AuthController {
@@ -27,6 +28,23 @@ export class AuthController {
   })
   login(@Body() credentials: LoginDto): Promise<LoginResponse> {
     return this.authService.login(credentials);
+  }
+
+  @Post('request-password-reset')
+  @Public()
+  @AuditedMutation()
+  @HttpCode(204)
+  @Throttle({
+    default: {
+      limit: 5,
+      ttl: 60_000,
+      blockDuration: 5 * 60_000,
+    },
+  })
+  async requestPasswordReset(
+    @Body() dto: RequestPasswordResetDto,
+  ): Promise<void> {
+    await this.authService.requestPasswordReset(dto);
   }
 
   @Post('change-temporary-password')

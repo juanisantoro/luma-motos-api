@@ -5,17 +5,20 @@ import { Prisma } from '@prisma/client';
 import { AuditService } from '../audit/audit.service';
 import { EnvironmentVariables } from '../config/environment';
 import { apiError } from '../common/api-error';
+import { MailService } from '../mail/mail.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { AUDIT_ACTIONS } from './auth.constants';
 import { AuthenticatedUser, JwtPayload, LoginResponse } from './auth.types';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { ChangeTemporaryPasswordDto } from './dto/change-temporary-password.dto';
 import { LoginDto } from './dto/login.dto';
+import { RequestPasswordResetDto } from './dto/request-password-reset.dto';
 import {
   DUMMY_PASSWORD_HASH,
   hashPassword,
   verifyPassword,
 } from './password-hashing';
+import { createTemporaryPassword } from './temporary-password';
 
 const userForAuthenticationSelect = {
   id: true,
@@ -73,15 +76,178 @@ type UserForAuthentication = Prisma.usuariosGetPayload<{
 @Injectable()
 export class AuthService {
   private readonly idleTimeoutSeconds: number;
+  private readonly temporaryPasswordTtlSeconds: number;
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwtService: JwtService,
     private readonly auditService: AuditService,
+    private readonly mailService: MailService,
     config: ConfigService<EnvironmentVariables, true>,
   ) {
     this.idleTimeoutSeconds = config.get('JWT_SESSION_IDLE_TIMEOUT_SECONDS', {
       infer: true,
+    });
+    this.temporaryPasswordTtlSeconds = config.get(
+      'USER_TEMPORARY_PASSWORD_TTL_SECONDS',
+      { infer: true },
+    );
+  }
+
+  // Publicly reachable: any caller can ask to reset any email's password, so
+  // this must resolve identically (same response, similar timing) whether or
+  // not the email belongs to an account, and it must never throw for that
+  // reason alone. Otherwise the endpoint becomes a user-enumeration oracle.
+  async requestPasswordReset(dto: RequestPasswordResetDto): Promise<void> {
+    const user = await this.prisma.withTenant(
+      { organizationId: '', globalAccess: true },
+      (transaction) =>
+        transaction.usuarios.findFirst({
+          where: { correo_normalizado: dto.email },
+          select: {
+            id: true,
+            correo: true,
+            activo: true,
+            organizacion_id: true,
+            invitacion_version: true,
+            organizaciones: {
+              select: {
+                codigo: true,
+                activa: true,
+              },
+            },
+            personal: {
+              select: {
+                nombre_completo: true,
+              },
+            },
+          },
+        }),
+    );
+
+    if (!user || !user.activo || !user.organizaciones.activa) {
+      return;
+    }
+
+    const temporaryPassword = createTemporaryPassword();
+    const passwordHash = await hashPassword(temporaryPassword);
+    const expiresAt = new Date(
+      Date.now() + this.temporaryPasswordTtlSeconds * 1_000,
+    );
+    const scope = {
+      organizationId: user.organizacion_id,
+      globalAccess: false,
+    };
+
+    const reissued = await this.prisma.withTenant(scope, (transaction) =>
+      transaction.usuarios.updateMany({
+        where: {
+          id: user.id,
+          organizacion_id: user.organizacion_id,
+          invitacion_version: user.invitacion_version,
+        },
+        data: {
+          hash_contrasena: passwordHash,
+          contrasena_configurada_en: null,
+          contrasena_temporal_vence_en: expiresAt,
+          estado_invitacion: 'PENDING',
+          invitacion_ultimo_intento_en: new Date(),
+          invitacion_enviada_en: null,
+          invitacion_error: null,
+          invitacion_version: {
+            increment: 1,
+          },
+        },
+      }),
+    );
+    if (reissued.count !== 1) {
+      // Another reset (or an admin action) is already in flight for this
+      // user; do not stack a second email on top of it.
+      return;
+    }
+
+    await this.prisma.withTenant(scope, (transaction) =>
+      transaction.authSession.updateMany({
+        where: {
+          userId: user.id,
+          revokedAt: null,
+        },
+        data: {
+          revokedAt: new Date(),
+        },
+      }),
+    );
+
+    await this.auditService.record({
+      action: AUDIT_ACTIONS.PASSWORD_RESET_REQUESTED,
+      entity: 'usuarios',
+      entityId: user.id,
+      organizationId: user.organizacion_id,
+      metadata: {
+        expiresAt: expiresAt.toISOString(),
+      },
+    });
+
+    try {
+      await this.mailService.sendTemporaryPassword({
+        email: user.correo,
+        fullName: user.personal?.nombre_completo ?? user.correo,
+        organizationCode: user.organizaciones.codigo,
+        temporaryPassword,
+        expiresAt,
+        reason: 'reset',
+      });
+    } catch {
+      await this.prisma.withTenant(scope, (transaction) =>
+        transaction.usuarios.updateMany({
+          where: {
+            id: user.id,
+            organizacion_id: user.organizacion_id,
+          },
+          data: {
+            estado_invitacion: 'FAILED',
+            invitacion_ultimo_intento_en: new Date(),
+            invitacion_error: 'SMTP_DELIVERY_FAILED',
+          },
+        }),
+      );
+      await this.auditService.record({
+        action: AUDIT_ACTIONS.PASSWORD_RESET_EMAIL_FAILED,
+        entity: 'usuarios',
+        entityId: user.id,
+        organizationId: user.organizacion_id,
+        metadata: {
+          reason: 'reset',
+        },
+      });
+      // Swallow it: a public endpoint must not reveal delivery failures to
+      // the caller, since that would leak whether the email exists.
+      return;
+    }
+
+    await this.prisma.withTenant(scope, (transaction) =>
+      transaction.usuarios.updateMany({
+        where: {
+          id: user.id,
+          organizacion_id: user.organizacion_id,
+        },
+        data: {
+          estado_invitacion: 'DELIVERED',
+          invitacion_ultimo_intento_en: new Date(),
+          invitacion_enviada_en: new Date(),
+          invitacion_error: null,
+        },
+      }),
+    );
+    await this.auditService.record({
+      action: AUDIT_ACTIONS.PASSWORD_RESET_EMAIL_SENT,
+      entity: 'usuarios',
+      entityId: user.id,
+      organizationId: user.organizacion_id,
+      metadata: {
+        reason: 'reset',
+        expiresAt: expiresAt.toISOString(),
+      },
     });
   }
 
@@ -97,69 +263,71 @@ export class AuthService {
     }
     this.assertPasswordPolicy(credentials.newPassword);
 
-    const organization = await this.prisma.organizaciones.findUnique({
-      where: {
-        codigo: credentials.organizationCode,
-      },
-      select: {
-        id: true,
-        activa: true,
-      },
-    });
     const invalidCredentialsError = apiError(
       HttpStatus.UNAUTHORIZED,
       'INVALID_TEMPORARY_CREDENTIALS',
       'Invalid temporary credentials',
     );
 
-    if (!organization?.activa) {
+    // The organization is resolved from the email itself (correo_normalizado
+    // is globally unique), not supplied by the user, so this lookup runs with
+    // globalAccess to bypass the per-tenant RLS filter.
+    const user = await this.prisma.withTenant(
+      { organizationId: '', globalAccess: true },
+      (transaction) =>
+        transaction.usuarios.findFirst({
+          where: {
+            correo_normalizado: credentials.email,
+            contrasena_configurada_en: null,
+          },
+          select: {
+            id: true,
+            organizacion_id: true,
+            hash_contrasena: true,
+            activo: true,
+            contrasena_temporal_vence_en: true,
+            estado_invitacion: true,
+            invitacion_version: true,
+            organizaciones: {
+              select: {
+                activa: true,
+              },
+            },
+            roles: {
+              select: {
+                activo: true,
+              },
+            },
+            personal: {
+              select: {
+                puede_iniciar_sesion: true,
+                estado: true,
+              },
+            },
+          },
+        }),
+    );
+
+    if (!user?.organizaciones.activa) {
       await verifyPassword(DUMMY_PASSWORD_HASH, credentials.temporaryPassword);
       throw invalidCredentialsError;
     }
 
     const scope = {
-      organizationId: organization.id,
+      organizationId: user.organizacion_id,
       globalAccess: false,
     };
-    const user = await this.prisma.withTenant(scope, (transaction) =>
-      transaction.usuarios.findFirst({
-        where: {
-          correo_normalizado: credentials.email,
-          organizacion_id: organization.id,
-          contrasena_configurada_en: null,
-        },
-        select: {
-          id: true,
-          hash_contrasena: true,
-          activo: true,
-          contrasena_temporal_vence_en: true,
-          estado_invitacion: true,
-          invitacion_version: true,
-          roles: {
-            select: {
-              activo: true,
-            },
-          },
-          personal: {
-            select: {
-              puede_iniciar_sesion: true,
-              estado: true,
-            },
-          },
-        },
-      }),
-    );
 
     const temporaryPasswordMatches = await verifyPassword(
-      user?.hash_contrasena ?? DUMMY_PASSWORD_HASH,
+      user.hash_contrasena,
       credentials.temporaryPassword,
     );
-    if (!user || !temporaryPasswordMatches) {
+    if (!temporaryPasswordMatches) {
       await this.auditService.record({
         action: AUDIT_ACTIONS.TEMPORARY_PASSWORD_CHANGE_FAILED,
         entity: 'usuarios',
-        entityId: user?.id,
-        organizationId: organization.id,
+        entityId: user.id,
+        organizationId: user.organizacion_id,
         metadata: {
           reason: 'invalid_or_expired_temporary_credentials',
         },
@@ -171,7 +339,7 @@ export class AuthService {
         action: AUDIT_ACTIONS.TEMPORARY_PASSWORD_CHANGE_FAILED,
         entity: 'usuarios',
         entityId: user.id,
-        organizationId: organization.id,
+        organizationId: user.organizacion_id,
         metadata: {
           reason: 'account_disabled',
         },
@@ -187,7 +355,7 @@ export class AuthService {
         transaction.usuarios.updateMany({
           where: {
             id: user.id,
-            organizacion_id: organization.id,
+            organizacion_id: user.organizacion_id,
             hash_contrasena: user.hash_contrasena,
             contrasena_configurada_en: null,
             contrasena_temporal_vence_en:
@@ -204,7 +372,7 @@ export class AuthService {
         action: AUDIT_ACTIONS.TEMPORARY_PASSWORD_CHANGE_FAILED,
         entity: 'usuarios',
         entityId: user.id,
-        organizationId: organization.id,
+        organizationId: user.organizacion_id,
         metadata: {
           reason: 'temporary_password_expired',
         },
@@ -226,7 +394,7 @@ export class AuthService {
         entity: 'usuarios',
         entityId: user.id,
         actorId: user.id,
-        organizationId: organization.id,
+        organizationId: user.organizacion_id,
         globalAccess: false,
       },
       async (transaction) => {
@@ -234,7 +402,7 @@ export class AuthService {
         const changed = await transaction.usuarios.updateMany({
           where: {
             id: user.id,
-            organizacion_id: organization.id,
+            organizacion_id: user.organizacion_id,
             hash_contrasena: user.hash_contrasena,
             contrasena_configurada_en: null,
             estado_invitacion: 'DELIVERED',
@@ -364,45 +532,35 @@ export class AuthService {
   }
 
   async login(credentials: LoginDto): Promise<LoginResponse> {
-    const organization = await this.prisma.organizaciones.findUnique({
-      where: {
-        codigo: credentials.organizationCode,
-      },
-      select: {
-        id: true,
-        activa: true,
-      },
-    });
+    // The organization is resolved from the email itself (correo_normalizado
+    // is globally unique), not supplied by the user, so this lookup runs with
+    // globalAccess to bypass the per-tenant RLS filter.
+    const user = await this.prisma.withTenant(
+      { organizationId: '', globalAccess: true },
+      (transaction) =>
+        transaction.usuarios.findFirst({
+          where: {
+            correo_normalizado: credentials.email,
+          },
+          select: userForAuthenticationSelect,
+        }),
+    );
 
-    if (!organization?.activa) {
+    if (!user?.organizaciones.activa) {
       await verifyPassword(DUMMY_PASSWORD_HASH, credentials.password);
       throw this.invalidCredentialsError();
     }
 
-    const scope = {
-      organizationId: organization.id,
-      globalAccess: false,
-    };
-    const user = await this.prisma.withTenant(scope, (transaction) =>
-      transaction.usuarios.findFirst({
-        where: {
-          correo_normalizado: credentials.email,
-          organizacion_id: organization.id,
-        },
-        select: userForAuthenticationSelect,
-      }),
-    );
-
     const passwordMatches = await verifyPassword(
-      user?.hash_contrasena ?? DUMMY_PASSWORD_HASH,
+      user.hash_contrasena,
       credentials.password,
     );
-    if (!user || !passwordMatches) {
+    if (!passwordMatches) {
       await this.auditService.record({
         action: AUDIT_ACTIONS.LOGIN_FAILED,
         entity: 'usuarios',
-        entityId: user?.id,
-        organizationId: organization.id,
+        entityId: user.id,
+        organizationId: user.organizacion_id,
         metadata: {
           reason: 'invalid_credentials',
         },
@@ -416,7 +574,7 @@ export class AuthService {
           action: AUDIT_ACTIONS.LOGIN_FAILED,
           entity: 'usuarios',
           entityId: user.id,
-          organizationId: organization.id,
+          organizationId: user.organizacion_id,
           metadata: {
             reason: 'account_disabled',
           },
@@ -431,7 +589,7 @@ export class AuthService {
         action: AUDIT_ACTIONS.LOGIN_FAILED,
         entity: 'usuarios',
         entityId: user.id,
-        organizationId: organization.id,
+        organizationId: user.organizacion_id,
         metadata: {
           reason: expired
             ? 'temporary_password_expired'
@@ -469,7 +627,7 @@ export class AuthService {
         action: AUDIT_ACTIONS.LOGIN_FAILED,
         entity: 'usuarios',
         entityId: user.id,
-        organizationId: organization.id,
+        organizationId: user.organizacion_id,
         metadata: {
           reason: user.contrasena_configurada_en
             ? 'account_disabled'
