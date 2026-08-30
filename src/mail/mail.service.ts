@@ -108,8 +108,9 @@ export class MailService {
           '<p>Si no esperabas este mensaje, contactá al administrador.</p>',
         ].join(''),
       });
-    } catch {
-      this.logger.error('Brevo SMTP delivery failed');
+    } catch (error) {
+      const detail = this.describeSmtpError(error);
+      this.logger.error(`Brevo SMTP delivery failed: ${detail}`);
       throw new ServiceUnavailableException(
         'The temporary password email could not be delivered',
       );
@@ -118,6 +119,25 @@ export class MailService {
 
   isConfigured(): boolean {
     return Boolean(this.transporter && this.fromAddress && this.fromName);
+  }
+
+  private describeSmtpError(error: unknown): string {
+    if (error && typeof error === 'object') {
+      const candidate = error as {
+        code?: string;
+        responseCode?: number;
+        response?: string;
+        message?: string;
+      };
+      const parts = [
+        candidate.code,
+        candidate.responseCode !== undefined ? `HTTP/SMTP ${candidate.responseCode}` : undefined,
+        candidate.response,
+        candidate.message,
+      ].filter((part): part is string => Boolean(part));
+      if (parts.length) return parts.join(' | ');
+    }
+    return error instanceof Error ? error.message : String(error);
   }
 
   private escapeHtml(value: string): string {

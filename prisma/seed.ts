@@ -286,6 +286,18 @@ const managedPermissions = [
     roles: ['ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
   },
   {
+    codigo: 'pagos_vehiculo.consultar',
+    modulo: 'pagos_vehiculo',
+    descripcion: 'Consulta pagos de documentación de vehículos (patentes, seguros, formularios).',
+    roles: ['ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+  },
+  {
+    codigo: 'pagos_vehiculo.gestionar',
+    modulo: 'pagos_vehiculo',
+    descripcion: 'Registra y modifica pagos de documentación de vehículos.',
+    roles: ['ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+  },
+  {
     codigo: 'caja.consultar',
     modulo: 'caja',
     descripcion: 'Consulta cuentas, saldos y movimientos de caja.',

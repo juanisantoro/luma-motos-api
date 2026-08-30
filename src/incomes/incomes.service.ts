@@ -92,6 +92,34 @@ export class IncomesService {
     private readonly cash: CashService,
   ) {}
 
+  private normalizeTypeName(value: string) {
+    return value.trim().replace(/\s+/g, ' ').toLocaleLowerCase('es-AR');
+  }
+
+  async types(): Promise<Array<{ id: string; name: string }>> {
+    const rows = await this.prisma.$queryRaw<
+      Array<{ id: string; nombre: string }>
+    >(Prisma.sql`SELECT id, nombre FROM tipos_ingreso WHERE activo = true ORDER BY nombre ASC`);
+    return rows.map((row) => ({ id: row.id, name: row.nombre }));
+  }
+
+  private async assertValidType(
+    tx: Prisma.TransactionClient,
+    type: string,
+  ): Promise<void> {
+    const normalized = this.normalizeTypeName(type);
+    const rows = await tx.$queryRaw<Array<{ exists: boolean }>>(
+      Prisma.sql`SELECT EXISTS(
+        SELECT 1 FROM tipos_ingreso
+        WHERE nombre_normalizado = ${normalized} AND activo = true
+      ) AS "exists"`,
+    );
+    if (!rows[0]?.exists)
+      throw new BadRequestException(
+        `Tipo de ingreso inválido: "${type}". Elegí uno de los tipos disponibles.`,
+      );
+  }
+
   async findAll(query: IncomeQueryDto, actor: AuthenticatedUser) {
     assertOrganization(actor, query.organizationId);
     const organizationId =
@@ -229,6 +257,7 @@ export class IncomesService {
       'INCOME_CREATED',
       async (tx, event) => {
         await this.cash.branchOr400(tx, input.branchId, organizationId);
+        await this.assertValidType(tx, input.type);
         await this.validateReferences(
           tx,
           input.unitId,
@@ -276,6 +305,7 @@ export class IncomesService {
         );
         const branchId = input.branchId ?? current.sucursal_id;
         await this.cash.branchOr400(tx, branchId, current.organizacion_id);
+        if (input.type !== undefined) await this.assertValidType(tx, input.type);
         await this.validateReferences(
           tx,
           input.unitId === undefined

@@ -544,6 +544,57 @@ model marcas_vehiculos {
   modelos_vehiculos  modelos_vehiculos[]
 }
 
+model tipos_ingreso {
+  id                 String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  nombre             String   @db.VarChar(120)
+  nombre_normalizado String   @unique @db.VarChar(120)
+  activo             Boolean  @default(true)
+  creado_en          DateTime @default(now()) @db.Timestamptz(6)
+  actualizado_en     DateTime @default(now()) @db.Timestamptz(6)
+}
+
+model conceptos_pago_vehiculo {
+  id                 String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  nombre             String   @db.VarChar(120)
+  nombre_normalizado String   @unique @db.VarChar(120)
+  activo             Boolean  @default(true)
+  creado_en          DateTime @default(now()) @db.Timestamptz(6)
+  actualizado_en     DateTime @default(now()) @db.Timestamptz(6)
+}
+
+model proveedores_pago_vehiculo {
+  id                 String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  nombre             String   @db.VarChar(160)
+  nombre_normalizado String   @unique @db.VarChar(160)
+  activo             Boolean  @default(true)
+  creado_en          DateTime @default(now()) @db.Timestamptz(6)
+  actualizado_en     DateTime @default(now()) @db.Timestamptz(6)
+}
+
+/// Not modeled with Prisma relations on purpose: read/write goes through raw
+/// SQL in VehiclePaymentsService to avoid depending on a regenerated Prisma
+/// Client. Foreign keys are still enforced at the database level (see the
+/// 20260830010000_vehicle_payments and 20260830020000_vehicle_payments_proveedor_importe
+/// migrations).
+model pagos_vehiculo {
+  id                     String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizacion_id        String    @db.Uuid
+  concepto_id            String    @db.Uuid
+  unidad_vehiculo_id     String    @db.Uuid
+  operacion_id           String?   @db.Uuid
+  proveedor_id           String    @db.Uuid
+  importe                Decimal   @db.Decimal(18, 2)
+  estado                 String    @default("PENDIENTE") @db.VarChar(20)
+  fecha                  DateTime  @db.Date
+  observaciones          String?
+  creado_por_personal_id String    @db.Uuid
+  creado_en              DateTime  @default(now()) @db.Timestamptz(6)
+  actualizado_en         DateTime  @default(now()) @db.Timestamptz(6)
+
+  @@unique([id, organizacion_id], map: "pagos_vehiculo_id_organizacion_unico")
+  @@index([organizacion_id, fecha(sort: Desc)], map: "pagos_vehiculo_organizacion_fecha_indice")
+}
+
 model modelos_vehiculos {
   id                  String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   marca_id            String                @db.Uuid

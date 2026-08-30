@@ -64,6 +64,7 @@ export class AvailabilityQueryDto {
   @IsBoolean()
   includeExpired?: boolean;
   @IsOptional() @IsUUID() organizationId?: string;
+  @IsOptional() @IsString() @MaxLength(80) search?: string;
 }
 export class UpsertAvailabilityDto {
   @IsUUID() supplierId!: string;

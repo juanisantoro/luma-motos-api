@@ -27,6 +27,11 @@ import { IncomesService } from './incomes.service';
 export class IncomesController {
   constructor(private readonly service: IncomesService) {}
 
+  @Get('types')
+  types() {
+    return this.service.types();
+  }
+
   @Get()
   findAll(
     @Query() query: IncomeQueryDto,

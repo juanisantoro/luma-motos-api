@@ -48,6 +48,8 @@ export const PERMISSION_CODES = {
   EXPENSES_MANAGE: 'gastos.gestionar',
   EXPENSES_PAY: 'gastos.pagar',
   EXPENSES_RECOVER: 'gastos.recuperar',
+  VEHICLE_PAYMENTS_READ: 'pagos_vehiculo.consultar',
+  VEHICLE_PAYMENTS_MANAGE: 'pagos_vehiculo.gestionar',
   CASH_READ: 'caja.consultar',
   CASH_MANAGE: 'caja.gestionar',
   CASH_TRANSFER: 'caja.transferir',

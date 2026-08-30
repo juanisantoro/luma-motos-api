@@ -47,6 +47,9 @@ export class InventoryService {
     private readonly audit: AuditService,
     @Optional() private readonly catalog?: CatalogService,
   ) {}
+  private normalize(value: string) {
+    return value.trim().replace(/\s+/g, ' ').toLocaleLowerCase('es-AR');
+  }
   async findAll(query: InventoryQueryDto, actor: AuthenticatedUser) {
     this.assertOrganization(actor, query.organizationId);
     const organizationId =
@@ -54,6 +57,7 @@ export class InventoryService {
       (actor.globalAccess ? undefined : actor.organization.id);
     const search = query.search?.trim();
     const normalized = search ? normalizeVin(search) : undefined;
+    const nameQuery = search ? this.normalize(search) : undefined;
     const where: Prisma.unidades_vehiculosWhereInput = {
       organizacion_id: organizationId,
       condicion: query.condition,
@@ -64,11 +68,33 @@ export class InventoryService {
       versiones_vehiculos: {
         modelos_vehiculos: { tipo_vehiculo: query.vehicleType },
       },
-      OR: normalized
+      OR: search
         ? [
-            { vin_normalizado: { contains: normalized } },
-            { patente_normalizada: { contains: normalized } },
-            { numero_motor: { contains: search, mode: 'insensitive' } },
+            ...(normalized
+              ? [
+                  { vin_normalizado: { contains: normalized } },
+                  { patente_normalizada: { contains: normalized } },
+                ]
+              : []),
+            { numero_motor: { contains: search, mode: 'insensitive' as const } },
+            { sucursales: { nombre: { contains: search, mode: 'insensitive' as const } } },
+            {
+              versiones_vehiculos: {
+                nombre_normalizado: { contains: nameQuery },
+              },
+            },
+            {
+              versiones_vehiculos: {
+                modelos_vehiculos: { nombre_normalizado: { contains: nameQuery } },
+              },
+            },
+            {
+              versiones_vehiculos: {
+                modelos_vehiculos: {
+                  marcas_vehiculos: { nombre_normalizado: { contains: nameQuery } },
+                },
+              },
+            },
           ]
         : undefined,
     };

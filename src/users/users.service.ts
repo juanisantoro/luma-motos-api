@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   HttpStatus,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -97,6 +98,7 @@ type ManagedUser = Prisma.usuariosGetPayload<{
 
 @Injectable()
 export class UsersService {
+  private readonly logger = new Logger(UsersService.name);
   private readonly temporaryPasswordTtlSeconds: number;
 
   constructor(
@@ -1017,7 +1019,11 @@ export class UsersService {
         expiresAt,
         reason,
       });
-    } catch {
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      this.logger.error(
+        `Invitation email delivery failed for user ${user.id} (${reason}): ${detail}`,
+      );
       await this.auditService.execute(
         {
           ...auditBase,
@@ -1036,7 +1042,7 @@ export class UsersService {
             data: {
               estado_invitacion: 'FAILED',
               invitacion_ultimo_intento_en: new Date(),
-              invitacion_error: 'SMTP_DELIVERY_FAILED',
+              invitacion_error: `SMTP_DELIVERY_FAILED: ${detail}`.slice(0, 240),
             },
           });
         },

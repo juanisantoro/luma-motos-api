@@ -1,4 +1,4 @@
-import { HttpStatus, Injectable, UnauthorizedException } from '@nestjs/common';
+import { HttpStatus, Injectable, Logger, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { Prisma } from '@prisma/client';
@@ -75,6 +75,7 @@ type UserForAuthentication = Prisma.usuariosGetPayload<{
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
   private readonly idleTimeoutSeconds: number;
   private readonly temporaryPasswordTtlSeconds: number;
 
@@ -197,7 +198,9 @@ export class AuthService {
         expiresAt,
         reason: 'reset',
       });
-    } catch {
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      this.logger.error(`Password reset email delivery failed for user ${user.id}: ${detail}`);
       await this.prisma.withTenant(scope, (transaction) =>
         transaction.usuarios.updateMany({
           where: {
@@ -207,7 +210,7 @@ export class AuthService {
           data: {
             estado_invitacion: 'FAILED',
             invitacion_ultimo_intento_en: new Date(),
-            invitacion_error: 'SMTP_DELIVERY_FAILED',
+            invitacion_error: `SMTP_DELIVERY_FAILED: ${detail}`.slice(0, 240),
           },
         }),
       );

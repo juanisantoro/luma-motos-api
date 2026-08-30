@@ -150,17 +150,53 @@ export class SuppliersService {
       query.organizationId ??
       (actor.globalAccess ? undefined : actor.organization.id);
     const now = new Date();
+    const search = query.search?.trim();
+    const nameQuery = search ? this.normalName(search) : undefined;
     const where: Prisma.disponibilidad_proveedorWhereInput = {
       organizacion_id: organizationId,
       proveedor_id: query.supplierId,
       version_id: query.versionId,
       condicion: query.condition,
-      OR: query.includeExpired
-        ? undefined
-        : [{ vence_en: null }, { vence_en: { gte: now } }],
       versiones_vehiculos: query.vehicleType
         ? { modelos_vehiculos: { tipo_vehiculo: query.vehicleType } }
         : undefined,
+      AND: [
+        query.includeExpired
+          ? {}
+          : { OR: [{ vence_en: null }, { vence_en: { gte: now } }] },
+        search
+          ? {
+              OR: [
+                {
+                  proveedores: {
+                    nombre_normalizado: { contains: nameQuery },
+                  },
+                },
+                {
+                  versiones_vehiculos: {
+                    nombre_normalizado: { contains: nameQuery },
+                  },
+                },
+                {
+                  versiones_vehiculos: {
+                    modelos_vehiculos: {
+                      nombre_normalizado: { contains: nameQuery },
+                    },
+                  },
+                },
+                {
+                  versiones_vehiculos: {
+                    modelos_vehiculos: {
+                      marcas_vehiculos: {
+                        nombre_normalizado: { contains: nameQuery },
+                      },
+                    },
+                  },
+                },
+              ],
+            }
+          : {},
+      ],
     };
     const [total, items] = await this.prisma.withTenant(
       this.scope(actor),

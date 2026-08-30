@@ -22,6 +22,7 @@ import { SalesModule } from './sales/sales.module';
 import { UsersModule } from './users/users.module';
 import { CashModule } from './cash/cash.module';
 import { ExpensesModule } from './expenses/expenses.module';
+import { VehiclePaymentsModule } from './vehicle-payments/vehicle-payments.module';
 import { IncomesModule } from './incomes/incomes.module';
 import { SupplierPurchasesModule } from './supplier-purchases/supplier-purchases.module';
 import { CommissionsModule } from './commissions/commissions.module';
@@ -59,6 +60,7 @@ import { RolesModule } from './roles/roles.module';
     SupplierPurchasesModule,
     IncomesModule,
     ExpensesModule,
+    VehiclePaymentsModule,
     CommissionsModule,
   ],
   providers: [
