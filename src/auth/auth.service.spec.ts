@@ -184,7 +184,7 @@ describe('AuthService', () => {
       id: databaseUser.id,
       hash_contrasena: 'temporary-argon-hash',
       activo: true,
-      contrasena_temporal_vence_en: new Date('2026-08-30T00:00:00.000Z'),
+      contrasena_temporal_vence_en: new Date(Date.now() + 60 * 60 * 1000),
       estado_invitacion: 'DELIVERED',
       invitacion_version: 1,
       roles: { activo: true },
