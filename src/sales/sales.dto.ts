@@ -57,7 +57,7 @@ export class SalesOperationQueryDto {
 }
 
 export class SalesSellerQueryDto {
-  @IsUUID() branchId!: string;
+  @IsOptional() @IsUUID() branchId?: string;
   @IsOptional() @IsString() @MaxLength(160) search?: string;
   @Type(() => Number) @IsInt() @Min(1) page = 1;
   @Type(() => Number) @IsInt() @Min(1) @Max(100) limit = 50;

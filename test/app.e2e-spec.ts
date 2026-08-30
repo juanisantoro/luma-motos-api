@@ -72,6 +72,8 @@ describe('Application security (e2e)', () => {
     [Prisma.organizacionesFindFirstArgs]
   >();
   const findSalesOperations = jest.fn();
+  const findSalesSellers = jest.fn();
+  const findSalesContacts = jest.fn();
   const createSalesOperation = jest.fn();
   const approveSalesOperation = jest.fn();
   const findRejectedInquiries = jest.fn();
@@ -201,6 +203,20 @@ describe('Application security (e2e)', () => {
       page: 1,
       limit: 20,
     });
+    findSalesSellers.mockReset();
+    findSalesSellers.mockResolvedValue({
+      items: [],
+      total: 0,
+      page: 1,
+      limit: 100,
+    });
+    findSalesContacts.mockReset();
+    findSalesContacts.mockResolvedValue({
+      items: [],
+      total: 0,
+      page: 1,
+      limit: 100,
+    });
     createSalesOperation.mockReset();
     createSalesOperation.mockResolvedValue({ id: 'operation-id' });
     approveSalesOperation.mockReset();
@@ -310,6 +326,8 @@ describe('Application security (e2e)', () => {
       .overrideProvider(SalesService)
       .useValue({
         findAll: findSalesOperations,
+        sellers: findSalesSellers,
+        contacts: findSalesContacts,
         findOne: jest.fn(),
         create: createSalesOperation,
         update: jest.fn(),
@@ -674,6 +692,45 @@ describe('Application security (e2e)', () => {
       .send({ expectedVersion: 1 })
       .expect(403);
     expect(approveSalesOperation).not.toHaveBeenCalled();
+  });
+
+  it('accepts organization-wide seller and contact lookups without branchId', async () => {
+    findUnique.mockResolvedValue({
+      ...databaseUser,
+      roles: {
+        ...databaseUser.roles,
+        permisos_rol: [{ codigo_permiso: 'ventas.consultar' }],
+      },
+    });
+    const token = await accessToken();
+
+    await request(app.getHttpServer())
+      .get(
+        `/api/sales/operations/sellers?organizationId=${authenticatedUser.organization.id}&page=1&limit=100`,
+      )
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    await request(app.getHttpServer())
+      .get(
+        `/api/sales/operations/contacts?organizationId=${authenticatedUser.organization.id}&page=1&limit=100`,
+      )
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    expect(findSalesSellers).toHaveBeenCalledWith(
+      expect.objectContaining({
+        organizationId: authenticatedUser.organization.id,
+        branchId: undefined,
+      }),
+      expect.any(Object),
+    );
+    expect(findSalesContacts).toHaveBeenCalledWith(
+      expect.objectContaining({
+        organizationId: authenticatedUser.organization.id,
+        branchId: undefined,
+      }),
+      expect.any(Object),
+    );
   });
 
   it('validates sales payloads before invoking the audited service', async () => {

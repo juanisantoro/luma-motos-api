@@ -155,12 +155,17 @@ marca la unidad VENDIDO.
 
 Lookups de formulario:
 
-- `GET /api/sales/operations/sellers?branchId=&search=&page=&limit=` devuelve
-  personal activo con usuario VENDEDOR activo; cada item es
-  `{id,employeeCode,fullName,isCurrentUser}`. VENDEDOR puede ver la lista pero
-  el backend sólo le permite asignarse a sí mismo.
-- `GET /api/sales/operations/contacts?branchId=&search=&page=&limit=` devuelve
-  personal activo elegible de la sucursal con el mismo shape.
+- `GET /api/sales/operations/sellers?organizationId=&branchId?=&search=&page=&limit=`
+  devuelve por defecto los vendedores activos de toda la organización; `branchId`
+  es un filtro opcional para otros consumidores. Cada item es
+  `{id,employeeCode,fullName,isCurrentUser,branch:{id,code,name}|null,
+branches:[{id,code,name}]}`; `branch` es la sucursal principal y `branches`
+  incluye además sus accesos habilitados, sin duplicados.
+  VENDEDOR puede ver la lista pero el backend sólo le permite asignarse a sí
+  mismo.
+- `GET /api/sales/operations/contacts?organizationId=&branchId?=&search=&page=&limit=`
+  devuelve el personal activo elegible de toda la organización con el mismo
+  shape; `branchId` también es opcional.
 - `GET /api/sales/operations/financial-institutions?search=&page=&limit=`
   devuelve `{id,legalName}` para financieras activas.
 - `GET /api/sales/operations/price-policy` requiere `branchId`, `versionId` y

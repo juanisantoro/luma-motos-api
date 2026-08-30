@@ -385,11 +385,15 @@ export class SalesService {
     actor: AuthenticatedUser,
     assignmentRole: SalesAssignmentRole,
   ) {
-    this.assertOrganizationSelection(actor, query.organizationId);
-    const organizationId = query.organizationId ?? actor.organization.id;
+    if (query.organizationId && query.organizationId !== actor.organization.id)
+      throw new ForbiddenException(
+        'Assignee lookups are restricted to the authenticated organization',
+      );
+    const organizationId = actor.organization.id;
     const search = query.search?.trim();
     return this.prisma.withTenant(this.scope(actor), async (tx) => {
-      await this.branchOr400(tx, query.branchId, organizationId);
+      if (query.branchId)
+        await this.branchOr400(tx, query.branchId, organizationId);
       const where: Prisma.personalWhereInput = {
         organizacion_id: organizationId,
         estado: 'ACTIVO',
@@ -397,14 +401,19 @@ export class SalesService {
           assignmentRole === SalesAssignmentRole.VENDEDOR
             ? { activo: true, codigo: ROLE_CODES.VENDEDOR }
             : undefined,
-        OR: [
-          { sucursal_principal_id: query.branchId },
-          {
-            acceso_personal_sucursal: {
-              some: { sucursal_id: query.branchId },
-            },
-          },
-        ],
+        OR: query.branchId
+          ? [
+              { sucursal_principal_id: query.branchId },
+              {
+                acceso_personal_sucursal: {
+                  some: { sucursal_id: query.branchId },
+                },
+              },
+            ]
+          : [
+              { sucursal_principal_id: { not: null } },
+              { acceso_personal_sucursal: { some: {} } },
+            ],
         AND: search
           ? [
               {
@@ -429,12 +438,24 @@ export class SalesService {
       const [total, items] = await Promise.all([
         tx.personal.count({ where }),
         tx.personal.findMany({
+          relationLoadStrategy: 'join',
           where,
           select: {
             id: true,
             usuario_id: true,
             codigo_empleado: true,
             nombre_completo: true,
+            sucursales: {
+              select: { id: true, codigo: true, nombre: true },
+            },
+            acceso_personal_sucursal: {
+              select: {
+                sucursales: {
+                  select: { id: true, codigo: true, nombre: true },
+                },
+              },
+              orderBy: { sucursal_id: 'asc' },
+            },
           },
           orderBy: [{ nombre_normalizado: 'asc' }, { id: 'asc' }],
           skip: (query.page - 1) * query.limit,
@@ -442,12 +463,33 @@ export class SalesService {
         }),
       ]);
       return {
-        items: items.map((item) => ({
-          id: item.id,
-          employeeCode: item.codigo_empleado,
-          fullName: item.nombre_completo,
-          isCurrentUser: item.usuario_id === actor.id,
-        })),
+        items: items.map((item) => {
+          const branches = [
+            item.sucursales,
+            ...item.acceso_personal_sucursal.map((access) => access.sucursales),
+          ].filter((branch) => branch !== null);
+          const uniqueBranches = [
+            ...new Map(branches.map((branch) => [branch.id, branch])).values(),
+          ];
+          return {
+            id: item.id,
+            employeeCode: item.codigo_empleado,
+            fullName: item.nombre_completo,
+            isCurrentUser: item.usuario_id === actor.id,
+            branch: item.sucursales
+              ? {
+                  id: item.sucursales.id,
+                  code: item.sucursales.codigo,
+                  name: item.sucursales.nombre,
+                }
+              : null,
+            branches: uniqueBranches.map((branch) => ({
+              id: branch.id,
+              code: branch.codigo,
+              name: branch.nombre,
+            })),
+          };
+        }),
         total,
         page: query.page,
         limit: query.limit,
@@ -528,7 +570,14 @@ export class SalesService {
             ? undefined
             : input.sellerId) ??
           (await this.actorPersonnelId(tx, actor, organizationId));
-        await this.sellerOr400(tx, sellerId, input.branchId, organizationId);
+        await this.sellerOr400(tx, sellerId, organizationId);
+        if (input.contactId)
+          await this.sellerOr400(
+            tx,
+            input.contactId,
+            organizationId,
+            SalesAssignmentRole.CONTACTO,
+          );
         const policy = await this.pricePolicyOr400(
           tx,
           input.versionId,
@@ -578,13 +627,6 @@ export class SalesService {
           },
         });
         if (input.contactId) {
-          await this.sellerOr400(
-            tx,
-            input.contactId,
-            input.branchId,
-            organizationId,
-            SalesAssignmentRole.CONTACTO,
-          );
           await tx.asignaciones_personal_operacion.create({
             data: {
               operacion_id: operation.id,
@@ -702,11 +744,13 @@ export class SalesService {
         if (input.clientId)
           await this.clientOr400(tx, input.clientId, current.organizacion_id);
         if (input.sellerId)
+          await this.sellerOr400(tx, input.sellerId, current.organizacion_id);
+        if (input.contactId)
           await this.sellerOr400(
             tx,
-            input.sellerId,
-            branchId,
+            input.contactId,
             current.organizacion_id,
+            SalesAssignmentRole.CONTACTO,
           );
         const policy =
           input.branchId || input.agreedPrice !== undefined
@@ -791,14 +835,6 @@ export class SalesService {
           });
         }
         if (input.contactId !== undefined) {
-          if (input.contactId)
-            await this.sellerOr400(
-              tx,
-              input.contactId,
-              branchId,
-              current.organizacion_id,
-              SalesAssignmentRole.CONTACTO,
-            );
           await tx.asignaciones_personal_operacion.deleteMany({
             where: {
               operacion_id: id,
@@ -2326,7 +2362,6 @@ export class SalesService {
   private async sellerOr400(
     tx: Prisma.TransactionClient,
     id: string,
-    branchId: string,
     organizationId: string,
     assignmentRole: SalesAssignmentRole = SalesAssignmentRole.VENDEDOR,
   ) {
@@ -2339,17 +2374,22 @@ export class SalesService {
           assignmentRole === SalesAssignmentRole.VENDEDOR
             ? { activo: true, codigo: ROLE_CODES.VENDEDOR }
             : undefined,
-        OR: [
-          { sucursal_principal_id: branchId },
-          { acceso_personal_sucursal: { some: { sucursal_id: branchId } } },
-        ],
       },
       select: { id: true },
     });
     if (!seller)
-      throw new BadRequestException(
-        'Seller is inactive or cannot access the operation branch',
-      );
+      throw new BadRequestException({
+        statusCode: 400,
+        code:
+          assignmentRole === SalesAssignmentRole.VENDEDOR
+            ? 'INVALID_OPERATION_SELLER'
+            : 'INVALID_OPERATION_CONTACT',
+        message:
+          assignmentRole === SalesAssignmentRole.VENDEDOR
+            ? 'Seller must be active and belong to the operation organization'
+            : 'Contact must be active and belong to the operation organization',
+        error: 'Bad Request',
+      });
   }
 
   private async actorPersonnelId(

@@ -716,8 +716,13 @@ describe('SalesService', () => {
         Promise<
           Array<{
             id: string;
+            usuario_id: string | null;
             codigo_empleado: string;
             nombre_completo: string;
+            sucursales: { id: string; codigo: string; nombre: string };
+            acceso_personal_sucursal: Array<{
+              sucursales: { id: string; codigo: string; nombre: string };
+            }>;
           }>
         >,
         [Prisma.personalFindManyArgs]
@@ -725,8 +730,15 @@ describe('SalesService', () => {
       .mockResolvedValue([
         {
           id: '11b5de9b-9bc2-4777-bb78-9c7267b73aca',
+          usuario_id: null,
           codigo_empleado: 'VEN-01',
           nombre_completo: 'Vendedora Demo',
+          sucursales: {
+            id: unitId,
+            codigo: 'SAN_MIGUEL',
+            nombre: 'San Miguel',
+          },
+          acceso_personal_sucursal: [],
         },
       ]);
     const transaction = {
@@ -746,6 +758,18 @@ describe('SalesService', () => {
           employeeCode: 'VEN-01',
           fullName: 'Vendedora Demo',
           isCurrentUser: false,
+          branch: {
+            id: unitId,
+            code: 'SAN_MIGUEL',
+            name: 'San Miguel',
+          },
+          branches: [
+            {
+              id: unitId,
+              code: 'SAN_MIGUEL',
+              name: 'San Miguel',
+            },
+          ],
         },
       ],
       total: 1,
@@ -755,8 +779,151 @@ describe('SalesService', () => {
     expect(findMany.mock.calls[0]?.[0].where).toMatchObject({
       organizacion_id: organizationId,
       estado: 'ACTIVO',
+      OR: [
+        { sucursal_principal_id: unitId },
+        {
+          acceso_personal_sucursal: {
+            some: { sucursal_id: unitId },
+          },
+        },
+      ],
     });
   });
+
+  it('lists organization-wide assignees when branchId is omitted', async () => {
+    const branchLookup = jest.fn();
+    const findMany = jest
+      .fn<
+        Promise<
+          Array<{
+            id: string;
+            usuario_id: string | null;
+            codigo_empleado: string;
+            nombre_completo: string;
+            sucursales: { id: string; codigo: string; nombre: string };
+            acceso_personal_sucursal: [];
+          }>
+        >,
+        [Prisma.personalFindManyArgs]
+      >()
+      .mockResolvedValue([
+        {
+          id: '11b5de9b-9bc2-4777-bb78-9c7267b73aca',
+          usuario_id: null,
+          codigo_empleado: 'VEN-01',
+          nombre_completo: 'Vendedora Demo',
+          sucursales: {
+            id: unitId,
+            codigo: 'SAN_MIGUEL',
+            nombre: 'San Miguel',
+          },
+          acceso_personal_sucursal: [],
+        },
+      ]);
+    const transaction = {
+      sucursales: { findFirst: branchLookup },
+      personal: {
+        count: jest.fn().mockResolvedValue(1),
+        findMany,
+      },
+    } as unknown as Prisma.TransactionClient;
+
+    await expect(
+      queryService(transaction).sellers(
+        { page: 1, limit: 50, organizationId },
+        actor,
+      ),
+    ).resolves.toMatchObject({
+      total: 1,
+      items: [
+        {
+          fullName: 'Vendedora Demo',
+          branch: {
+            id: unitId,
+            code: 'SAN_MIGUEL',
+            name: 'San Miguel',
+          },
+          branches: [
+            {
+              id: unitId,
+              code: 'SAN_MIGUEL',
+              name: 'San Miguel',
+            },
+          ],
+        },
+      ],
+    });
+    expect(branchLookup).not.toHaveBeenCalled();
+    expect(findMany.mock.calls[0]?.[0].where).toMatchObject({
+      organizacion_id: organizationId,
+      estado: 'ACTIVO',
+      OR: [
+        { sucursal_principal_id: { not: null } },
+        { acceso_personal_sucursal: { some: {} } },
+      ],
+    });
+  });
+
+  it('rejects cross-tenant assignee lookups even for global actors', async () => {
+    const withTenant = jest.fn();
+    const globalActor = { ...actor, globalAccess: true };
+    const lookupService = new SalesService(
+      { withTenant } as unknown as PrismaService,
+      {} as AuditService,
+    );
+
+    await expect(
+      lookupService.sellers(
+        {
+          page: 1,
+          limit: 50,
+          organizationId: 'a0c86b26-5943-4555-9112-bf0c65df0c21',
+        },
+        globalActor,
+      ),
+    ).rejects.toThrow(
+      'Assignee lookups are restricted to the authenticated organization',
+    );
+    expect(withTenant).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['sellerId', 'INVALID_OPERATION_SELLER'],
+    ['contactId', 'INVALID_OPERATION_CONTACT'],
+  ] as const)(
+    'rejects a cross-tenant %s before writing the operation',
+    async (field, code) => {
+      const update = jest.fn();
+      const transaction = {
+        $queryRaw: jest.fn().mockResolvedValue([{ id: operationId }]),
+        operaciones: {
+          findFirst: jest.fn().mockResolvedValue(completeOperation('BORRADOR')),
+          update,
+        },
+        reservas_stock: { findFirst: jest.fn().mockResolvedValue(null) },
+        personal: { findFirst: jest.fn().mockResolvedValue(null) },
+      } as unknown as Prisma.TransactionClient;
+
+      try {
+        await service(transaction).update(
+          operationId,
+          {
+            expectedVersion: 2,
+            [field]: 'a0c86b26-5943-4555-9112-bf0c65df0c21',
+          },
+          actor,
+        );
+        throw new Error('Expected assignee validation to fail');
+      } catch (error) {
+        expect(error).toBeInstanceOf(BadRequestException);
+        expect((error as BadRequestException).getResponse()).toMatchObject({
+          statusCode: 400,
+          code,
+        });
+      }
+      expect(update).not.toHaveBeenCalled();
+    },
+  );
 
   it('previews the branch-specific effective price policy', async () => {
     const validFrom = new Date('2026-08-01T00:00:00.000Z');
