@@ -565,11 +565,18 @@ export class SalesService {
           throw new ForbiddenException(
             'Sellers cannot assign operations to another seller',
           );
+        // Resolved once and reused below for creado_por_personal_id: this used
+        // to be looked up twice (once here as the seller fallback, once again
+        // for the creator field), doubling a DB round trip on every create.
+        const creatorPersonnelId = await this.actorPersonnelId(
+          tx,
+          actor,
+          organizationId,
+        );
         const sellerId =
           (actor.role.code === ROLE_CODES.VENDEDOR
             ? undefined
-            : input.sellerId) ??
-          (await this.actorPersonnelId(tx, actor, organizationId));
+            : input.sellerId) ?? creatorPersonnelId;
         await this.sellerOr400(tx, sellerId, organizationId);
         if (input.contactId)
           await this.sellerOr400(
@@ -609,11 +616,7 @@ export class SalesService {
             documentacion_entregada_en: input.papersDelivered
               ? new Date()
               : undefined,
-            creado_por_personal_id: await this.actorPersonnelId(
-              tx,
-              actor,
-              organizationId,
-            ),
+            creado_por_personal_id: creatorPersonnelId,
             notas: input.notes?.trim(),
             organizacion_id: organizationId,
           },

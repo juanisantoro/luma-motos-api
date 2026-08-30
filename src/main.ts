@@ -9,6 +9,12 @@ async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
   const config = app.get(ConfigService<EnvironmentVariables, true>);
 
+  // This API serves per-tenant, frequently-changing JSON. Express's default
+  // ETag generation makes the browser revalidate identical GETs and can get a
+  // 304 back; some clients then choke trying to read a body-less response.
+  // Disable it so every response is served fresh.
+  app.set('etag', false);
+
   if (config.get('NODE_ENV', { infer: true }) === 'production') {
     app.set('trust proxy', 1);
   }

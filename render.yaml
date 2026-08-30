@@ -2,6 +2,10 @@ services:
   - type: web
     name: luma-motos-api
     runtime: node
+    # DB (Neon) lives in us-east-2 (Ohio). Keeping the web service in the
+    # same region avoids paying cross-region round-trip latency on every
+    # one of the several sequential DB calls a single request makes.
+    region: ohio
     buildCommand: npm ci --include=dev && npm run render:build
     preDeployCommand: npm run prisma:migrate:deploy && npm run prisma:seed
     startCommand: npm run start:prod
