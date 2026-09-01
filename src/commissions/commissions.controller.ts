@@ -15,6 +15,7 @@ import type { AuthenticatedUser } from '../auth/auth.types';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Permissions } from '../auth/decorators/permissions.decorator';
 import {
+  AgreeManagerCommissionDto,
   CommissionAgreementDto,
   CommissionHistoryQueryDto,
   CommissionMeQueryDto,
@@ -22,7 +23,12 @@ import {
   CommissionSettlementQueryDto,
   CommissionSuggestionQueryDto,
   CreateCommissionPolicyDto,
+  ManagerCommissionHistoryQueryDto,
+  ManagerCommissionSettlementQueryDto,
+  ManagerCommissionSuggestionQueryDto,
   PayCommissionDto,
+  PayManagerCommissionDto,
+  SaveManagerCommissionConfigDto,
   UpdateCommissionPolicyDto,
   VersionedCommissionPolicyDto,
 } from './commissions.dto';
@@ -166,5 +172,94 @@ export class CommissionsController {
     @CurrentUser() actor: AuthenticatedUser,
   ) {
     return this.service.me(query, actor);
+  }
+
+  // Manager (GERENTE) commission configuration - admin-only, gated by the
+  // same comisiones.configurar permission as the vendor scale policies
+  // above.
+
+  @Get('manager-config/:managerId')
+  @Permissions(PERMISSION_CODES.COMMISSIONS_CONFIGURE)
+  getManagerConfig(
+    @Param('managerId', ParseUUIDPipe) managerId: string,
+    @CurrentUser() actor: AuthenticatedUser,
+  ) {
+    return this.service.getManagerCommissionConfig(managerId, actor);
+  }
+
+  @Put('manager-config/:managerId')
+  @Permissions(PERMISSION_CODES.COMMISSIONS_CONFIGURE)
+  @AuditedMutation()
+  saveManagerConfig(
+    @Param('managerId', ParseUUIDPipe) managerId: string,
+    @Body() input: SaveManagerCommissionConfigDto,
+    @CurrentUser() actor: AuthenticatedUser,
+  ) {
+    return this.service.saveManagerCommissionConfig(managerId, input, actor);
+  }
+
+  // Manager (GERENTE) commission settlements - the admin-facing consolidated
+  // "Gerentes" view, gated by exactly the same permissions as the vendor
+  // suggestion/settlement/history endpoints above (comisiones.consultar /
+  // .acordar / .pagar / .historial), never comisiones.configurar - that one
+  // stays reserved for who is allowed to set UP a manager's commission
+  // scheme, not who can review or settle it.
+
+  @Get('manager-suggestions')
+  @Permissions(PERMISSION_CODES.COMMISSIONS_READ)
+  managerSuggestions(
+    @Query() query: ManagerCommissionSuggestionQueryDto,
+    @CurrentUser() actor: AuthenticatedUser,
+  ) {
+    return this.service.managerSuggestions(query, actor);
+  }
+
+  @Get('manager-suggestions/:id')
+  @Permissions(PERMISSION_CODES.COMMISSIONS_READ)
+  managerSuggestion(
+    @Param('id') id: string,
+    @CurrentUser() actor: AuthenticatedUser,
+  ) {
+    return this.service.managerSuggestion(id, actor);
+  }
+
+  @Post('manager-suggestions/:id/agreement')
+  @Permissions(PERMISSION_CODES.COMMISSIONS_AGREE)
+  @AuditedMutation()
+  agreeManagerCommission(
+    @Param('id') id: string,
+    @Body() input: AgreeManagerCommissionDto,
+    @CurrentUser() actor: AuthenticatedUser,
+  ) {
+    return this.service.agreeManagerCommission(id, input, actor);
+  }
+
+  @Get('manager-settlements')
+  @Permissions(PERMISSION_CODES.COMMISSIONS_READ)
+  managerSettlements(
+    @Query() query: ManagerCommissionSettlementQueryDto,
+    @CurrentUser() actor: AuthenticatedUser,
+  ) {
+    return this.service.managerSettlements(query, actor);
+  }
+
+  @Post('manager-settlements/:id/payments')
+  @Permissions(PERMISSION_CODES.COMMISSIONS_PAY)
+  @AuditedMutation()
+  payManagerCommission(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() input: PayManagerCommissionDto,
+    @CurrentUser() actor: AuthenticatedUser,
+  ) {
+    return this.service.payManagerCommission(id, input, actor);
+  }
+
+  @Get('manager-history')
+  @Permissions(PERMISSION_CODES.COMMISSIONS_HISTORY)
+  managerHistory(
+    @Query() query: ManagerCommissionHistoryQueryDto,
+    @CurrentUser() actor: AuthenticatedUser,
+  ) {
+    return this.service.managerHistory(query, actor);
   }
 }

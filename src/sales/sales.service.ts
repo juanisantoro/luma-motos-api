@@ -47,6 +47,11 @@ import {
   VersionedSalesActionDto,
 } from './sales.dto';
 
+const SELLER_ASSIGNMENT_ROLES: SalesAssignmentRole[] = [
+  SalesAssignmentRole.VENDEDOR,
+  SalesAssignmentRole.CALLCENTER,
+];
+
 const operationInclude = {
   clientes: {
     select: {
@@ -151,7 +156,7 @@ export class SalesService {
       throw new BadRequestException(
         'mine and sellerId filters cannot be combined',
       );
-    const sellerRestricted = actor.role.code === ROLE_CODES.VENDEDOR;
+    const sellerRestricted = this.isSellerLikeRole(actor.role.code);
     if (sellerRestricted && query.sellerId)
       throw new ForbiddenException(
         'Sellers cannot query operations assigned to another seller',
@@ -194,7 +199,7 @@ export class SalesService {
         ? {
             some: {
               personal_id: sellerId,
-              rol_asignacion: 'VENDEDOR',
+              rol_asignacion: { in: SELLER_ASSIGNMENT_ROLES },
             },
           }
         : undefined,
@@ -400,7 +405,10 @@ export class SalesService {
         estado: 'ACTIVO',
         roles:
           assignmentRole === SalesAssignmentRole.VENDEDOR
-            ? { activo: true, codigo: ROLE_CODES.VENDEDOR }
+            ? {
+                activo: true,
+                codigo: { in: [ROLE_CODES.VENDEDOR, ROLE_CODES.CALLCENTER] },
+              }
             : undefined,
         OR: query.branchId
           ? [
@@ -560,7 +568,7 @@ export class SalesService {
             'Exactly one of unitId or supplierAvailabilityId is required',
           );
         if (
-          actor.role.code === ROLE_CODES.VENDEDOR &&
+          this.isSellerLikeRole(actor.role.code) &&
           input.sellerId !== undefined
         )
           throw new ForbiddenException(
@@ -575,10 +583,14 @@ export class SalesService {
           organizationId,
         );
         const sellerId =
-          (actor.role.code === ROLE_CODES.VENDEDOR
+          (this.isSellerLikeRole(actor.role.code)
             ? undefined
             : input.sellerId) ?? creatorPersonnelId;
-        await this.sellerOr400(tx, sellerId, organizationId);
+        const sellerAssignmentRole = await this.sellerOr400(
+          tx,
+          sellerId,
+          organizationId,
+        );
         if (input.contactId)
           await this.sellerOr400(
             tx,
@@ -626,7 +638,7 @@ export class SalesService {
           data: {
             operacion_id: operation.id,
             personal_id: sellerId,
-            rol_asignacion: 'VENDEDOR',
+            rol_asignacion: sellerAssignmentRole,
             organizacion_id: organizationId,
           },
         });
@@ -680,7 +692,10 @@ export class SalesService {
   ) {
     if (Object.keys(input).length === 1)
       throw new BadRequestException('At least one editable field is required');
-    if (actor.role.code === ROLE_CODES.VENDEDOR && input.sellerId !== undefined)
+    if (
+      this.isSellerLikeRole(actor.role.code) &&
+      input.sellerId !== undefined
+    )
       throw new ForbiddenException(
         'Sellers cannot assign operations to another seller',
       );
@@ -748,8 +763,9 @@ export class SalesService {
         }
         if (input.clientId)
           await this.clientOr400(tx, input.clientId, current.organizacion_id);
-        if (input.sellerId)
-          await this.sellerOr400(tx, input.sellerId, current.organizacion_id);
+        const sellerAssignmentRole = input.sellerId
+          ? await this.sellerOr400(tx, input.sellerId, current.organizacion_id)
+          : undefined;
         if (input.contactId)
           await this.sellerOr400(
             tx,
@@ -827,14 +843,14 @@ export class SalesService {
             where: {
               operacion_id: id,
               organizacion_id: current.organizacion_id,
-              rol_asignacion: 'VENDEDOR',
+              rol_asignacion: { in: SELLER_ASSIGNMENT_ROLES },
             },
           });
           await tx.asignaciones_personal_operacion.create({
             data: {
               operacion_id: id,
               personal_id: input.sellerId,
-              rol_asignacion: 'VENDEDOR',
+              rol_asignacion: sellerAssignmentRole!,
               organizacion_id: current.organizacion_id,
             },
           });
@@ -2091,6 +2107,7 @@ export class SalesService {
     actor: AuthenticatedUser,
     lock = false,
   ) {
+    const isSellerLikeActor = this.isSellerLikeRole(actor.role.code);
     if (lock) {
       const rows = await tx.$queryRaw<Array<{ id: string }>>`
         SELECT "id"
@@ -2098,7 +2115,7 @@ export class SalesService {
         WHERE "id" = CAST(${id} AS uuid)
           AND (${actor.globalAccess} OR "organizacion_id" = CAST(${actor.organization.id} AS uuid))
           AND (
-            ${actor.role.code !== ROLE_CODES.VENDEDOR}
+            ${!isSellerLikeActor}
             OR EXISTS (
               SELECT 1
               FROM "public"."asignaciones_personal_operacion" AS assignment
@@ -2106,7 +2123,7 @@ export class SalesService {
                 ON staff."id" = assignment."personal_id"
                AND staff."organizacion_id" = assignment."organizacion_id"
               WHERE assignment."operacion_id" = "operaciones"."id"
-                AND assignment."rol_asignacion" = 'VENDEDOR'
+                AND assignment."rol_asignacion" IN ('VENDEDOR', 'CALLCENTER')
                 AND staff."usuario_id" = CAST(${actor.id} AS uuid)
             )
           )
@@ -2120,15 +2137,14 @@ export class SalesService {
       where: {
         id,
         organizacion_id: actor.globalAccess ? undefined : actor.organization.id,
-        asignaciones_personal_operacion:
-          actor.role.code === ROLE_CODES.VENDEDOR
-            ? {
-                some: {
-                  rol_asignacion: 'VENDEDOR',
-                  personal: { usuario_id: actor.id },
-                },
-              }
-            : undefined,
+        asignaciones_personal_operacion: isSellerLikeActor
+          ? {
+              some: {
+                rol_asignacion: { in: SELLER_ASSIGNMENT_ROLES },
+                personal: { usuario_id: actor.id },
+              },
+            }
+          : undefined,
       },
       include: operationInclude,
     });
@@ -2380,10 +2396,13 @@ export class SalesService {
         estado: 'ACTIVO',
         roles:
           assignmentRole === SalesAssignmentRole.VENDEDOR
-            ? { activo: true, codigo: ROLE_CODES.VENDEDOR }
+            ? {
+                activo: true,
+                codigo: { in: [ROLE_CODES.VENDEDOR, ROLE_CODES.CALLCENTER] },
+              }
             : undefined,
       },
-      select: { id: true },
+      select: { id: true, roles: { select: { codigo: true } } },
     });
     if (!seller)
       throw new BadRequestException({
@@ -2398,6 +2417,22 @@ export class SalesService {
             : 'Contact must be active and belong to the operation organization',
         error: 'Bad Request',
       });
+    // The seller/contact "slot" (assignmentRole param) is separate from the
+    // assigned person's own job role: a CALLCENTER-role person can fill the
+    // seller slot exactly like a VENDEDOR. When they do, the operation's
+    // rol_asignacion must record CALLCENTER (not a hardcoded VENDEDOR) so
+    // commissions.service.ts can tell who to pay and how.
+    return seller.roles?.codigo === ROLE_CODES.CALLCENTER
+      ? SalesAssignmentRole.CALLCENTER
+      : SalesAssignmentRole.VENDEDOR;
+  }
+
+  // A CALLCENTER person is assigned as an operation's "contact" exactly
+  // like a VENDEDOR: same self-scoping on lists/detail, same restriction
+  // on reassigning to someone else. Centralized here so every VENDEDOR-only
+  // check in this service extends to CALLCENTER in one place.
+  private isSellerLikeRole(code: string) {
+    return code === ROLE_CODES.VENDEDOR || code === ROLE_CODES.CALLCENTER;
   }
 
   private async actorPersonnelId(
@@ -2499,8 +2534,10 @@ export class SalesService {
   }
 
   private operation(item: OperationRecord) {
-    const seller = item.asignaciones_personal_operacion.find(
-      (assignment) => assignment.rol_asignacion === 'VENDEDOR',
+    const seller = item.asignaciones_personal_operacion.find((assignment) =>
+      (SELLER_ASSIGNMENT_ROLES as readonly string[]).includes(
+        assignment.rol_asignacion,
+      ),
     )?.personal;
     const contact = item.asignaciones_personal_operacion.find(
       (assignment) => assignment.rol_asignacion === 'CONTACTO',

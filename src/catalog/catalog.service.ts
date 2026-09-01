@@ -16,6 +16,7 @@ import {
   tipo_vehiculo_luma,
 } from '@prisma/client';
 import { AuditService, AuthenticatedAuditEvent } from '../audit/audit.service';
+import { PERMISSION_CODES } from '../auth/auth.constants';
 import { AuthenticatedUser } from '../auth/auth.types';
 import { EnvironmentVariables } from '../config/environment';
 import { PrismaService } from '../prisma/prisma.service';
@@ -62,6 +63,7 @@ const versionSelect = {
   alcance: true,
   organizacion_propietaria_id: true,
   foto_url: true,
+  precio_costo: true,
   creado_en: true,
   actualizado_en: true,
   modelos_vehiculos: { select: modelSelect },
@@ -568,6 +570,14 @@ export class CatalogService {
             alcance: scope,
             organizacion_propietaria_id:
               scope === 'RESTRINGIDO' ? ownerId : null,
+            // The cost price is a sensitive margin figure: only persist it
+            // when the actor holds catalogo.costos.gestionar. A caller
+            // without that permission who sends it anyway is silently
+            // ignored rather than rejected, matching how the read side
+            // simply omits the field instead of erroring.
+            precio_costo: this.canManageCosts(actor)
+              ? input.costPrice
+              : undefined,
             catalogo_organizaciones:
               scope === 'RESTRINGIDO'
                 ? {
@@ -597,7 +607,8 @@ export class CatalogService {
       input.active === undefined &&
       input.marker === undefined &&
       input.scope === undefined &&
-      input.organizationIds === undefined
+      input.organizationIds === undefined &&
+      input.costPrice === undefined
     )
       throw new BadRequestException('At least one editable field is required');
     return this.mutate(
@@ -663,6 +674,14 @@ export class CatalogService {
                   : scope === 'RESTRINGIDO'
                     ? ownerId
                     : null,
+              // See createVersion: only persist when the actor can manage
+              // catalog costs; otherwise silently ignored.
+              precio_costo:
+                input.costPrice === undefined
+                  ? undefined
+                  : this.canManageCosts(actor)
+                    ? input.costPrice
+                    : undefined,
             },
             select: versionSelect,
           }),
@@ -1126,10 +1145,25 @@ export class CatalogService {
         .map((row) => row.organizacion_id)
         .filter(canSeeOrganization),
       photoUrl: item.foto_url,
+      // Sensitive margin figure: the costPrice key itself must not exist in
+      // the response body for an actor without catalogo.costos.consultar -
+      // never send it as null, so nothing about it can be inferred from the
+      // network payload.
+      ...(this.canViewCosts(actor)
+        ? { costPrice: item.precio_costo?.toString() ?? null }
+        : {}),
       model: this.toModel(item.modelos_vehiculos),
       createdAt: item.creado_en,
       updatedAt: item.actualizado_en,
     };
+  }
+  private canViewCosts(actor: AuthenticatedUser) {
+    return actor.role.permissions.includes(PERMISSION_CODES.CATALOG_COST_READ);
+  }
+  private canManageCosts(actor: AuthenticatedUser) {
+    return actor.role.permissions.includes(
+      PERMISSION_CODES.CATALOG_COST_MANAGE,
+    );
   }
   private toPricePolicy(
     item: Prisma.politicas_precios_vehiculosGetPayload<{

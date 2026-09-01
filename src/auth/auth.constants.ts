@@ -3,6 +3,7 @@ export const JWT_AUDIENCE = 'luma-motos-web';
 
 export const ROLE_CODES = {
   VENDEDOR: 'VENDEDOR',
+  CALLCENTER: 'CALLCENTER',
   ADMINISTRATIVA: 'ADMINISTRATIVA',
   ADMINISTRADOR: 'ADMINISTRADOR',
   GERENTE: 'GERENTE',
@@ -50,6 +51,9 @@ export const PERMISSION_CODES = {
   EXPENSES_RECOVER: 'gastos.recuperar',
   VEHICLE_PAYMENTS_READ: 'pagos_vehiculo.consultar',
   VEHICLE_PAYMENTS_MANAGE: 'pagos_vehiculo.gestionar',
+  CREDIT_PLANS_READ: 'creditos.consultar',
+  CREDIT_PLANS_MANAGE: 'creditos.gestionar',
+  CREDIT_PLANS_COLLECT: 'creditos.cobrar',
   CASH_READ: 'caja.consultar',
   CASH_MANAGE: 'caja.gestionar',
   CASH_TRANSFER: 'caja.transferir',
@@ -62,6 +66,8 @@ export const PERMISSION_CODES = {
   COMMISSIONS_OWN: 'comisiones.propias',
   COMMISSIONS_MANAGE: 'comisiones.gestionar',
   REPORTS_READ: 'reportes.consultar',
+  CATALOG_COST_READ: 'catalogo.costos.consultar',
+  CATALOG_COST_MANAGE: 'catalogo.costos.gestionar',
 } as const;
 
 export const AUDIT_ACTIONS = {

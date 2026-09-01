@@ -8,10 +8,12 @@ import {
   estado_liquidacion_comision_luma,
   estado_politica_comision_luma,
   Prisma,
+  rol_asignacion_luma,
   tipo_movimiento_caja_luma,
   tipo_vehiculo_luma,
 } from '@prisma/client';
 import { AuditService, AuthenticatedAuditEvent } from '../audit/audit.service';
+import { ROLE_CODES } from '../auth/auth.constants';
 import type { AuthenticatedUser } from '../auth/auth.types';
 import { CashService } from '../cash/cash.service';
 import {
@@ -24,6 +26,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import {
   calculateFixedCommission,
+  calculateManagerCommission,
   commissionPeriod,
   commissionOperationEligibility,
   commissionPriceComparison,
@@ -31,16 +34,26 @@ import {
   validateCommissionTiers,
 } from './commissions.calculation';
 import {
+  AgreeManagerCommissionDto,
   CommissionAgreementDto,
   CommissionHistoryQueryDto,
   CommissionMeQueryDto,
+  CommissionPolicyAmbito,
   CommissionPolicyQueryDto,
   CommissionPolicyStatus,
   CommissionSettlementQueryDto,
   CommissionSettlementStatus,
   CommissionSuggestionQueryDto,
   CreateCommissionPolicyDto,
+  ManagerCommissionHistoryQueryDto,
+  ManagerCommissionMode,
+  ManagerCommissionScope,
+  ManagerCommissionSettlementQueryDto,
+  ManagerCommissionSettlementStatus,
+  ManagerCommissionSuggestionQueryDto,
   PayCommissionDto,
+  PayManagerCommissionDto,
+  SaveManagerCommissionConfigDto,
   UpdateCommissionPolicyDto,
   VersionedCommissionPolicyDto,
 } from './commissions.dto';
@@ -49,6 +62,8 @@ import {
   commissionConflict,
   commissionNotFound,
 } from './commissions.errors';
+
+const SELLER_ASSIGNMENT_ROLES: rol_asignacion_luma[] = ['VENDEDOR', 'CALLCENTER'];
 
 const policyInclude = {
   escalas_comisiones: {
@@ -95,6 +110,69 @@ type OperationRecord = Prisma.operacionesGetPayload<{
 type SettlementRecord = Prisma.liquidaciones_comisionesGetPayload<{
   include: typeof settlementInclude;
 }>;
+
+type ManagerCommissionConfigRow = {
+  id: string;
+  personal_id: string;
+  modo_calculo: ManagerCommissionMode;
+  porcentaje: Prisma.Decimal | null;
+  politica_comision_id: string | null;
+  alcance: ManagerCommissionScope;
+  activo: boolean;
+  actualizado_en: Date;
+  actualizado_por_personal_id: string | null;
+};
+
+// Manager (GERENTE) commission settlements - agree/pay flow, its own table
+// (liquidaciones_comisiones_gerente). Row shape includes the joined names
+// used by managerSettlementResponse() so every query fetches them in one
+// round trip instead of N+1 lookups.
+type ManagerSettlementRow = {
+  id: string;
+  organizacion_id: string;
+  personal_id: string;
+  manager_nombre: string;
+  tipo_vehiculo: tipo_vehiculo_luma;
+  periodo_desde: Date;
+  periodo_hasta: Date;
+  modo_calculo: ManagerCommissionMode;
+  alcance: ManagerCommissionScope;
+  sucursales_incluidas: Prisma.JsonValue;
+  cantidad_operaciones_computables: number;
+  porcentaje: Prisma.Decimal | null;
+  politica_comision_id: string | null;
+  escala_snapshot: Prisma.JsonValue | null;
+  monto_calculado: Prisma.Decimal;
+  moneda: string;
+  estado: 'SUGERIDA' | 'ACORDADA' | 'PAGADA';
+  acordado_en: Date | null;
+  acordado_por_personal_id: string | null;
+  acordado_por_nombre: string | null;
+  pagado_en: Date | null;
+  pagado_por_personal_id: string | null;
+  pagado_por_nombre: string | null;
+  notas: string | null;
+  version_fila: number;
+  creado_en: Date;
+  actualizado_en: Date;
+};
+
+interface ManagerSuggestionKey {
+  organizationId: string;
+  managerId: string;
+  period: string;
+  vehicleType: tipo_vehiculo_luma;
+}
+
+const managerSettlementSelect = Prisma.sql`
+  SELECT g.*, m.nombre_completo AS manager_nombre,
+    a.nombre_completo AS acordado_por_nombre,
+    pg.nombre_completo AS pagado_por_nombre
+  FROM liquidaciones_comisiones_gerente g
+  JOIN personal m ON m.id = g.personal_id AND m.organizacion_id = g.organizacion_id
+  LEFT JOIN personal a ON a.id = g.acordado_por_personal_id AND a.organizacion_id = g.organizacion_id
+  LEFT JOIN personal pg ON pg.id = g.pagado_por_personal_id AND pg.organizacion_id = g.organizacion_id
+`;
 
 interface SuggestionKey {
   organizationId: string;
@@ -151,7 +229,7 @@ export class CommissionsService {
           },
           asignaciones_personal_operacion: {
             some: {
-              rol_asignacion: 'VENDEDOR',
+              rol_asignacion: { in: SELLER_ASSIGNMENT_ROLES },
               personal_id: query.sellerId,
             },
           },
@@ -605,6 +683,46 @@ export class CommissionsService {
         },
         actor,
       );
+      const managerCalculation =
+        actor.role.code === ROLE_CODES.GERENTE
+          ? await this.managerCommissionForActor(
+              tx,
+              { id: personnel.id, name: personnel.nombre_completo },
+              actor.organization.id,
+              query.period,
+              query.vehicleType,
+            )
+          : null;
+      // The manager's own settlement for the exact period being viewed
+      // (agreed/paid state), if "acordar" was already run for it - mirrors
+      // vendor's progress.settlement below. managerCommission itself stays
+      // the live, recalculated-every-time number; this is the frozen one.
+      const managerSettlementRow = managerCalculation
+        ? await this.managerSettlementRowByKey(
+            tx,
+            actor.organization.id,
+            personnel.id,
+            commissionPeriod(query.period),
+            query.vehicleType,
+          )
+        : null;
+      // Past agreed/paid manager settlements (any period), mirrors
+      // vendor's paidHistory below but reads liquidaciones_comisiones_gerente.
+      const managerSettlementHistory =
+        actor.role.code === ROLE_CODES.GERENTE
+          ? await this.managerHistoryInTx(
+              tx,
+              {
+                vehicleType: query.vehicleType,
+                managerId: personnel.id,
+                year: query.historyYear,
+                month: query.historyMonth,
+                page: query.page,
+                limit: query.limit,
+              },
+              actor,
+            )
+          : null;
       return {
         progress: await (async () => {
           const data = await this.suggestionData(tx, key);
@@ -616,35 +734,531 @@ export class CommissionsService {
           };
         })(),
         paidHistory: history,
+        managerCommission: managerCalculation
+          ? {
+              ...managerCalculation,
+              settlement: managerSettlementRow
+                ? this.managerSettlementResponse(managerSettlementRow)
+                : null,
+            }
+          : null,
+        managerSettlementHistory,
       };
     });
   }
 
-  async policies(query: CommissionPolicyQueryDto, actor: AuthenticatedUser) {
+  // --- Manager (GERENTE) commission configuration and calculation. New and
+  // additive: it never reads or writes liquidaciones_comisiones (the vendor
+  // settlement table above) and never changes suggestionData/
+  // suggestionResponse/liveCalculation. A manager's commission is computed
+  // live from configuracion_comision_gerente; there is no agree/pay flow
+  // for it yet (see the session report for why - liquidaciones_comisiones
+  // requires a single sucursal_id, which does not fit a manager whose scope
+  // is every branch).
+
+  private async managerOr404(
+    tx: Prisma.TransactionClient,
+    managerId: string,
+    organizationId: string,
+  ) {
+    const manager = await tx.personal.findFirst({
+      where: {
+        id: managerId,
+        organizacion_id: organizationId,
+        estado: 'ACTIVO',
+        roles: { activo: true, codigo: ROLE_CODES.GERENTE },
+      },
+      select: { id: true, nombre_completo: true, sucursal_principal_id: true },
+    });
+    if (!manager)
+      commissionBadRequest(
+        'INVALID_MANAGER',
+        'Manager must be an active GERENTE in the organization',
+      );
+    return manager;
+  }
+
+  private async managerCommissionConfigRow(
+    tx: Prisma.TransactionClient,
+    managerId: string,
+    organizationId: string,
+  ) {
+    const rows = await tx.$queryRaw<ManagerCommissionConfigRow[]>(Prisma.sql`
+      SELECT id, personal_id, modo_calculo, porcentaje, politica_comision_id,
+        alcance, activo, actualizado_en, actualizado_por_personal_id
+      FROM configuracion_comision_gerente
+      WHERE personal_id = ${managerId}::uuid AND organizacion_id = ${organizationId}::uuid
+    `);
+    return rows[0] ?? null;
+  }
+
+  private managerConfigResponse(config: ManagerCommissionConfigRow | null) {
+    if (!config) return null;
+    return {
+      mode: config.modo_calculo,
+      percentage: config.porcentaje ? config.porcentaje.toFixed(2) : null,
+      policyId: config.politica_comision_id,
+      scope: config.alcance,
+      active: config.activo,
+      updatedAt: config.actualizado_en,
+    };
+  }
+
+  async getManagerCommissionConfig(managerId: string, actor: AuthenticatedUser) {
+    return this.prisma.withTenant(scope(actor), async (tx) => {
+      const manager = await this.managerOr404(tx, managerId, actor.organization.id);
+      const config = await this.managerCommissionConfigRow(
+        tx,
+        manager.id,
+        actor.organization.id,
+      );
+      return this.managerConfigResponse(config);
+    });
+  }
+
+  async saveManagerCommissionConfig(
+    managerId: string,
+    input: SaveManagerCommissionConfigDto,
+    actor: AuthenticatedUser,
+  ) {
+    if (input.mode === ManagerCommissionMode.PORCENTAJE) {
+      if (!input.percentage)
+        commissionBadRequest(
+          'INVALID_MANAGER_COMMISSION_CONFIG',
+          'A percentage is required for PORCENTAJE mode',
+        );
+      if (input.policyId)
+        commissionBadRequest(
+          'INVALID_MANAGER_COMMISSION_CONFIG',
+          'PORCENTAJE mode cannot reference a scale policy',
+        );
+    } else {
+      if (!input.policyId)
+        commissionBadRequest(
+          'INVALID_MANAGER_COMMISSION_CONFIG',
+          'A scale policy is required for ESCALA mode',
+        );
+      if (input.percentage)
+        commissionBadRequest(
+          'INVALID_MANAGER_COMMISSION_CONFIG',
+          'ESCALA mode cannot define a percentage',
+        );
+    }
+    return this.mutate(
+      actor,
+      'MANAGER_COMMISSION_CONFIG_SAVED',
+      async (tx, event) => {
+        const manager = await this.managerOr404(
+          tx,
+          managerId,
+          actor.organization.id,
+        );
+        if (input.policyId) {
+          const policy = await tx.politicas_comisiones.findFirst({
+            where: {
+              id: input.policyId,
+              organizacion_id: actor.organization.id,
+            },
+            select: { id: true },
+          });
+          if (!policy)
+            commissionBadRequest(
+              'INVALID_MANAGER_COMMISSION_CONFIG',
+              'The referenced scale policy does not exist in this organization',
+            );
+          const ambito = await this.policyAmbito(
+            tx,
+            input.policyId,
+            actor.organization.id,
+          );
+          if (ambito !== CommissionPolicyAmbito.GERENCIA)
+            commissionBadRequest(
+              'INVALID_MANAGER_COMMISSION_CONFIG',
+              'A manager scale policy must be ambito GERENCIA, not VENDEDOR - create or pick a management-only scale',
+            );
+        }
+        const updatedBy = await this.actorPersonnelId(
+          tx,
+          actor,
+          actor.organization.id,
+        );
+        const rows = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+          INSERT INTO configuracion_comision_gerente (
+            personal_id, organizacion_id, modo_calculo, porcentaje,
+            politica_comision_id, alcance, activo, actualizado_por_personal_id
+          ) VALUES (
+            ${manager.id}::uuid, ${actor.organization.id}::uuid,
+            ${input.mode}::"modo_calculo_comision_gerente_luma",
+            ${input.percentage ?? null}::numeric,
+            ${input.policyId ?? null}::uuid,
+            ${input.scope}::"alcance_comision_gerente_luma",
+            ${input.active ?? true}, ${updatedBy}::uuid
+          )
+          ON CONFLICT (personal_id) DO UPDATE SET
+            modo_calculo = EXCLUDED.modo_calculo,
+            porcentaje = EXCLUDED.porcentaje,
+            politica_comision_id = EXCLUDED.politica_comision_id,
+            alcance = EXCLUDED.alcance,
+            activo = EXCLUDED.activo,
+            actualizado_por_personal_id = EXCLUDED.actualizado_por_personal_id
+          RETURNING id
+        `);
+        event.entityId = rows[0].id;
+        const config = await this.managerCommissionConfigRow(
+          tx,
+          manager.id,
+          actor.organization.id,
+        );
+        return this.managerConfigResponse(config);
+      },
+      undefined,
+      actor.organization.id,
+      'configuracion_comision_gerente',
+    );
+  }
+
+  private async managerScopeBranchIds(
+    tx: Prisma.TransactionClient,
+    organizationId: string,
+    scopeValue: ManagerCommissionScope,
+    managerBranchId: string | null,
+  ) {
+    if (scopeValue === ManagerCommissionScope.TODAS_LAS_SUCURSALES) {
+      const branches = await tx.sucursales.findMany({
+        where: { organizacion_id: organizationId, activa: true },
+        select: { id: true },
+      });
+      return branches.map((branch) => branch.id);
+    }
+    return managerBranchId ? [managerBranchId] : [];
+  }
+
+  private async managerCommissionForActor(
+    tx: Prisma.TransactionClient,
+    manager: { id: string; name: string },
+    organizationId: string,
+    periodInput: string,
+    vehicleType: tipo_vehiculo_luma,
+  ) {
+    const config = await this.managerCommissionConfigRow(
+      tx,
+      manager.id,
+      organizationId,
+    );
+    if (!config || !config.activo) return null;
+    const managerPersonnel = await tx.personal.findFirst({
+      where: { id: manager.id, organizacion_id: organizationId },
+      select: { sucursal_principal_id: true },
+    });
+    const branchIds = await this.managerScopeBranchIds(
+      tx,
+      organizationId,
+      config.alcance,
+      managerPersonnel?.sucursal_principal_id ?? null,
+    );
+    const period = commissionPeriod(periodInput);
+    const operations = branchIds.length
+      ? await tx.operaciones.findMany({
+          where: {
+            organizacion_id: organizationId,
+            sucursal_id: { in: branchIds },
+            fecha_operacion: { gte: period.from, lte: period.to },
+            versiones_vehiculos: {
+              modelos_vehiculos: { tipo_vehiculo: vehicleType },
+            },
+          },
+          select: { estado_operacion: true, precio_acordado: true },
+        })
+      : [];
+    const eligibleOperations = operations.filter(
+      (operation) =>
+        commissionOperationEligibility(operation.estado_operacion).computable,
+    );
+    let tiers: CommissionTierValue[] | undefined;
+    if (
+      config.modo_calculo === ManagerCommissionMode.ESCALA &&
+      config.politica_comision_id
+    ) {
+      // Defense in depth: saveManagerCommissionConfig() already rejects a
+      // non-GERENCIA policyId at save time, and a DB constraint trigger
+      // guarantees it too - but this is the actual money calculation, so
+      // it re-checks ambito here as well rather than trusting either of
+      // those alone.
+      const configuredAmbito = await this.policyAmbito(
+        tx,
+        config.politica_comision_id,
+        organizationId,
+      );
+      if (configuredAmbito !== CommissionPolicyAmbito.GERENCIA)
+        commissionBadRequest(
+          'INVALID_MANAGER_COMMISSION_CONFIG',
+          'Manager scale policy must be ambito GERENCIA',
+        );
+      const policy = await tx.politicas_comisiones.findFirst({
+        where: {
+          id: config.politica_comision_id,
+          organizacion_id: organizationId,
+        },
+        include: policyInclude,
+      });
+      tiers = policy?.escalas_comisiones.map((tier) =>
+        this.scaleResponse(policy, tier),
+      );
+    }
+    const calculation = calculateManagerCommission(
+      config.modo_calculo,
+      eligibleOperations.map((operation) => ({
+        agreedPrice: operation.precio_acordado.toFixed(2),
+      })),
+      {
+        percentage: config.porcentaje ? config.porcentaje.toFixed(2) : undefined,
+        tiers,
+      },
+    );
+    return {
+      type: 'GERENTE' as const,
+      manager,
+      organizationId,
+      period: periodInput,
+      vehicleType,
+      scope: config.alcance,
+      branchIds,
+      branchCount: branchIds.length,
+      // Carried through so agree() can freeze the exact config used, without
+      // a second config lookup.
+      percentage: config.porcentaje ? config.porcentaje.toFixed(2) : null,
+      policyId: config.politica_comision_id,
+      ...calculation,
+    };
+  }
+
+  // --- Manager (GERENTE) commission settlements: agree/pay flow, own
+  // table (liquidaciones_comisiones_gerente). Reuses
+  // managerCommissionForActor() above for the live calculation in every
+  // path below - the PORCENTAJE/ESCALA formula lives in exactly one place
+  // (commissions.calculation.ts) whether it is being previewed, frozen, or
+  // shown back after being frozen. Never touches liquidaciones_comisiones
+  // or its agree()/pay()/history() above.
+
+  private encodeManagerSuggestionId(key: ManagerSuggestionKey) {
+    return Buffer.from(JSON.stringify(key), 'utf8').toString('base64url');
+  }
+
+  private decodeManagerSuggestionId(id: string): ManagerSuggestionKey {
+    try {
+      const value = JSON.parse(
+        Buffer.from(id, 'base64url').toString('utf8'),
+      ) as Partial<ManagerSuggestionKey>;
+      if (
+        !this.isUuid(value.organizationId) ||
+        !this.isUuid(value.managerId) ||
+        typeof value.period !== 'string' ||
+        (value.vehicleType !== tipo_vehiculo_luma.MOTO &&
+          value.vehicleType !== tipo_vehiculo_luma.AUTO)
+      )
+        throw new Error('invalid');
+      commissionPeriod(value.period);
+      return value as ManagerSuggestionKey;
+    } catch {
+      commissionBadRequest(
+        'INVALID_MANAGER_COMMISSION_SUGGESTION_ID',
+        'Manager commission suggestion id is invalid',
+      );
+    }
+  }
+
+  private assertManagerKeyScope(
+    key: ManagerSuggestionKey,
+    actor: AuthenticatedUser,
+  ) {
+    if (!actor.globalAccess && key.organizationId !== actor.organization.id)
+      throw new ForbiddenException(
+        'Manager commission suggestion is outside your organization',
+      );
+  }
+
+  private managerKeyString(key: ManagerSuggestionKey) {
+    return [
+      'manager-commission',
+      key.organizationId,
+      key.managerId,
+      key.period,
+      key.vehicleType,
+    ].join(':');
+  }
+
+  private async managerSettlementRowByKey(
+    tx: Prisma.TransactionClient,
+    organizationId: string,
+    managerId: string,
+    period: { from: Date; to: Date },
+    vehicleType: tipo_vehiculo_luma,
+  ) {
+    const rows = await tx.$queryRaw<ManagerSettlementRow[]>(Prisma.sql`
+      ${managerSettlementSelect}
+      WHERE g.organizacion_id = ${organizationId}::uuid
+        AND g.personal_id = ${managerId}::uuid
+        AND g.periodo_desde = ${period.from}::date
+        AND g.periodo_hasta = ${period.to}::date
+        AND g.tipo_vehiculo = ${vehicleType}::"tipo_vehiculo_luma"
+    `);
+    return rows[0] ?? null;
+  }
+
+  private async managerSettlementRowOr404(
+    tx: Prisma.TransactionClient,
+    id: string,
+    actor: AuthenticatedUser,
+  ) {
+    const conditions: Prisma.Sql[] = [Prisma.sql`g.id = ${id}::uuid`];
+    if (!actor.globalAccess)
+      conditions.push(
+        Prisma.sql`g.organizacion_id = ${actor.organization.id}::uuid`,
+      );
+    const rows = await tx.$queryRaw<ManagerSettlementRow[]>(Prisma.sql`
+      ${managerSettlementSelect}
+      WHERE ${Prisma.join(conditions, ' AND ')}
+    `);
+    const row = rows[0];
+    if (!row)
+      commissionNotFound(
+        'MANAGER_COMMISSION_SETTLEMENT_NOT_FOUND',
+        'Manager commission settlement not found',
+      );
+    return row;
+  }
+
+  private managerSettlementResponse(row: ManagerSettlementRow) {
+    return {
+      id: row.id,
+      manager: { id: row.personal_id, name: row.manager_nombre },
+      period: this.periodLabel(row),
+      vehicleType: row.tipo_vehiculo,
+      mode: row.modo_calculo,
+      scope: row.alcance,
+      branchIds: this.jsonArray(row.sucursales_incluidas) as string[],
+      computableSales: row.cantidad_operaciones_computables,
+      percentage: row.porcentaje ? row.porcentaje.toFixed(2) : null,
+      policyId: row.politica_comision_id,
+      scale: this.jsonObject(row.escala_snapshot),
+      amount: row.monto_calculado.toFixed(2),
+      currency: row.moneda,
+      status: this.apiManagerSettlementStatus(row.estado),
+      version: row.version_fila,
+      notes: row.notas,
+      agreedAt: row.acordado_en,
+      agreedBy: row.acordado_por_personal_id
+        ? { id: row.acordado_por_personal_id, name: row.acordado_por_nombre }
+        : null,
+      paidAt: row.pagado_en,
+      paidBy: row.pagado_por_personal_id
+        ? { id: row.pagado_por_personal_id, name: row.pagado_por_nombre }
+        : null,
+      createdAt: row.creado_en,
+      updatedAt: row.actualizado_en,
+    };
+  }
+
+  private apiManagerSettlementStatus(
+    status: 'SUGERIDA' | 'ACORDADA' | 'PAGADA',
+  ) {
+    return status === 'ACORDADA'
+      ? ManagerCommissionSettlementStatus.AGREED
+      : status === 'PAGADA'
+        ? ManagerCommissionSettlementStatus.PAID
+        : ManagerCommissionSettlementStatus.SUGGESTED;
+  }
+
+  private databaseManagerSettlementStatus(
+    status: ManagerCommissionSettlementStatus,
+  ) {
+    return status === ManagerCommissionSettlementStatus.AGREED
+      ? 'ACORDADA'
+      : status === ManagerCommissionSettlementStatus.PAID
+        ? 'PAGADA'
+        : 'SUGERIDA';
+  }
+
+  async managerSuggestions(
+    query: ManagerCommissionSuggestionQueryDto,
+    actor: AuthenticatedUser,
+  ) {
     assertOrganization(actor, query.organizationId);
     const organizationId =
       query.organizationId ??
       (actor.globalAccess ? undefined : actor.organization.id);
     return this.prisma.withTenant(scope(actor), async (tx) => {
-      const where: Prisma.politicas_comisionesWhereInput = {
-        organizacion_id: organizationId,
-        tipo_vehiculo: query.vehicleType,
-        estado: query.status
-          ? this.databasePolicyStatus(query.status)
-          : undefined,
-      };
-      const [total, items] = await Promise.all([
-        tx.politicas_comisiones.count({ where }),
-        tx.politicas_comisiones.findMany({
-          where,
-          include: policyInclude,
-          orderBy: [{ vigente_desde: 'desc' }, { creado_en: 'desc' }],
-          skip: (query.page - 1) * query.limit,
-          take: query.limit,
-        }),
+      const conditions: Prisma.Sql[] = [
+        Prisma.sql`c.activo = true`,
+        Prisma.sql`p.estado = 'ACTIVO'`,
+      ];
+      if (organizationId)
+        conditions.push(Prisma.sql`c.organizacion_id = ${organizationId}::uuid`);
+      if (query.managerId)
+        conditions.push(Prisma.sql`p.id = ${query.managerId}::uuid`);
+      const managers = await tx.$queryRaw<
+        Array<{ id: string; nombre_completo: string; organizacion_id: string }>
+      >(Prisma.sql`
+        SELECT p.id, p.nombre_completo, c.organizacion_id
+        FROM configuracion_comision_gerente c
+        JOIN personal p ON p.id = c.personal_id AND p.organizacion_id = c.organizacion_id
+        WHERE ${Prisma.join(conditions, ' AND ')}
+        ORDER BY p.nombre_completo ASC
+      `);
+      const period = commissionPeriod(query.period);
+      const [calculations, existingRows] = await Promise.all([
+        Promise.all(
+          managers.map((manager) =>
+            this.managerCommissionForActor(
+              tx,
+              { id: manager.id, name: manager.nombre_completo },
+              manager.organizacion_id,
+              query.period,
+              query.vehicleType,
+            ),
+          ),
+        ),
+        managers.length
+          ? tx.$queryRaw<ManagerSettlementRow[]>(Prisma.sql`
+              ${managerSettlementSelect}
+              WHERE g.personal_id IN (${Prisma.join(
+                managers.map((manager) => Prisma.sql`${manager.id}::uuid`),
+              )})
+                AND g.periodo_desde = ${period.from}::date
+                AND g.periodo_hasta = ${period.to}::date
+                AND g.tipo_vehiculo = ${query.vehicleType}::"tipo_vehiculo_luma"
+            `)
+          : Promise.resolve([] as ManagerSettlementRow[]),
       ]);
+      const existingByManager = new Map(
+        existingRows.map((row) => [row.personal_id, row]),
+      );
+      const items = calculations
+        .filter(
+          (calculation): calculation is NonNullable<(typeof calculations)[number]> =>
+            calculation !== null,
+        )
+        .map((calculation) => {
+          const existing = existingByManager.get(calculation.manager.id);
+          return {
+            id: this.encodeManagerSuggestionId({
+              organizationId: calculation.organizationId,
+              managerId: calculation.manager.id,
+              period: calculation.period,
+              vehicleType: calculation.vehicleType,
+            }),
+            ...calculation,
+            settlement: existing
+              ? this.managerSettlementResponse(existing)
+              : null,
+          };
+        });
+      const total = items.length;
       return {
-        items: items.map((item) => this.policyResponse(item)),
+        items: items.slice(
+          (query.page - 1) * query.limit,
+          (query.page - 1) * query.limit + query.limit,
+        ),
         total,
         page: query.page,
         limit: query.limit,
@@ -652,10 +1266,404 @@ export class CommissionsService {
     });
   }
 
-  async policy(id: string, actor: AuthenticatedUser) {
-    return this.prisma.withTenant(scope(actor), async (tx) =>
-      this.policyResponse(await this.policyOr404(tx, id, actor)),
+  async managerSuggestion(id: string, actor: AuthenticatedUser) {
+    const key = this.decodeManagerSuggestionId(id);
+    this.assertManagerKeyScope(key, actor);
+    return this.prisma.withTenant(scope(actor), async (tx) => {
+      const manager = await this.managerOr404(
+        tx,
+        key.managerId,
+        key.organizationId,
+      );
+      const calculation = await this.managerCommissionForActor(
+        tx,
+        { id: manager.id, name: manager.nombre_completo },
+        key.organizationId,
+        key.period,
+        key.vehicleType,
+      );
+      if (!calculation)
+        commissionBadRequest(
+          'MANAGER_COMMISSION_NOT_CONFIGURED',
+          'Manager has no active commission configuration',
+        );
+      const existing = await this.managerSettlementRowByKey(
+        tx,
+        key.organizationId,
+        key.managerId,
+        commissionPeriod(key.period),
+        key.vehicleType,
+      );
+      return {
+        id,
+        ...calculation,
+        settlement: existing ? this.managerSettlementResponse(existing) : null,
+      };
+    });
+  }
+
+  async agreeManagerCommission(
+    id: string,
+    input: AgreeManagerCommissionDto,
+    actor: AuthenticatedUser,
+  ) {
+    const key = this.decodeManagerSuggestionId(id);
+    this.assertManagerKeyScope(key, actor);
+    return this.mutate(
+      actor,
+      'MANAGER_COMMISSION_AGREEMENT_RECORDED',
+      async (tx, event) => {
+        await tx.$executeRaw(Prisma.sql`
+          SELECT pg_advisory_xact_lock(hashtextextended(${this.managerKeyString(key)}, 0))
+        `);
+        event.targetOrganizationId = targetOrganization(
+          actor,
+          key.organizationId,
+        );
+        const manager = await this.managerOr404(
+          tx,
+          key.managerId,
+          key.organizationId,
+        );
+        const calculation = await this.managerCommissionForActor(
+          tx,
+          { id: manager.id, name: manager.nombre_completo },
+          key.organizationId,
+          key.period,
+          key.vehicleType,
+        );
+        if (!calculation)
+          commissionBadRequest(
+            'MANAGER_COMMISSION_NOT_CONFIGURED',
+            'Manager has no active commission configuration',
+          );
+        const period = commissionPeriod(key.period);
+        const existing = await this.managerSettlementRowByKey(
+          tx,
+          key.organizationId,
+          key.managerId,
+          period,
+          key.vehicleType,
+        );
+        const now = new Date();
+        const acordadoPorId = await this.actorPersonnelId(
+          tx,
+          actor,
+          key.organizationId,
+        );
+        const scaleJson = calculation.scale
+          ? JSON.stringify(calculation.scale)
+          : null;
+        const branchIdsJson = JSON.stringify(calculation.branchIds);
+        if (existing) {
+          if (existing.estado === 'PAGADA')
+            commissionConflict(
+              'COMMISSION_ALREADY_PAID',
+              'A paid manager commission settlement cannot be changed',
+            );
+          const repeated =
+            existing.monto_calculado.toFixed(2) === calculation.suggestedAmount &&
+            existing.cantidad_operaciones_computables ===
+              calculation.computableSales;
+          if (repeated) {
+            event.skipRecord = true;
+            return this.managerSettlementResponse(existing);
+          }
+          if (
+            input.expectedVersion === undefined ||
+            input.expectedVersion !== existing.version_fila
+          )
+            commissionConflict(
+              'COMMISSION_STALE_VERSION',
+              'Manager commission settlement was modified by another request',
+            );
+          await tx.$executeRaw(Prisma.sql`
+            UPDATE liquidaciones_comisiones_gerente SET
+              modo_calculo = ${calculation.mode}::"modo_calculo_comision_gerente_luma",
+              alcance = ${calculation.scope}::"alcance_comision_gerente_luma",
+              sucursales_incluidas = ${branchIdsJson}::jsonb,
+              cantidad_operaciones_computables = ${calculation.computableSales},
+              porcentaje = ${calculation.percentage}::numeric,
+              politica_comision_id = ${calculation.policyId}::uuid,
+              escala_snapshot = ${scaleJson}::jsonb,
+              monto_calculado = ${calculation.suggestedAmount}::numeric,
+              acordado_en = ${now}::timestamptz,
+              acordado_por_personal_id = ${acordadoPorId}::uuid,
+              version_fila = version_fila + 1
+            WHERE id = ${existing.id}::uuid AND organizacion_id = ${key.organizationId}::uuid
+          `);
+          event.entityId = existing.id;
+          event.metadata = {
+            previousAmount: existing.monto_calculado.toString(),
+            newAmount: calculation.suggestedAmount,
+          };
+          const updated = await this.managerSettlementRowOr404(
+            tx,
+            existing.id,
+            actor,
+          );
+          return this.managerSettlementResponse(updated);
+        }
+        const created = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+          INSERT INTO liquidaciones_comisiones_gerente (
+            organizacion_id, personal_id, tipo_vehiculo, periodo_desde, periodo_hasta,
+            modo_calculo, alcance, sucursales_incluidas, cantidad_operaciones_computables,
+            porcentaje, politica_comision_id, escala_snapshot, monto_calculado, moneda,
+            estado, acordado_en, acordado_por_personal_id
+          ) VALUES (
+            ${key.organizationId}::uuid, ${key.managerId}::uuid,
+            ${key.vehicleType}::"tipo_vehiculo_luma",
+            ${period.from}::date, ${period.to}::date,
+            ${calculation.mode}::"modo_calculo_comision_gerente_luma",
+            ${calculation.scope}::"alcance_comision_gerente_luma",
+            ${branchIdsJson}::jsonb, ${calculation.computableSales},
+            ${calculation.percentage}::numeric, ${calculation.policyId}::uuid,
+            ${scaleJson}::jsonb, ${calculation.suggestedAmount}::numeric, 'ARS',
+            'ACORDADA', ${now}::timestamptz, ${acordadoPorId}::uuid
+          )
+          RETURNING id
+        `);
+        event.entityId = created[0].id;
+        event.metadata = { amount: calculation.suggestedAmount };
+        const row = await this.managerSettlementRowOr404(
+          tx,
+          created[0].id,
+          actor,
+        );
+        return this.managerSettlementResponse(row);
+      },
+      undefined,
+      key.organizationId,
+      'liquidaciones_comisiones_gerente',
     );
+  }
+
+  async managerSettlements(
+    query: ManagerCommissionSettlementQueryDto,
+    actor: AuthenticatedUser,
+  ) {
+    assertOrganization(actor, query.organizationId);
+    const organizationId =
+      query.organizationId ??
+      (actor.globalAccess ? undefined : actor.organization.id);
+    const period = query.period ? commissionPeriod(query.period) : undefined;
+    const status = query.status
+      ? this.databaseManagerSettlementStatus(query.status)
+      : undefined;
+    return this.prisma.withTenant(scope(actor), async (tx) => {
+      const conditions: Prisma.Sql[] = [
+        Prisma.sql`g.tipo_vehiculo = ${query.vehicleType}::"tipo_vehiculo_luma"`,
+      ];
+      if (organizationId)
+        conditions.push(Prisma.sql`g.organizacion_id = ${organizationId}::uuid`);
+      if (query.managerId)
+        conditions.push(Prisma.sql`g.personal_id = ${query.managerId}::uuid`);
+      if (status)
+        conditions.push(
+          Prisma.sql`g.estado = ${status}::"estado_liquidacion_comision_gerente_luma"`,
+        );
+      else
+        conditions.push(Prisma.sql`g.estado IN ('ACORDADA', 'PAGADA')`);
+      if (period) {
+        conditions.push(Prisma.sql`g.periodo_desde = ${period.from}::date`);
+        conditions.push(Prisma.sql`g.periodo_hasta = ${period.to}::date`);
+      }
+      const where = Prisma.sql`WHERE ${Prisma.join(conditions, ' AND ')}`;
+      const [rows, countRows] = await Promise.all([
+        tx.$queryRaw<ManagerSettlementRow[]>(Prisma.sql`
+          ${managerSettlementSelect}
+          ${where}
+          ORDER BY g.periodo_desde DESC, g.creado_en DESC
+          LIMIT ${query.limit} OFFSET ${(query.page - 1) * query.limit}
+        `),
+        tx.$queryRaw<Array<{ count: bigint }>>(Prisma.sql`
+          SELECT COUNT(*)::bigint AS count
+          FROM liquidaciones_comisiones_gerente g
+          ${where}
+        `),
+      ]);
+      return {
+        items: rows.map((row) => this.managerSettlementResponse(row)),
+        total: Number(countRows[0].count),
+        page: query.page,
+        limit: query.limit,
+      };
+    });
+  }
+
+  async payManagerCommission(
+    id: string,
+    input: PayManagerCommissionDto,
+    actor: AuthenticatedUser,
+  ) {
+    return this.mutate(
+      actor,
+      'MANAGER_COMMISSION_PAYMENT_REGISTERED',
+      async (tx, event) => {
+        await tx.$executeRaw(Prisma.sql`
+          SELECT pg_advisory_xact_lock(hashtextextended(${`manager-commission-settlement:${id}`}, 0))
+        `);
+        const settlement = await this.managerSettlementRowOr404(tx, id, actor);
+        event.targetOrganizationId = targetOrganization(
+          actor,
+          settlement.organizacion_id,
+        );
+        if (settlement.estado === 'PAGADA')
+          commissionConflict(
+            'COMMISSION_ALREADY_PAID',
+            'Manager commission settlement is already paid',
+          );
+        if (settlement.estado !== 'ACORDADA')
+          commissionConflict(
+            'COMMISSION_NOT_AGREED',
+            'Manager commission settlement must be agreed before payment',
+          );
+        if (settlement.version_fila !== input.expectedVersion)
+          commissionConflict(
+            'COMMISSION_STALE_VERSION',
+            'Manager commission settlement was modified by another request',
+          );
+        const payerId = await this.actorPersonnelId(
+          tx,
+          actor,
+          settlement.organizacion_id,
+        );
+        await tx.$executeRaw(Prisma.sql`
+          UPDATE liquidaciones_comisiones_gerente SET
+            estado = 'PAGADA',
+            pagado_en = ${new Date(input.paidAt)}::timestamptz,
+            pagado_por_personal_id = ${payerId}::uuid,
+            notas = ${input.notes ?? null},
+            version_fila = version_fila + 1
+          WHERE id = ${id}::uuid AND organizacion_id = ${settlement.organizacion_id}::uuid
+        `);
+        event.entityId = id;
+        event.metadata = { amount: settlement.monto_calculado.toString() };
+        const paid = await this.managerSettlementRowOr404(tx, id, actor);
+        return this.managerSettlementResponse(paid);
+      },
+      id,
+      undefined,
+      'liquidaciones_comisiones_gerente',
+    );
+  }
+
+  private async managerHistoryInTx(
+    tx: Prisma.TransactionClient,
+    query: ManagerCommissionHistoryQueryDto,
+    actor: AuthenticatedUser,
+  ) {
+    const organizationId =
+      query.organizationId ??
+      (actor.globalAccess ? undefined : actor.organization.id);
+    const [paidFrom, paidTo] = this.historyDates(query);
+    const conditions: Prisma.Sql[] = [
+      Prisma.sql`g.estado = 'PAGADA'`,
+      Prisma.sql`g.tipo_vehiculo = ${query.vehicleType}::"tipo_vehiculo_luma"`,
+    ];
+    if (organizationId)
+      conditions.push(Prisma.sql`g.organizacion_id = ${organizationId}::uuid`);
+    if (query.managerId)
+      conditions.push(Prisma.sql`g.personal_id = ${query.managerId}::uuid`);
+    if (paidFrom) conditions.push(Prisma.sql`g.pagado_en >= ${paidFrom}::timestamptz`);
+    if (paidTo) conditions.push(Prisma.sql`g.pagado_en <= ${paidTo}::timestamptz`);
+    const where = Prisma.sql`WHERE ${Prisma.join(conditions, ' AND ')}`;
+    const [rows, countRows] = await Promise.all([
+      tx.$queryRaw<ManagerSettlementRow[]>(Prisma.sql`
+        ${managerSettlementSelect}
+        ${where}
+        ORDER BY g.pagado_en DESC, g.id DESC
+        LIMIT ${query.limit} OFFSET ${(query.page - 1) * query.limit}
+      `),
+      tx.$queryRaw<Array<{ count: bigint }>>(Prisma.sql`
+        SELECT COUNT(*)::bigint AS count
+        FROM liquidaciones_comisiones_gerente g
+        ${where}
+      `),
+    ]);
+    return {
+      items: rows.map((row) => this.managerSettlementResponse(row)),
+      total: Number(countRows[0].count),
+      page: query.page,
+      limit: query.limit,
+    };
+  }
+
+  async managerHistory(
+    query: ManagerCommissionHistoryQueryDto,
+    actor: AuthenticatedUser,
+  ) {
+    assertOrganization(actor, query.organizationId);
+    return this.prisma.withTenant(scope(actor), (tx) =>
+      this.managerHistoryInTx(tx, query, actor),
+    );
+  }
+
+  async policies(query: CommissionPolicyQueryDto, actor: AuthenticatedUser) {
+    assertOrganization(actor, query.organizationId);
+    const organizationId =
+      query.organizationId ??
+      (actor.globalAccess ? undefined : actor.organization.id);
+    // Defaults to VENDEDOR when the caller doesn't send ambito, so any
+    // existing client that predates this filter (and never learned about
+    // ambito) keeps seeing exactly the vendor policies it always saw -
+    // never a GERENCIA one mixed in.
+    const ambito = query.ambito ?? CommissionPolicyAmbito.VENDEDOR;
+    return this.prisma.withTenant(scope(actor), async (tx) => {
+      // ambito isn't part of the generated Prisma Client's typed
+      // WhereInput yet (see the ambito helpers above), so the filtering,
+      // ordering and pagination happen here via raw SQL first; the actual
+      // rows (tiers included) are then hydrated through the existing typed
+      // `findMany` below, unchanged from before this filter existed.
+      const conditions: Prisma.Sql[] = [
+        Prisma.sql`"ambito" = ${ambito}::"ambito_politica_comision_luma"`,
+        Prisma.sql`"tipo_vehiculo" = ${query.vehicleType}::"tipo_vehiculo_luma"`,
+      ];
+      if (organizationId)
+        conditions.push(Prisma.sql`"organizacion_id" = ${organizationId}::uuid`);
+      if (query.status)
+        conditions.push(
+          Prisma.sql`"estado" = ${this.databasePolicyStatus(query.status)}::"estado_politica_comision_luma"`,
+        );
+      const where = Prisma.sql`WHERE ${Prisma.join(conditions, ' AND ')}`;
+      const [countRows, idRows] = await Promise.all([
+        tx.$queryRaw<Array<{ count: bigint }>>(
+          Prisma.sql`SELECT COUNT(*)::bigint AS count FROM "politicas_comisiones" ${where}`,
+        ),
+        tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+          SELECT "id" FROM "politicas_comisiones" ${where}
+          ORDER BY "vigente_desde" DESC, "creado_en" DESC
+          LIMIT ${query.limit} OFFSET ${(query.page - 1) * query.limit}
+        `),
+      ]);
+      const orderedIds = idRows.map((row) => row.id);
+      const items = orderedIds.length
+        ? await tx.politicas_comisiones.findMany({
+            where: { id: { in: orderedIds } },
+            include: policyInclude,
+          })
+        : [];
+      const byId = new Map(items.map((item) => [item.id, item]));
+      const ordered = orderedIds
+        .map((id) => byId.get(id))
+        .filter((item): item is PolicyRecord => Boolean(item));
+      return {
+        items: ordered.map((item) => this.policyResponse(item, ambito)),
+        total: Number(countRows[0].count),
+        page: query.page,
+        limit: query.limit,
+      };
+    });
+  }
+
+  async policy(id: string, actor: AuthenticatedUser) {
+    return this.prisma.withTenant(scope(actor), async (tx) => {
+      const found = await this.policyOr404(tx, id, actor);
+      const ambito =
+        (await this.policyAmbito(tx, found.id, found.organizacion_id)) ??
+        CommissionPolicyAmbito.VENDEDOR;
+      return this.policyResponse(found, ambito);
+    });
   }
 
   async createPolicy(
@@ -665,16 +1673,20 @@ export class CommissionsService {
     assertOrganization(actor, input.organizationId);
     this.validatePolicyInput(input);
     const organizationId = input.organizationId ?? actor.organization.id;
+    // Defaults to VENDEDOR when omitted, so any existing caller that never
+    // sends ambito keeps creating vendor policies exactly as before.
+    const ambito = input.ambito ?? CommissionPolicyAmbito.VENDEDOR;
     return this.mutate(
       actor,
       'COMMISSION_POLICY_CREATED',
       async (tx, event) => {
-        await this.lockPolicyType(tx, organizationId, input.vehicleType);
+        await this.lockPolicyType(tx, organizationId, input.vehicleType, ambito);
         if (input.status === CommissionPolicyStatus.ACTIVE)
           await this.closePreviousPolicies(
             tx,
             organizationId,
             input.vehicleType,
+            ambito,
             businessDate(input.validFrom),
             input.validTo ? businessDate(input.validTo) : null,
           );
@@ -704,8 +1716,12 @@ export class CommissionsService {
           },
           include: policyInclude,
         });
+        // ambito isn't part of the typed create() input above (see the
+        // ambito helpers note) - set it explicitly, in the same
+        // transaction, right after the row exists.
+        await this.setPolicyAmbito(tx, created.id, organizationId, ambito);
         event.entityId = created.id;
-        return this.policyResponse(created);
+        return this.policyResponse(created, ambito);
       },
       undefined,
       organizationId,
@@ -719,6 +1735,10 @@ export class CommissionsService {
   ) {
     assertOrganization(actor, input.organizationId);
     this.validatePolicyInput(input);
+    // Defaults to VENDEDOR when omitted - same rule as createPolicy, so a
+    // caller that never sends ambito on an update keeps the policy VENDEDOR
+    // rather than silently leaving whatever it happened to be before.
+    const ambito = input.ambito ?? CommissionPolicyAmbito.VENDEDOR;
     return this.mutate(
       actor,
       'COMMISSION_POLICY_UPDATED',
@@ -768,23 +1788,28 @@ export class CommissionsService {
           },
           include: policyInclude,
         });
+        // ambito isn't part of the typed update() input above (see the
+        // ambito helpers note) - set it explicitly in the same transaction.
+        await this.setPolicyAmbito(tx, updated.id, current.organizacion_id, ambito);
         if (input.status === CommissionPolicyStatus.ACTIVE) {
           await this.lockPolicyType(
             tx,
             current.organizacion_id,
             input.vehicleType,
+            ambito,
           );
           await this.closePreviousPolicies(
             tx,
             current.organizacion_id,
             input.vehicleType,
+            ambito,
             businessDate(input.validFrom),
             input.validTo ? businessDate(input.validTo) : null,
             id,
           );
         }
         event.entityId = updated.id;
-        return this.policyResponse(updated);
+        return this.policyResponse(updated, ambito);
       },
       id,
     );
@@ -865,12 +1890,16 @@ export class CommissionsService {
       action,
       async (tx, event) => {
         const current = await this.policyOr404(tx, id, actor, true);
+        const ambito =
+          (await this.policyAmbito(tx, current.id, current.organizacion_id)) ??
+          CommissionPolicyAmbito.VENDEDOR;
         event.targetOrganizationId = targetOrganization(
           actor,
           current.organizacion_id,
         );
         this.assertVersion(current.version_fila, input.expectedVersion);
-        if (current.estado === status) return this.policyResponse(current);
+        if (current.estado === status)
+          return this.policyResponse(current, ambito);
         if (
           status === estado_politica_comision_luma.ACTIVA &&
           current.estado !== estado_politica_comision_luma.BORRADOR
@@ -884,11 +1913,13 @@ export class CommissionsService {
             tx,
             current.organizacion_id,
             current.tipo_vehiculo,
+            ambito,
           );
           await this.closePreviousPolicies(
             tx,
             current.organizacion_id,
             current.tipo_vehiculo,
+            ambito,
             current.vigente_desde,
             current.vigente_hasta,
             current.id,
@@ -905,7 +1936,7 @@ export class CommissionsService {
           include: policyInclude,
         });
         event.entityId = updated.id;
-        return this.policyResponse(updated);
+        return this.policyResponse(updated, ambito);
       },
       id,
     );
@@ -960,6 +1991,18 @@ export class CommissionsService {
     prefetchedOperations?: OperationRecord[],
   ): Promise<SuggestionData> {
     const period = commissionPeriod(key.period);
+    // Resolved ambito-aware (VENDEDOR only - see activePolicyId) before the
+    // Promise.all below, since the typed findFirst that hydrates the full
+    // row (tiers included) needs the id first. This is THE vendor
+    // commission calculation path - a GERENCIA policy must never be able
+    // to surface here, no matter what.
+    const activeVendorPolicyId = await this.activePolicyId(
+      tx,
+      key.organizationId,
+      key.vehicleType,
+      CommissionPolicyAmbito.VENDEDOR,
+      period.to,
+    );
     const [seller, branch, policy, settlement] = await Promise.all([
       tx.personal.findFirst({
         where: {
@@ -977,17 +2020,12 @@ export class CommissionsService {
         },
         select: { id: true, nombre: true },
       }),
-      tx.politicas_comisiones.findFirst({
-        where: {
-          organizacion_id: key.organizationId,
-          tipo_vehiculo: key.vehicleType,
-          estado: estado_politica_comision_luma.ACTIVA,
-          vigente_desde: { lte: period.to },
-          OR: [{ vigente_hasta: null }, { vigente_hasta: { gte: period.to } }],
-        },
-        include: policyInclude,
-        orderBy: [{ vigente_desde: 'desc' }],
-      }),
+      activeVendorPolicyId
+        ? tx.politicas_comisiones.findFirst({
+            where: { id: activeVendorPolicyId },
+            include: policyInclude,
+          })
+        : Promise.resolve(null),
       tx.liquidaciones_comisiones.findFirst({
         where: {
           organizacion_id: key.organizationId,
@@ -1023,7 +2061,7 @@ export class CommissionsService {
           asignaciones_personal_operacion: {
             some: {
               personal_id: key.sellerId,
-              rol_asignacion: 'VENDEDOR',
+              rol_asignacion: { in: SELLER_ASSIGNMENT_ROLES },
             },
           },
         },
@@ -1165,8 +2203,10 @@ export class CommissionsService {
   }
 
   private primarySeller(operation: OperationRecord) {
-    const assignment = operation.asignaciones_personal_operacion.find(
-      (item) => item.rol_asignacion === 'VENDEDOR',
+    const assignment = operation.asignaciones_personal_operacion.find((item) =>
+      (SELLER_ASSIGNMENT_ROLES as readonly string[]).includes(
+        item.rol_asignacion,
+      ),
     );
     return assignment
       ? {
@@ -1303,11 +2343,12 @@ export class CommissionsService {
     };
   }
 
-  private policyResponse(item: PolicyRecord) {
+  private policyResponse(item: PolicyRecord, ambito: CommissionPolicyAmbito) {
     return {
       id: item.id,
       organizationId: item.organizacion_id,
       vehicleType: item.tipo_vehiculo,
+      ambito,
       currency: item.moneda,
       validFrom: this.dateOnly(item.vigente_desde),
       validTo: this.dateOnly(item.vigente_hasta),
@@ -1347,6 +2388,66 @@ export class CommissionsService {
         this.scaleResponse(policy, tier),
       ) as unknown as Prisma.InputJsonArray,
     };
+  }
+
+  // --- ambito (VENDEDOR | GERENCIA) helpers for politicas_comisiones ------
+  // The Prisma Client already generated on disk predates the "ambito"
+  // column (this environment is not allowed to run `prisma generate`), so
+  // every read or write that touches "ambito" goes through raw SQL here
+  // instead of the typed politicas_comisiones delegate. Everything else
+  // about politicas_comisiones (tiers, dates, status, pagination...) still
+  // goes through the existing typed Prisma calls below, unchanged.
+
+  private async setPolicyAmbito(
+    tx: Prisma.TransactionClient,
+    policyId: string,
+    organizationId: string,
+    ambito: CommissionPolicyAmbito,
+  ) {
+    await tx.$executeRaw`
+      UPDATE "politicas_comisiones"
+      SET "ambito" = ${ambito}::"ambito_politica_comision_luma"
+      WHERE "id" = ${policyId}::uuid AND "organizacion_id" = ${organizationId}::uuid
+    `;
+  }
+
+  private async policyAmbito(
+    tx: Prisma.TransactionClient,
+    policyId: string,
+    organizationId: string,
+  ): Promise<CommissionPolicyAmbito | null> {
+    const rows = await tx.$queryRaw<Array<{ ambito: CommissionPolicyAmbito }>>`
+      SELECT "ambito" FROM "politicas_comisiones"
+      WHERE "id" = ${policyId}::uuid AND "organizacion_id" = ${organizationId}::uuid
+    `;
+    return rows[0]?.ambito ?? null;
+  }
+
+  // Id of the single ACTIVA policy covering `asOf`, scoped by BOTH
+  // vehicleType and ambito - this is the ambito-aware replacement for what
+  // used to be a plain typed `findFirst` filtered only by vehicleType. Only
+  // the id is resolved here; the caller re-fetches the full row (tiers
+  // included) through the existing typed `politicas_comisiones.findFirst`,
+  // so the response shape stays exactly as it was before ambito existed.
+  private async activePolicyId(
+    tx: Prisma.TransactionClient,
+    organizationId: string,
+    vehicleType: tipo_vehiculo_luma,
+    ambito: CommissionPolicyAmbito,
+    asOf: Date,
+  ): Promise<string | null> {
+    const rows = await tx.$queryRaw<Array<{ id: string }>>`
+      SELECT "id" FROM "politicas_comisiones"
+      WHERE "organizacion_id" = ${organizationId}::uuid
+        AND "tipo_vehiculo" = ${vehicleType}::"tipo_vehiculo_luma"
+        AND "ambito" = ${ambito}::"ambito_politica_comision_luma"
+        AND "estado" = 'ACTIVA'
+        AND "vigente_desde" <= ${asOf}::date
+        AND ("vigente_hasta" IS NULL OR "vigente_hasta" >= ${asOf}::date)
+      ORDER BY "vigente_desde" DESC
+      LIMIT 1
+    `;
+    return rows[0]?.id ?? null;
   }
 
   private async policyOr404(
@@ -1418,21 +2519,33 @@ export class CommissionsService {
     tx: Prisma.TransactionClient,
     organizationId: string,
     vehicleType: tipo_vehiculo_luma,
+    ambito: CommissionPolicyAmbito,
     validFrom: Date,
     validTo: Date | null,
     excludingId?: string,
   ) {
-    const existing = await tx.politicas_comisiones.findMany({
-      where: {
-        id: excludingId ? { not: excludingId } : undefined,
-        organizacion_id: organizationId,
-        tipo_vehiculo: vehicleType,
-        estado: estado_politica_comision_luma.ACTIVA,
-        vigente_desde: validTo ? { lte: validTo } : undefined,
-        OR: [{ vigente_hasta: null }, { vigente_hasta: { gte: validFrom } }],
-      },
-      orderBy: [{ vigente_desde: 'asc' }],
-    });
+    // Raw SQL here too (ambito isn't in the typed WhereInput) - only the
+    // two columns the loop below actually reads (id, vigente_desde) are
+    // selected; the loop's own tx.politicas_comisiones.update() calls
+    // further down are untouched, they don't reference ambito.
+    const conditions: Prisma.Sql[] = [
+      Prisma.sql`"organizacion_id" = ${organizationId}::uuid`,
+      Prisma.sql`"tipo_vehiculo" = ${vehicleType}::"tipo_vehiculo_luma"`,
+      Prisma.sql`"ambito" = ${ambito}::"ambito_politica_comision_luma"`,
+      Prisma.sql`"estado" = 'ACTIVA'`,
+      Prisma.sql`("vigente_hasta" IS NULL OR "vigente_hasta" >= ${validFrom}::date)`,
+    ];
+    if (excludingId)
+      conditions.push(Prisma.sql`"id" <> ${excludingId}::uuid`);
+    if (validTo)
+      conditions.push(Prisma.sql`"vigente_desde" <= ${validTo}::date`);
+    const existing = await tx.$queryRaw<Array<{ id: string; vigente_desde: Date }>>(
+      Prisma.sql`
+        SELECT "id", "vigente_desde" FROM "politicas_comisiones"
+        WHERE ${Prisma.join(conditions, ' AND ')}
+        ORDER BY "vigente_desde" ASC
+      `,
+    );
     for (const policy of existing) {
       if (policy.vigente_desde > validFrom)
         commissionConflict(
@@ -1475,10 +2588,11 @@ export class CommissionsService {
     tx: Prisma.TransactionClient,
     organizationId: string,
     vehicleType: tipo_vehiculo_luma,
+    ambito: CommissionPolicyAmbito,
   ) {
     await tx.$executeRaw`
       SELECT pg_advisory_xact_lock(
-        hashtextextended(${`${organizationId}:commission-policy:${vehicleType}`}, 0)
+        hashtextextended(${`${organizationId}:commission-policy:${vehicleType}:${ambito}`}, 0)
       )
     `;
   }
@@ -1515,6 +2629,7 @@ export class CommissionsService {
       },
       select: {
         id: true,
+        nombre_completo: true,
         sucursal_principal_id: true,
       },
     });
@@ -1690,10 +2805,15 @@ export class CommissionsService {
     ) => Promise<T>,
     entityId?: string,
     organizationId?: string,
+    // Additive: every pre-existing call site omits this and keeps auditing
+    // against liquidaciones_comisiones exactly as before. Manager
+    // commission mutations (settlements and, from now on, config) pass
+    // their own entity name so the audit trail names the right table.
+    entity: string = 'liquidaciones_comisiones',
   ) {
     const event: AuthenticatedAuditEvent = {
       action,
-      entity: 'liquidaciones_comisiones',
+      entity,
       entityId,
       actorId: actor.id,
       organizationId: actor.organization.id,

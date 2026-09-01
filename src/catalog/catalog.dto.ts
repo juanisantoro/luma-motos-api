@@ -132,6 +132,14 @@ export class CreateVersionDto extends NameDto {
   @IsArray()
   @IsUUID('4', { each: true })
   organizationIds?: string[];
+
+  // Requires the catalogo.costos.gestionar permission to take effect; see
+  // CatalogService.createVersion. Silently ignored otherwise.
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
+  costPrice?: number;
 }
 
 export class UpdateVersionDto extends UpdateNameDto {
@@ -147,6 +155,14 @@ export class UpdateVersionDto extends UpdateNameDto {
   @IsArray()
   @IsUUID('4', { each: true })
   organizationIds?: string[];
+
+  // Requires the catalogo.costos.gestionar permission to take effect; see
+  // CatalogService.updateVersion. Silently ignored otherwise.
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
+  costPrice?: number;
 }
 
 export class CreatePricePolicyDto {

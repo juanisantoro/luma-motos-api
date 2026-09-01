@@ -10,6 +10,7 @@ export const SYSTEM_ROLE_CODES = [
   'GERENTE',
   'ADMINISTRATIVA',
   'VENDEDOR',
+  'CALLCENTER',
 ] as const;
 
 export const ADMINISTRATOR_REQUIRED_PERMISSIONS = [

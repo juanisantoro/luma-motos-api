@@ -37,6 +37,12 @@ const roles = [
     descripcion: 'Gestiona sus operaciones comerciales asignadas.',
   },
   {
+    codigo: 'CALLCENTER',
+    nombre: 'Call Center',
+    descripcion:
+      'Gestiona contactos y operaciones comerciales asignadas desde el call center.',
+  },
+  {
     codigo: 'ADMINISTRATIVA',
     nombre: 'Administrativa',
     descripcion: 'Gestiona tareas administrativas y financieras.',
@@ -89,33 +95,33 @@ const managedPermissions = [
     codigo: 'clientes.consultar',
     modulo: 'clientes',
     descripcion: 'Consulta clientes de las organizaciones habilitadas.',
-    roles: ['VENDEDOR', 'ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+    roles: ['VENDEDOR', 'CALLCENTER', 'ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
   },
   {
     codigo: 'clientes.gestionar',
     modulo: 'clientes',
     descripcion: 'Crea, actualiza, activa y desactiva clientes.',
-    roles: ['VENDEDOR', 'ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+    roles: ['VENDEDOR', 'CALLCENTER', 'ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
   },
   {
     codigo: 'consultas_crediticias.consultar',
     modulo: 'consultas_crediticias',
     descripcion:
       'Consulta el consolidado de rechazos y el historial crediticio.',
-    roles: ['VENDEDOR', 'ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+    roles: ['VENDEDOR', 'CALLCENTER', 'ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
   },
   {
     codigo: 'consultas_crediticias.verificar',
     modulo: 'consultas_crediticias',
     descripcion:
       'Verifica antecedentes crediticios por documento antes de una operación.',
-    roles: ['VENDEDOR', 'ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+    roles: ['VENDEDOR', 'CALLCENTER', 'ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
   },
   {
     codigo: 'consultas_crediticias.registrar',
     modulo: 'consultas_crediticias',
     descripcion: 'Registra intentos de consulta crediticia.',
-    roles: ['VENDEDOR', 'ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+    roles: ['VENDEDOR', 'CALLCENTER', 'ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
   },
   {
     codigo: 'financieras.gestionar',
@@ -127,7 +133,7 @@ const managedPermissions = [
     codigo: 'catalogo.consultar',
     modulo: 'catalogo',
     descripcion: 'Consulta marcas, modelos, versiones y políticas de precios.',
-    roles: ['VENDEDOR', 'ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+    roles: ['VENDEDOR', 'CALLCENTER', 'ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
   },
   {
     codigo: 'catalogo.gestionar',
@@ -136,10 +142,23 @@ const managedPermissions = [
     roles: ['ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
   },
   {
+    codigo: 'catalogo.costos.consultar',
+    modulo: 'catalogo',
+    descripcion:
+      'Consulta el precio de costo de cada modelo de catálogo (dato sensible de margen).',
+    roles: ['GERENTE', 'ADMINISTRADOR'],
+  },
+  {
+    codigo: 'catalogo.costos.gestionar',
+    modulo: 'catalogo',
+    descripcion: 'Carga y actualiza el precio de costo de un modelo de catálogo.',
+    roles: ['GERENTE', 'ADMINISTRADOR'],
+  },
+  {
     codigo: 'inventario.consultar',
     modulo: 'inventario',
     descripcion: 'Consulta unidades y sus movimientos de inventario.',
-    roles: ['VENDEDOR', 'ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+    roles: ['VENDEDOR', 'CALLCENTER', 'ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
   },
   {
     codigo: 'inventario.gestionar',
@@ -157,7 +176,7 @@ const managedPermissions = [
     codigo: 'proveedores.consultar',
     modulo: 'proveedores',
     descripcion: 'Consulta proveedores y disponibilidades informadas.',
-    roles: ['VENDEDOR', 'ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+    roles: ['VENDEDOR', 'CALLCENTER', 'ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
   },
   {
     codigo: 'proveedores.gestionar',
@@ -169,7 +188,7 @@ const managedPermissions = [
     codigo: 'abastecimiento.consultar',
     modulo: 'abastecimiento',
     descripcion: 'Consulta solicitudes de abastecimiento.',
-    roles: ['VENDEDOR', 'ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+    roles: ['VENDEDOR', 'CALLCENTER', 'ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
   },
   {
     codigo: 'abastecimiento.gestionar',
@@ -187,13 +206,13 @@ const managedPermissions = [
     codigo: 'ventas.consultar',
     modulo: 'ventas',
     descripcion: 'Consulta operaciones comerciales y sus reservas.',
-    roles: ['VENDEDOR', 'ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+    roles: ['VENDEDOR', 'CALLCENTER', 'ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
   },
   {
     codigo: 'ventas.gestionar',
     modulo: 'ventas',
     descripcion: 'Crea y edita borradores y envía operaciones a aprobación.',
-    roles: ['VENDEDOR', 'ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+    roles: ['VENDEDOR', 'CALLCENTER', 'ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
   },
   {
     codigo: 'ventas.aprobar',
@@ -217,7 +236,7 @@ const managedPermissions = [
     codigo: 'reservas_stock.gestionar',
     modulo: 'reservas_stock',
     descripcion: 'Reserva y libera unidades para operaciones comerciales.',
-    roles: ['VENDEDOR', 'ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+    roles: ['VENDEDOR', 'CALLCENTER', 'ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
   },
   {
     codigo: 'compras.consultar',
@@ -298,6 +317,24 @@ const managedPermissions = [
     roles: ['ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
   },
   {
+    codigo: 'creditos.consultar',
+    modulo: 'creditos',
+    descripcion: 'Consulta planes de crédito personal, simula cuotas y ve el cronograma de una operación.',
+    roles: ['VENDEDOR', 'CALLCENTER', 'ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+  },
+  {
+    codigo: 'creditos.gestionar',
+    modulo: 'creditos',
+    descripcion: 'Crea, edita y desactiva planes de crédito personal.',
+    roles: ['GERENTE', 'ADMINISTRADOR'],
+  },
+  {
+    codigo: 'creditos.cobrar',
+    modulo: 'creditos',
+    descripcion: 'Registra el cobro de cuotas de créditos personales.',
+    roles: ['ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+  },
+  {
     codigo: 'caja.consultar',
     modulo: 'caja',
     descripcion: 'Consulta cuentas, saldos y movimientos de caja.',
@@ -355,7 +392,7 @@ const managedPermissions = [
     codigo: 'comisiones.propias',
     modulo: 'comisiones',
     descripcion: 'Consulta el progreso y el historial propio de comisiones.',
-    roles: ['VENDEDOR'],
+    roles: ['VENDEDOR', 'CALLCENTER'],
   },
   {
     codigo: 'comisiones.gestionar',

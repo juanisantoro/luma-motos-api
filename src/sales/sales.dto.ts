@@ -33,6 +33,7 @@ import {
 
 export enum SalesAssignmentRole {
   VENDEDOR = 'VENDEDOR',
+  CALLCENTER = 'CALLCENTER',
   CONTACTO = 'CONTACTO',
 }
 

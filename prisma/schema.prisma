@@ -485,12 +485,19 @@ model politicas_comisiones {
   creado_por_personal_id                                                         String                        @db.Uuid
   creado_en                                                                      DateTime                      @default(now()) @db.Timestamptz(6)
   actualizado_en                                                                 DateTime                      @default(now()) @db.Timestamptz(6)
+  /// Separates the vendor scale catalog from the exclusive manager (GERENTE)
+  /// scale catalog - same table/tier structure, just a different ambito.
+  /// The already-generated Prisma Client on disk predates this column, so
+  /// the service still reads/writes it via raw SQL ($queryRaw/$executeRaw)
+  /// rather than through the typed politicas_comisiones delegate - see the
+  /// "ambito" raw-SQL helpers in commissions.service.ts.
+  ambito                                                                         ambito_politica_comision_luma @default(VENDEDOR)
   escalas_comisiones                                                             escalas_comisiones[]
   organizaciones                                                                 organizaciones                @relation(fields: [organizacion_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
   personal_politicas_comisiones_creado_por_personal_id_organizacion_idTopersonal personal                      @relation("politicas_comisiones_creador_organizacion", fields: [creado_por_personal_id, organizacion_id], references: [id, organizacion_id], onDelete: Restrict, onUpdate: NoAction)
 
   @@unique([id, organizacion_id], map: "politicas_comisiones_id_organizacion_unico")
-  @@index([organizacion_id, tipo_vehiculo, estado, vigente_desde(sort: Desc)], map: "politicas_comisiones_tipo_vigencia_indice")
+  @@index([organizacion_id, ambito, tipo_vehiculo, estado, vigente_desde(sort: Desc)], map: "politicas_comisiones_ambito_tipo_vigencia_indice")
 }
 
 model escalas_comisiones {
@@ -1277,6 +1284,7 @@ model versiones_vehiculos {
   es_marcador                   Boolean                        @default(false)
   activo                        Boolean                        @default(true)
   foto_url                      String?                        @db.VarChar(500)
+  precio_costo                  Decimal?                       @db.Decimal(18, 2)
   creado_en                     DateTime                       @default(now()) @db.Timestamptz(6)
   actualizado_en                DateTime                       @default(now()) @db.Timestamptz(6)
   alcance                       alcance_catalogo_luma          @default(RESTRINGIDO)
@@ -1608,6 +1616,11 @@ enum estado_politica_comision_luma {
   INACTIVA
 }
 
+enum ambito_politica_comision_luma {
+  VENDEDOR
+  GERENCIA
+}
+
 enum estado_liquidacion_comision_luma {
   CALCULADA
   ACORDADA
@@ -1652,6 +1665,7 @@ enum resultado_crediticio_luma {
 enum rol_asignacion_luma {
   VENDEDOR
   CONTACTO
+  CALLCENTER
 }
 
 enum tipo_componente_pago_luma {
@@ -1739,4 +1753,168 @@ enum alcance_catalogo_luma {
 enum tipo_organizacion_luma {
   CASA_CENTRAL
   FRANQUICIA
+}
+
+/// Not modeled with Prisma relations on purpose (same rationale as
+/// pagos_vehiculo above): read/write goes through raw SQL in
+/// CreditPlansService to avoid depending on a regenerated Prisma Client.
+/// Foreign keys are still enforced at the database level (see the
+/// 20260901000000_credit_plans migration).
+model planes_credito {
+  id                 String                       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizacion_id    String                       @db.Uuid
+  nombre             String                       @db.VarChar(160)
+  metodo_calculo     metodo_calculo_credito_luma
+  cantidad_cuotas    Int
+  tasa_interes       Decimal                      @db.Decimal(6, 3)
+  monto_minimo       Decimal?                     @db.Decimal(18, 2)
+  monto_maximo       Decimal?                     @db.Decimal(18, 2)
+  activo             Boolean                      @default(true)
+  creado_en          DateTime                     @default(now()) @db.Timestamptz(6)
+  actualizado_en     DateTime                     @default(now()) @db.Timestamptz(6)
+
+  @@unique([id, organizacion_id], map: "planes_credito_id_organizacion_unico")
+  @@index([organizacion_id, activo], map: "planes_credito_organizacion_activo_indice")
+}
+
+/// Not modeled with Prisma relations on purpose (see planes_credito above).
+/// Snapshot de los términos del plan al momento en que se acepta durante
+/// una operación de venta: el plan puede cambiar o desactivarse después
+/// sin afectar créditos ya tomados.
+model operacion_creditos {
+  id                     String                         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizacion_id        String                         @db.Uuid
+  operacion_id           String                         @db.Uuid
+  plan_credito_id        String?                        @db.Uuid
+  metodo_calculo         metodo_calculo_credito_luma
+  cantidad_cuotas        Int
+  tasa_interes           Decimal                        @db.Decimal(6, 3)
+  monto_financiado       Decimal                        @db.Decimal(18, 2)
+  interes_total          Decimal                        @db.Decimal(18, 2)
+  monto_total            Decimal                        @db.Decimal(18, 2)
+  monto_cuota            Decimal                        @db.Decimal(18, 2)
+  estado                 estado_credito_operacion_luma  @default(ACTIVO)
+  creado_por_personal_id String                         @db.Uuid
+  creado_en              DateTime                       @default(now()) @db.Timestamptz(6)
+
+  @@unique([id, organizacion_id], map: "operacion_creditos_id_organizacion_unico")
+  @@index([organizacion_id, operacion_id], map: "operacion_creditos_organizacion_operacion_indice")
+  @@index([organizacion_id, estado], map: "operacion_creditos_organizacion_estado_indice")
+}
+
+/// Not modeled with Prisma relations on purpose (see planes_credito above).
+/// Cronograma de cuotas de cada crédito tomado, con seguimiento de cobranza.
+model cuotas_credito {
+  id                          String                     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizacion_id             String                     @db.Uuid
+  operacion_credito_id        String                     @db.Uuid
+  numero_cuota                Int
+  monto                       Decimal                    @db.Decimal(18, 2)
+  vencimiento                 DateTime                   @db.Date
+  estado                      estado_cuota_credito_luma  @default(PENDIENTE)
+  monto_pagado                Decimal                    @default(0) @db.Decimal(18, 2)
+  fecha_pago                  DateTime?                  @db.Date
+  registrado_por_personal_id  String?                    @db.Uuid
+  creado_en                   DateTime                   @default(now()) @db.Timestamptz(6)
+  actualizado_en              DateTime                   @default(now()) @db.Timestamptz(6)
+
+  @@unique([id, organizacion_id], map: "cuotas_credito_id_organizacion_unico")
+  @@unique([operacion_credito_id, numero_cuota], map: "cuotas_credito_operacion_credito_numero_unico")
+  @@index([organizacion_id, estado, vencimiento], map: "cuotas_credito_organizacion_estado_vencimiento_indice")
+}
+
+/// Not modeled with Prisma relations on purpose (see planes_credito above):
+/// the service queries this table with raw SQL so it does not depend on a
+/// regenerated Prisma Client. Configuración individual de comisión de
+/// gerencia: cada gerente tiene a lo sumo una fila activa que define si
+/// cobra por porcentaje sobre el precio de cierre o por la misma escala de
+/// unidades que ya usan los vendedores, y si su alcance es su sucursal o
+/// todas las de la organización.
+model configuracion_comision_gerente {
+  id                      String                             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  personal_id             String                             @unique @db.Uuid
+  organizacion_id         String                             @db.Uuid
+  modo_calculo            modo_calculo_comision_gerente_luma
+  porcentaje              Decimal?                           @db.Decimal(5, 2)
+  politica_comision_id    String?                            @db.Uuid
+  alcance                 alcance_comision_gerente_luma
+  activo                  Boolean                            @default(true)
+  creado_en               DateTime                           @default(now()) @db.Timestamptz(6)
+  actualizado_en          DateTime                           @default(now()) @db.Timestamptz(6)
+  actualizado_por_personal_id String?                        @db.Uuid
+
+  @@index([organizacion_id, activo], map: "configuracion_comision_gerente_organizacion_activo_indice")
+}
+
+/// Not modeled with Prisma relations on purpose (see planes_credito above):
+/// the service queries this table with raw SQL so it does not depend on a
+/// regenerated Prisma Client. Liquidacion de comision de gerencia: separada
+/// de liquidaciones_comisiones (la de vendedores) porque un gerente con
+/// alcance TODAS_LAS_SUCURSALES no tiene una unica sucursal a la que
+/// atribuir la liquidacion - sucursales_incluidas guarda el conjunto real
+/// de sucursales contadas, para trazabilidad.
+model liquidaciones_comisiones_gerente {
+  id                               String                                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizacion_id                  String                                    @db.Uuid
+  personal_id                      String                                    @db.Uuid
+  tipo_vehiculo                    tipo_vehiculo_luma
+  periodo_desde                    DateTime                                  @db.Date
+  periodo_hasta                    DateTime                                  @db.Date
+  modo_calculo                     modo_calculo_comision_gerente_luma
+  alcance                          alcance_comision_gerente_luma
+  sucursales_incluidas             Json                                      @default("[]")
+  cantidad_operaciones_computables Int                                       @default(0)
+  porcentaje                       Decimal?                                  @db.Decimal(5, 2)
+  politica_comision_id             String?                                   @db.Uuid
+  escala_snapshot                  Json?
+  monto_calculado                  Decimal                                   @db.Decimal(18, 2)
+  moneda                           String                                    @default("ARS") @db.Char(3)
+  estado                           estado_liquidacion_comision_gerente_luma  @default(SUGERIDA)
+  acordado_en                      DateTime?                                 @db.Timestamptz(6)
+  acordado_por_personal_id         String?                                   @db.Uuid
+  pagado_en                        DateTime?                                 @db.Timestamptz(6)
+  pagado_por_personal_id           String?                                   @db.Uuid
+  notas                            String?
+  version_fila                     Int                                       @default(0)
+  creado_en                        DateTime                                  @default(now()) @db.Timestamptz(6)
+  actualizado_en                   DateTime                                  @default(now()) @db.Timestamptz(6)
+
+  @@unique([id, organizacion_id], map: "liquidaciones_comisiones_gerente_id_organizacion_unico")
+  @@unique([organizacion_id, personal_id, periodo_desde, periodo_hasta, tipo_vehiculo], map: "liquidaciones_comisiones_gerente_periodo_tipo_unico")
+  @@index([organizacion_id, estado, tipo_vehiculo, periodo_desde(sort: Desc)], map: "liquidaciones_comisiones_gerente_estado_tipo_periodo_indice")
+  @@index([organizacion_id, personal_id, periodo_desde(sort: Desc)], map: "liquidaciones_comisiones_gerente_gerente_indice")
+}
+
+enum estado_liquidacion_comision_gerente_luma {
+  SUGERIDA
+  ACORDADA
+  PAGADA
+}
+
+enum modo_calculo_comision_gerente_luma {
+  PORCENTAJE
+  ESCALA
+}
+
+enum alcance_comision_gerente_luma {
+  SUCURSAL_PROPIA
+  TODAS_LAS_SUCURSALES
+}
+
+enum metodo_calculo_credito_luma {
+  FRANCES
+  INTERES_SIMPLE
+}
+
+enum estado_credito_operacion_luma {
+  ACTIVO
+  CANCELADO
+  FINALIZADO
+}
+
+enum estado_cuota_credito_luma {
+  PENDIENTE
+  PAGADA
+  VENCIDA
+  PARCIAL
 }

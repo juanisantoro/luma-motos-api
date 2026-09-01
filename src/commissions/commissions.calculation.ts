@@ -104,6 +104,75 @@ export function calculateFixedCommission(
   };
 }
 
+// --- Manager (GERENTE) commission: a new, separate calculation path. It
+// never touches calculateFixedCommission's vendor behavior above; in ESCALA
+// mode it simply reuses it with the manager's own computable-sales count.
+
+export type ManagerCommissionMode = 'PORCENTAJE' | 'ESCALA';
+
+export interface ManagerCommissionOperationInput {
+  agreedPrice: string;
+}
+
+export interface ManagerCommissionResult {
+  mode: ManagerCommissionMode;
+  computableSales: number;
+  totalClosingPrice: string;
+  suggestedAmount: string;
+  scale: CommissionTierValue | null;
+  nextScale: CommissionTierValue | null;
+  unitsToNextScale: number | null;
+}
+
+export function calculateManagerCommission(
+  mode: ManagerCommissionMode,
+  operations: ManagerCommissionOperationInput[],
+  options: { percentage?: string | null; tiers?: CommissionTierValue[] },
+): ManagerCommissionResult {
+  const totalClosingPrice = operations.reduce(
+    (sum, operation) => sum.plus(operation.agreedPrice),
+    new Prisma.Decimal(0),
+  );
+  const computableSales = operations.length;
+
+  if (mode === 'PORCENTAJE') {
+    if (!options.percentage)
+      commissionBadRequest(
+        'INVALID_MANAGER_COMMISSION_CONFIG',
+        'A percentage is required for PORCENTAJE mode',
+      );
+    const suggestedAmount = totalClosingPrice
+      .times(new Prisma.Decimal(options.percentage))
+      .dividedBy(100)
+      .toFixed(2);
+    return {
+      mode,
+      computableSales,
+      totalClosingPrice: totalClosingPrice.toFixed(2),
+      suggestedAmount,
+      scale: null,
+      nextScale: null,
+      unitsToNextScale: null,
+    };
+  }
+
+  if (!options.tiers)
+    commissionBadRequest(
+      'INVALID_MANAGER_COMMISSION_CONFIG',
+      'Commission tiers are required for ESCALA mode',
+    );
+  const scaleResult = calculateFixedCommission(options.tiers, computableSales);
+  return {
+    mode,
+    computableSales,
+    totalClosingPrice: totalClosingPrice.toFixed(2),
+    suggestedAmount: scaleResult.suggestedAmount,
+    scale: scaleResult.scale,
+    nextScale: scaleResult.nextScale,
+    unitsToNextScale: scaleResult.unitsToNextScale,
+  };
+}
+
 export function commissionPeriod(period: string): {
   period: string;
   from: Date;

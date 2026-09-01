@@ -999,7 +999,10 @@ describe('SalesService', () => {
     ).toEqual({
       some: {
         personal_id: personnelId,
-        rol_asignacion: 'VENDEDOR',
+        // A "mine" query now matches either seller-like assignment role
+        // (VENDEDOR or CALLCENTER), not only VENDEDOR - see CALLCENTER role
+        // support in the session report.
+        rol_asignacion: { in: ['VENDEDOR', 'CALLCENTER'] },
       },
     });
   });

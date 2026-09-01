@@ -94,6 +94,10 @@ describe('CommissionsService', () => {
       liquidaciones_comisiones: {
         findFirst: jest.fn().mockResolvedValue(null),
       },
+      // suggestionData() resolves the active VENDEDOR policy id via a raw
+      // query before the typed findFirst above; no rows here means "no
+      // active policy", matching the mocked findFirst(null) it already had.
+      $queryRaw: jest.fn().mockResolvedValue([]),
     };
 
     const result = await queryService(transaction).suggestions(
@@ -218,7 +222,11 @@ describe('CommissionsService', () => {
     };
     const create = jest.fn().mockResolvedValue(created);
     const transaction = {
-      $queryRaw: jest.fn().mockResolvedValue([]),
+      // suggestionData()'s activePolicyId() raw lookup resolves which
+      // policy is active by id before the typed findFirst below hydrates
+      // it (tiers included) - this is the only $queryRaw call agree() goes
+      // through here (its advisory lock uses $executeRaw, not $queryRaw).
+      $queryRaw: jest.fn().mockResolvedValue([{ id: policy.id }]),
       $executeRaw: jest.fn().mockResolvedValue(1),
       personal: {
         findFirst: jest

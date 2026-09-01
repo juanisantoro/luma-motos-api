@@ -26,6 +26,7 @@ import { VehiclePaymentsModule } from './vehicle-payments/vehicle-payments.modul
 import { IncomesModule } from './incomes/incomes.module';
 import { SupplierPurchasesModule } from './supplier-purchases/supplier-purchases.module';
 import { CommissionsModule } from './commissions/commissions.module';
+import { CreditPlansModule } from './credit-plans/credit-plans.module';
 import { RolesModule } from './roles/roles.module';
 
 @Module({
@@ -62,6 +63,7 @@ import { RolesModule } from './roles/roles.module';
     ExpensesModule,
     VehiclePaymentsModule,
     CommissionsModule,
+    CreditPlansModule,
   ],
   providers: [
     {
