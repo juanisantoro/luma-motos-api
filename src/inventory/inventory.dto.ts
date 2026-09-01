@@ -5,6 +5,7 @@ import {
   IsArray,
   IsDateString,
   IsEnum,
+  IsIn,
   IsInt,
   IsNotEmpty,
   IsNumber,
@@ -23,6 +24,20 @@ import {
   origen_adquisicion_luma,
   tipo_vehiculo_luma,
 } from '@prisma/client';
+
+// Standardized finishes for physical inventory units. Colors used to be a
+// hardcoded list here too, but now live in the colores_unidad table (see
+// the 20260831000000_unit_colors_catalog migration) so they can be
+// added/removed without a deploy - InventoryService.assertValidColor()
+// validates against that table instead of an @IsIn list. Finishes stay a
+// small fixed list since the business didn't ask for those to be editable.
+export const UNIT_FINISHES = [
+  'Brillante',
+  'Mate',
+  'Metalizado',
+  'Perlado',
+  'Flúor',
+] as const;
 
 export class InventoryQueryDto {
   @IsEnum(tipo_vehiculo_luma)
@@ -70,6 +85,7 @@ export class CreateInventoryUnitDto {
   @Max(9_999_999)
   mileageKm?: number;
   @IsOptional() @IsString() @MaxLength(80) color?: string;
+  @IsOptional() @IsString() @IsIn(UNIT_FINISHES) acabado?: string;
   @IsUUID() branchId!: string;
   @IsOptional() @IsUUID() supplierId?: string;
   @IsEnum(origen_adquisicion_luma) acquisitionOrigin!: origen_adquisicion_luma;
@@ -108,6 +124,7 @@ export class InlineInventoryUnitDto {
   @Max(9_999_999)
   mileageKm?: number;
   @IsOptional() @IsString() @MaxLength(80) color?: string;
+  @IsOptional() @IsString() @IsIn(UNIT_FINISHES) acabado?: string;
 }
 
 export class InitialPricePolicyDto {
@@ -167,6 +184,7 @@ export class UpdateInventoryUnitDto {
   @Max(9_999_999)
   mileageKm?: number;
   @IsOptional() @IsString() @MaxLength(80) color?: string | null;
+  @IsOptional() @IsString() @IsIn(UNIT_FINISHES) acabado?: string | null;
   @IsOptional()
   @Type(() => Number)
   @IsNumber({ maxDecimalPlaces: 2 })

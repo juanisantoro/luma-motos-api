@@ -112,3 +112,14 @@ export class InventoryBranchesController {
     return this.service.branches(query, actor);
   }
 }
+
+@Controller('inventory/colors')
+@Permissions(PERMISSION_CODES.INVENTORY_READ)
+export class InventoryColorsController {
+  constructor(private readonly service: InventoryService) {}
+
+  @Get()
+  findAll() {
+    return this.service.colors();
+  }
+}

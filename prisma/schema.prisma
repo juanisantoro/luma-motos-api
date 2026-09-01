@@ -1012,6 +1012,7 @@ model solicitudes_abastecimiento {
   condicion                                                                                                                 condicion_vehiculo_luma
   sucursal_llegada_id                                                                                                       String                     @db.Uuid
   estado                                                                                                                    estado_abastecimiento_luma @default(PENDIENTE_CONFIRMACION)
+  color                                                                                                                     String?                    @db.VarChar(80)
   referencia_proveedor                                                                                                      String?                    @db.VarChar(120)
   costo_estimado                                                                                                            Decimal?                   @db.Decimal(18, 2)
   solicitado_en                                                                                                             DateTime                   @default(now()) @db.Timestamptz(6)
@@ -1122,6 +1123,21 @@ model transferencias_caja {
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 /// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+/// Standardized color options for unidades_vehiculos.color, kept out of
+/// Prisma relations on purpose (same reasoning as pagos_vehiculo below):
+/// InventoryService reads/validates it through raw SQL, so this table
+/// doesn't require a Prisma Client regeneration to become usable, and
+/// unidades_vehiculos.color stays a plain VARCHAR rather than a foreign key
+/// (matching how tipos_ingreso / ingresos.tipo_original already works).
+model colores_unidad {
+  id                 String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  nombre             String   @db.VarChar(80)
+  nombre_normalizado String   @unique @db.VarChar(80)
+  activo             Boolean  @default(true)
+  creado_en          DateTime @default(now()) @db.Timestamptz(6)
+  actualizado_en     DateTime @default(now()) @db.Timestamptz(6)
+}
+
 model unidades_vehiculos {
   id                                                                                                   String                            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   version_id                                                                                           String                            @db.Uuid
@@ -1135,6 +1151,7 @@ model unidades_vehiculos {
   anio_fabricacion                                                                                     Int?                              @db.SmallInt
   kilometraje_km                                                                                       Int                               @default(0)
   color                                                                                                String?                           @db.VarChar(80)
+  acabado                                                                                              String?                           @db.VarChar(40)
   sucursal_id                                                                                          String                            @db.Uuid
   proveedor_id                                                                                         String?                           @db.Uuid
   origen_adquisicion                                                                                   origen_adquisicion_luma
@@ -1259,6 +1276,7 @@ model versiones_vehiculos {
   nombre_normalizado            String                         @db.VarChar(140)
   es_marcador                   Boolean                        @default(false)
   activo                        Boolean                        @default(true)
+  foto_url                      String?                        @db.VarChar(500)
   creado_en                     DateTime                       @default(now()) @db.Timestamptz(6)
   actualizado_en                DateTime                       @default(now()) @db.Timestamptz(6)
   alcance                       alcance_catalogo_luma          @default(RESTRINGIDO)

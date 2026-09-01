@@ -1,4 +1,5 @@
 import { Transform, Type } from 'class-transformer';
+import { IsDocumentNumberFormat } from '../clients/dto/client-document-pair.validator';
 import {
   ArrayMaxSize,
   ArrayMinSize,
@@ -90,6 +91,7 @@ export class InlineSalesClientDto {
   @IsString()
   @MinLength(1)
   @MaxLength(30)
+  @IsDocumentNumberFormat()
   documentNumber!: string;
   @Transform(({ value }: { value: unknown }) =>
     typeof value === 'string' ? value.trim() : value,
@@ -115,6 +117,7 @@ export class CreateSalesOperationDto {
   @IsEnum(condicion_vehiculo_luma) condition!: condicion_vehiculo_luma;
   @IsOptional() @IsUUID() unitId?: string;
   @IsOptional() @IsUUID() supplierAvailabilityId?: string;
+  @IsOptional() @IsString() @MaxLength(80) color?: string;
   @IsOptional() @IsUUID() sellerId?: string;
   @IsOptional() @IsUUID() contactId?: string;
   @Type(() => Number)

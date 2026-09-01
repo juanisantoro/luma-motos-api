@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Get,
@@ -7,7 +8,10 @@ import {
   Patch,
   Post,
   Query,
+  UploadedFile,
+  UseInterceptors,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { AuditedMutation } from '../audit/decorators/audited-mutation.decorator';
 import { PERMISSION_CODES } from '../auth/auth.constants';
 import type { AuthenticatedUser } from '../auth/auth.types';
@@ -140,5 +144,17 @@ export class CatalogController {
     @CurrentUser() actor: AuthenticatedUser,
   ) {
     return this.service.createPricePolicy(input, actor);
+  }
+  @Post('versions/:id/photo')
+  @Permissions(PERMISSION_CODES.CATALOG_MANAGE)
+  @AuditedMutation()
+  @UseInterceptors(FileInterceptor('photo'))
+  uploadVersionPhoto(
+    @Param('id', ParseUUIDPipe) id: string,
+    @UploadedFile() file: Express.Multer.File | undefined,
+    @CurrentUser() actor: AuthenticatedUser,
+  ) {
+    if (!file) throw new BadRequestException('A photo file is required');
+    return this.service.setVersionPhoto(id, file, actor);
   }
 }

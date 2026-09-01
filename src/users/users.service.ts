@@ -342,10 +342,179 @@ export class UsersService {
         error instanceof Prisma.PrismaClientKnownRequestError &&
         error.code === 'P2002'
       ) {
+        const abandoned = await this.prisma.withTenant(
+          this.scope(actor),
+          (transaction) =>
+            transaction.usuarios.findFirst({
+              where: {
+                correo_normalizado: input.email,
+                organizacion_id: input.organizationId,
+              },
+              select: {
+                id: true,
+                contrasena_configurada_en: true,
+              },
+            }),
+        );
+        // The email already exists, but if that account never finished
+        // onboarding (no password was ever configured - the original
+        // invitation either failed to send or was never accepted), it is
+        // safe to reuse it: reissue a fresh temporary password and resend
+        // the invitation instead of permanently blocking the retry.
+        if (abandoned && !abandoned.contrasena_configurada_en) {
+          return this.recoverAbandonedInvitation(abandoned.id, input, actor);
+        }
         throw new ConflictException('A user with that email already exists');
       }
       throw error;
     }
+  }
+
+  private async recoverAbandonedInvitation(
+    existingUserId: string,
+    input: CreateUserDto,
+    actor: AuthenticatedUser,
+  ) {
+    const temporaryPassword = createTemporaryPassword();
+    const passwordHash = await hashPassword(temporaryPassword);
+    const expiresAt = new Date(
+      Date.now() + this.temporaryPasswordTtlSeconds * 1_000,
+    );
+    const auditEvent: AuthenticatedAuditEvent = {
+      action: USER_AUDIT_ACTIONS.CREATED,
+      entity: 'usuarios',
+      entityId: existingUserId,
+      actorId: actor.id,
+      organizationId: actor.organization.id,
+      globalAccess: actor.globalAccess,
+      targetOrganizationId: this.targetOrganization(
+        actor,
+        input.organizationId,
+      ),
+      metadata: {
+        organizationId: input.organizationId,
+        roleCode: input.roleCode,
+        branchId: input.branchId ?? null,
+        globalAccess: input.globalAccess,
+        recoveredAbandonedInvitation: true,
+      },
+    };
+
+    const user = await this.auditService.execute(
+      auditEvent,
+      async (transaction) => {
+        const organization = await this.requireOrganization(
+          transaction,
+          input.organizationId,
+        );
+        const role = await this.requireRole(
+          transaction,
+          input.roleCode,
+          input.organizationId,
+        );
+        const branch = await this.requireBranch(
+          transaction,
+          input.branchId,
+          input.organizationId,
+        );
+        this.assertGlobalAccessAssignment(
+          actor,
+          input.globalAccess,
+          organization.tipo,
+          role.codigo,
+        );
+
+        await transaction.usuarios.update({
+          where: {
+            id_organizacion_id: {
+              id: existingUserId,
+              organizacion_id: input.organizationId,
+            },
+          },
+          data: {
+            correo: input.email,
+            hash_contrasena: passwordHash,
+            activo: true,
+            acceso_global: input.globalAccess,
+            rol_id: role.id,
+            sucursal_id: branch?.id,
+            contrasena_configurada_en: null,
+            contrasena_temporal_vence_en: expiresAt,
+            estado_invitacion: 'PENDING',
+            invitacion_ultimo_intento_en: new Date(),
+            invitacion_enviada_en: null,
+            invitacion_aceptada_en: null,
+            invitacion_error: null,
+            invitacion_version: {
+              increment: 1,
+            },
+          },
+        });
+
+        const personnel = await transaction.personal.update({
+          where: {
+            usuario_id: existingUserId,
+          },
+          data: {
+            codigo_empleado: input.employeeCode,
+            nombre_completo: input.fullName,
+            nombre_normalizado: this.normalizeName(input.fullName),
+            correo_normalizado: input.email,
+            telefono: input.phone,
+            sucursal_principal_id: branch?.id,
+            rol_id: role.id,
+            puede_iniciar_sesion: true,
+            estado: 'ACTIVO',
+          },
+          select: {
+            id: true,
+          },
+        });
+
+        await transaction.acceso_personal_sucursal.deleteMany({
+          where: {
+            personal_id: personnel.id,
+          },
+        });
+        if (branch) {
+          await transaction.acceso_personal_sucursal.create({
+            data: {
+              personal_id: personnel.id,
+              sucursal_id: branch.id,
+              organizacion_id: input.organizationId,
+            },
+          });
+        }
+
+        await this.revokeSessions(transaction, existingUserId);
+
+        return transaction.usuarios.findUniqueOrThrow({
+          where: {
+            id_organizacion_id: {
+              id: existingUserId,
+              organizacion_id: input.organizationId,
+            },
+          },
+          select: managedUserSelect,
+        });
+      },
+    );
+
+    const deliveredUser = await this.sendTemporaryPassword(
+      user,
+      actor,
+      temporaryPassword,
+      expiresAt,
+      'creation',
+    );
+    return {
+      user: this.toResponse(deliveredUser),
+      delivery: {
+        status: 'DELIVERED' as const,
+        sent: true,
+        expiresAt,
+      },
+    };
   }
 
   async updateAccess(

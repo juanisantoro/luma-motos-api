@@ -20,6 +20,8 @@ export interface EnvironmentVariables {
   SMTP_FROM_NAME?: string;
   NODE_ENV: NodeEnvironment;
   PORT: number;
+  CATALOG_UPLOADS_DIR: string;
+  CATALOG_PHOTO_MAX_BYTES: number;
 }
 
 const environmentSchema = Joi.object<EnvironmentVariables>({
@@ -92,6 +94,16 @@ const environmentSchema = Joi.object<EnvironmentVariables>({
   NODE_ENV: Joi.string()
     .valid('development', 'test', 'production')
     .default('development'),
+  // Local folder where uploaded catalog photos are written and served from.
+  // On Render this must point inside the mounted Persistent Disk (e.g.
+  // /var/data/uploads/catalog) - the default is only safe for local
+  // development, since a regular Render web service wipes its filesystem on
+  // every deploy/restart.
+  CATALOG_UPLOADS_DIR: Joi.string().default('./uploads/catalog'),
+  CATALOG_PHOTO_MAX_BYTES: Joi.number()
+    .integer()
+    .min(1)
+    .default(5 * 1024 * 1024),
 }).and(
   'SMTP_HOST',
   'SMTP_PORT',

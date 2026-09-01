@@ -22,6 +22,7 @@ import {
   activePricePolicyRequired,
   findEffectivePricePolicy,
 } from '../catalog/price-policy';
+import { assertValidUnitColor } from '../common/unit-colors';
 import {
   normalizeClientDocument,
   normalizeClientName,
@@ -652,6 +653,7 @@ export class SalesService {
             tx,
             operation,
             input.supplierAvailabilityId,
+            input.color,
             actor,
           );
         }
@@ -1436,8 +1438,10 @@ export class SalesService {
       'id' | 'version_id' | 'condicion' | 'sucursal_id' | 'organizacion_id'
     >,
     availabilityId: string,
+    color: string | undefined,
     actor: AuthenticatedUser,
   ) {
+    if (color) await assertValidUnitColor(tx, color);
     const now = new Date();
     await tx.$queryRaw`
       SELECT "id"
@@ -1520,6 +1524,7 @@ export class SalesService {
         condicion: operation.condicion,
         sucursal_llegada_id: operation.sucursal_id,
         estado: 'PENDIENTE_APROBACION',
+        color: color?.trim(),
         creado_por_personal_id: personnelId,
         organizacion_id: operation.organizacion_id,
       },

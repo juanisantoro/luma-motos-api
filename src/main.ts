@@ -1,3 +1,5 @@
+import { existsSync, mkdirSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { Logger, ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
@@ -19,6 +21,18 @@ async function bootstrap() {
     app.set('trust proxy', 1);
   }
   app.setGlobalPrefix('api');
+
+  // Catalog photos are served as plain static files (they are not sensitive
+  // data) from outside the 'api' prefix, at /uploads/catalog/<file>. The
+  // directory must exist before Express starts serving from it.
+  const catalogUploadsDir = resolve(
+    config.get('CATALOG_UPLOADS_DIR', { infer: true }),
+  );
+  if (!existsSync(catalogUploadsDir)) {
+    mkdirSync(catalogUploadsDir, { recursive: true });
+  }
+  app.useStaticAssets(catalogUploadsDir, { prefix: '/uploads/catalog/' });
+
   app.enableCors({
     origin: config.get('FRONTEND_URL', { infer: true }),
     credentials: true,

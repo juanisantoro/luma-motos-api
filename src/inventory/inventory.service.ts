@@ -14,6 +14,7 @@ import {
 import { AuditService, AuthenticatedAuditEvent } from '../audit/audit.service';
 import { AuthenticatedUser } from '../auth/auth.types';
 import { CatalogService } from '../catalog/catalog.service';
+import { assertValidUnitColor } from '../common/unit-colors';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   BulkInventoryUnitsDto,
@@ -242,6 +243,7 @@ export class InventoryService {
                 unit.anio_fabricacion !== (requested.manufactureYear ?? null) ||
                 unit.kilometraje_km !== (requested.mileageKm ?? 0) ||
                 unit.color !== (requested.color?.trim() ?? null) ||
+                unit.acabado !== (requested.acabado?.trim() ?? null) ||
                 (input.receivedAt !== undefined &&
                   unit.recibido_en.getTime() !==
                     new Date(input.receivedAt).getTime())
@@ -336,6 +338,7 @@ export class InventoryService {
           actor,
           current.organizacion_id,
         );
+        if (input.color) await assertValidUnitColor(tx, input.color);
         if (
           input.inventoryStatus &&
           !manuallyManagedStatuses.has(current.estado_inventario)
@@ -368,6 +371,7 @@ export class InventoryService {
             anio_fabricacion: input.manufactureYear,
             kilometraje_km: input.mileageKm,
             color: input.color,
+            acabado: input.acabado,
             costo_compra: input.purchaseCost,
             estado_inventario: input.inventoryStatus,
           },
@@ -493,6 +497,14 @@ export class InventoryService {
         ),
     );
   }
+  async colors(): Promise<Array<{ id: string; name: string }>> {
+    const rows = await this.prisma.$queryRaw<
+      Array<{ id: string; nombre: string }>
+    >(
+      Prisma.sql`SELECT id, nombre FROM colores_unidad WHERE activo = true ORDER BY nombre ASC`,
+    );
+    return rows.map((row) => ({ id: row.id, name: row.nombre }));
+  }
   private async createUnit(
     tx: Prisma.TransactionClient,
     input: CreateInventoryUnitDto,
@@ -505,6 +517,7 @@ export class InventoryService {
     await this.branchOr400(tx, input.branchId, organizationId);
     if (input.supplierId)
       await this.supplierOr400(tx, input.supplierId, organizationId);
+    if (input.color) await assertValidUnitColor(tx, input.color);
     const unit = await tx.unidades_vehiculos.create({
       data: {
         version_id: input.versionId,
@@ -522,6 +535,7 @@ export class InventoryService {
         anio_fabricacion: input.manufactureYear,
         kilometraje_km: input.mileageKm ?? 0,
         color: input.color?.trim(),
+        acabado: input.acabado?.trim(),
         sucursal_id: input.branchId,
         proveedor_id: input.supplierId,
         origen_adquisicion: input.acquisitionOrigin,
@@ -703,6 +717,7 @@ export class InventoryService {
       manufactureYear: item.anio_fabricacion,
       mileageKm: item.kilometraje_km,
       color: item.color,
+      acabado: item.acabado,
       branchId: item.sucursal_id,
       supplierId: item.proveedor_id,
       acquisitionOrigin: item.origen_adquisicion,

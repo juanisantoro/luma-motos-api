@@ -102,7 +102,7 @@ const managedPermissions = [
     modulo: 'consultas_crediticias',
     descripcion:
       'Consulta el consolidado de rechazos y el historial crediticio.',
-    roles: ['ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+    roles: ['VENDEDOR', 'ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
   },
   {
     codigo: 'consultas_crediticias.verificar',

@@ -39,6 +39,7 @@ export class CreateSupplyRequestDto {
   @IsUUID() versionId!: string;
   @IsEnum(condicion_vehiculo_luma) condition!: condicion_vehiculo_luma;
   @IsUUID() arrivalBranchId!: string;
+  @IsOptional() @IsString() @MaxLength(80) color?: string;
   @IsOptional() @IsString() @MaxLength(120) supplierReference?: string;
   @IsOptional()
   @Type(() => Number)

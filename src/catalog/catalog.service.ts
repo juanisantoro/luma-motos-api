@@ -1,10 +1,15 @@
+import { unlink, writeFile } from 'node:fs/promises';
+import { basename, extname, join, resolve } from 'node:path';
+import sharp from 'sharp';
 import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import {
   alcance_catalogo_luma,
   Prisma,
@@ -12,6 +17,7 @@ import {
 } from '@prisma/client';
 import { AuditService, AuthenticatedAuditEvent } from '../audit/audit.service';
 import { AuthenticatedUser } from '../auth/auth.types';
+import { EnvironmentVariables } from '../config/environment';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   CatalogQueryDto,
@@ -55,6 +61,7 @@ const versionSelect = {
   activo: true,
   alcance: true,
   organizacion_propietaria_id: true,
+  foto_url: true,
   creado_en: true,
   actualizado_en: true,
   modelos_vehiculos: { select: modelSelect },
@@ -82,9 +89,12 @@ export interface ProvisionCatalogPriceInput {
 
 @Injectable()
 export class CatalogService {
+  private readonly logger = new Logger(CatalogService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
+    private readonly config: ConfigService<EnvironmentVariables, true>,
   ) {}
   async provisionVersionWithPolicy(
     tx: Prisma.TransactionClient,
@@ -662,6 +672,99 @@ export class CatalogService {
       id,
     );
   }
+  async setVersionPhoto(
+    id: string,
+    file: Express.Multer.File,
+    actor: AuthenticatedUser,
+  ) {
+    const uploadsDir = resolve(
+      this.config.get('CATALOG_UPLOADS_DIR', { infer: true }),
+    );
+    // Normalize every upload to WebP: it compresses noticeably smaller than
+    // JPEG/PNG at the same visual quality, which matters a lot for phone
+    // camera photos (often several MB straight out of the camera). We also
+    // downscale to a sane max size, since catalog photos are never shown
+    // larger than the lightbox.
+    const webpFilename = `${basename(file.filename, extname(file.filename))}.webp`;
+    const webpPath = join(uploadsDir, webpFilename);
+    const isAlreadyWebpFile = webpFilename === file.filename;
+    try {
+      const pipeline = () =>
+        sharp(file.path)
+          .rotate()
+          .resize({ width: 1600, height: 1600, fit: 'inside', withoutEnlargement: true })
+          .webp({ quality: 82 });
+      if (isAlreadyWebpFile) {
+        // Input and output share the same path - read fully into memory
+        // first so we don't read from and write to the file at once.
+        const optimized = await pipeline().toBuffer();
+        await writeFile(webpPath, optimized);
+      } else {
+        await pipeline().toFile(webpPath);
+        await unlink(file.path).catch((error: unknown) => {
+          this.logger.warn(
+            `Could not remove original catalog photo upload ${file.filename}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        });
+      }
+    } catch (error) {
+      await unlink(file.path).catch(() => undefined);
+      if (!isAlreadyWebpFile) await unlink(webpPath).catch(() => undefined);
+      throw new BadRequestException('The uploaded file is not a valid image');
+    }
+    const photoUrl = `/uploads/catalog/${webpFilename}`;
+    try {
+      const result = await this.mutate(
+        actor,
+        'CATALOG_VERSION_PHOTO_UPDATED',
+        'versiones_vehiculos',
+        async (tx, event) => {
+          const current = await this.versionOr404(tx, id, actor);
+          event.targetOrganizationId = this.targetOrganization(
+            actor,
+            current.organizacion_propietaria_id ?? undefined,
+          );
+          if (
+            !actor.globalAccess &&
+            current.organizacion_propietaria_id !== actor.organization.id
+          )
+            throw new ForbiddenException(
+              'Only the catalog owner can update this version',
+            );
+          const updated = await tx.versiones_vehiculos.update({
+            where: { id },
+            data: { foto_url: photoUrl },
+            select: versionSelect,
+          });
+          return { version: this.toVersion(updated, actor), previousPhotoUrl: current.foto_url };
+        },
+        id,
+      );
+      // Best-effort cleanup of the file the new photo replaces. Failure here
+      // just leaves an orphaned file on disk - never block the response on it.
+      if (result.previousPhotoUrl && result.previousPhotoUrl !== photoUrl) {
+        const previousFilename = result.previousPhotoUrl.split('/').pop();
+        if (previousFilename) {
+          await unlink(join(uploadsDir, previousFilename)).catch((error: unknown) => {
+            this.logger.warn(
+              `Could not remove previous catalog photo ${previousFilename}: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            );
+          });
+        }
+      }
+      return result.version;
+    } catch (error) {
+      // The conversion already wrote the WebP file to disk by the time
+      // validation runs (e.g. version not found, wrong organization) -
+      // clean it up so it doesn't linger unreferenced.
+      await unlink(webpPath).catch(() => undefined);
+      throw error;
+    }
+  }
   async pricePolicies(query: CatalogQueryDto, actor: AuthenticatedUser) {
     this.assertOrganizationFilter(actor, query.organizationId);
     const organizationId =
@@ -1022,6 +1125,7 @@ export class CatalogService {
       sellableOrganizationIds: item.catalogo_organizaciones
         .map((row) => row.organizacion_id)
         .filter(canSeeOrganization),
+      photoUrl: item.foto_url,
       model: this.toModel(item.modelos_vehiculos),
       createdAt: item.creado_en,
       updatedAt: item.actualizado_en,

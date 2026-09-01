@@ -12,6 +12,7 @@ import {
 } from '@prisma/client';
 import { AuditService, AuthenticatedAuditEvent } from '../audit/audit.service';
 import { AuthenticatedUser } from '../auth/auth.types';
+import { assertValidUnitColor } from '../common/unit-colors';
 import { PrismaService } from '../prisma/prisma.service';
 import { normalizeVin, validateVin } from '../inventory/vin';
 import {
@@ -139,6 +140,7 @@ export class SupplyService {
           throw new BadRequestException(
             'Supplier availability is invalid, expired, or unavailable',
           );
+        if (input.color) await assertValidUnitColor(tx, input.color);
         const item = await tx.solicitudes_abastecimiento.create({
           data: {
             proveedor_id: input.supplierId,
@@ -147,6 +149,7 @@ export class SupplyService {
             version_id: input.versionId,
             condicion: input.condition,
             sucursal_llegada_id: input.arrivalBranchId,
+            color: input.color?.trim(),
             referencia_proveedor: input.supplierReference?.trim(),
             costo_estimado: input.estimatedCost,
             creado_por_personal_id: personalId,
@@ -280,6 +283,12 @@ export class SupplyService {
             'Only PEDIDO or EN_TRANSITO supply requests can be received',
           );
         const vin = validateVin(input.vin);
+        if (input.color) await assertValidUnitColor(tx, input.color);
+        // Fall back to the color requested on the supply request itself
+        // when reception doesn't explicitly override it - it was already
+        // validated when the request was created (or defaulted from a
+        // sales operation), so it isn't re-validated here.
+        const color = input.color ?? current.color ?? undefined;
         const personalId = await this.personalId(
           tx,
           actor,
@@ -367,7 +376,7 @@ export class SupplyService {
               : null,
             anio_fabricacion: input.manufactureYear,
             kilometraje_km: input.mileageKm ?? 0,
-            color: input.color?.trim(),
+            color: color?.trim(),
             sucursal_id: current.sucursal_llegada_id,
             proveedor_id: current.proveedor_id,
             origen_adquisicion: 'PROVEEDOR',
@@ -572,6 +581,7 @@ export class SupplyService {
       condition: item.condicion,
       arrivalBranchId: item.sucursal_llegada_id,
       status: item.estado,
+      color: item.color,
       supplierReference: item.referencia_proveedor,
       ...(canViewCosts
         ? { estimatedCost: item.costo_estimado?.toString() ?? null }
