@@ -28,15 +28,7 @@ services:
         value: 30000
       - key: USER_TEMPORARY_PASSWORD_TTL_SECONDS
         value: 86400
-      - key: SMTP_HOST
-        value: smtp-relay.brevo.com
-      - key: SMTP_PORT
-        value: 587
-      - key: SMTP_SECURE
-        value: false
-      - key: SMTP_USER
-        sync: false
-      - key: SMTP_PASSWORD
+      - key: BREVO_API_KEY
         sync: false
       - key: SMTP_FROM_EMAIL
         sync: false

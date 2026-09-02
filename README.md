@@ -176,9 +176,17 @@ El alta recibe `fullName` y, opcionalmente, `documentType` (`DNI`, `CUIT`, `CI`,
 
 Los nombres, emails y documentos se normalizan antes de buscar o persistir. Un índice parcial evita repetir la misma pareja tipo/número dentro de una organización, pero permite clientes sin documento. Los errores funcionales son `400` para payload, pareja documental, organización o estado inválidos; `403` para permisos/acceso global insuficientes; `404` para un UUID inexistente o fuera del tenant; y `409` para documento duplicado. Las mutaciones auditan actor, organización, estado y presencia de campos modificados sin copiar datos personales a la auditoría.
 
-### Brevo SMTP
+### Brevo transactional email
 
-El envío usa STARTTLS con `smtp-relay.brevo.com:587`. Configurar en `.env` el login SMTP de Brevo, su clave SMTP y un remitente verificado:
+En producción se recomienda la API HTTP de Brevo sobre HTTPS, que evita restricciones de red saliente sobre puertos SMTP. Configurar una API key transaccional y un remitente verificado:
+
+```dotenv
+BREVO_API_KEY="api-key-transaccional-de-brevo"
+SMTP_FROM_EMAIL="remitente-verificado@dominio.com"
+SMTP_FROM_NAME="Luma Motos"
+```
+
+SMTP queda disponible como alternativa para entornos cuya red permita STARTTLS:
 
 ```dotenv
 SMTP_HOST="smtp-relay.brevo.com"
@@ -190,9 +198,9 @@ SMTP_FROM_EMAIL="remitente-verificado@dominio.com"
 SMTP_FROM_NAME="Luma Motos"
 ```
 
-No usar la contraseña de la cuenta Brevo ni guardar la clave SMTP en git. `SMTP_USER`, `SMTP_PASSWORD` y `SMTP_FROM_EMAIL` deben estar todos presentes o todos ausentes. En desarrollo y tests el bloque puede omitirse; el alta o reseteo informa que la entrega no está configurada. En producción el bloque completo es obligatorio y el proceso no arranca si falta.
+No usar la contraseña de la cuenta Brevo ni confundir la API key con la clave SMTP. Nunca guardar ninguna de las dos en git. Si `BREVO_API_KEY` está presente, la aplicación prioriza la API HTTPS; en caso contrario, las cinco variables `SMTP_*` del transporte deben estar todas presentes. El remitente y su nombre son obligatorios con cualquiera de los transportes. En desarrollo y tests la entrega puede omitirse; en producción debe configurarse al menos un transporte o el proceso no arranca.
 
-PostgreSQL y SMTP no comparten una transacción distribuida: primero se confirma la cuenta o el reseteo y su auditoría, y luego se envía el email. Si Brevo falla, el fallo queda auditado y un administrador debe usar `POST /api/users/:id/temporary-password` para generar y enviar una credencial nueva; la anterior queda invalidada.
+PostgreSQL y Brevo no comparten una transacción distribuida: primero se confirma la cuenta o el reseteo y su auditoría, y luego se envía el email. Si Brevo falla, el `503 INVITATION_DELIVERY_FAILED` informa `details.persisted: true`, el usuario queda en estado de invitación `FAILED` y un administrador puede usar el `retryEndpoint` devuelto para regenerar y reenviar la credencial; la anterior queda invalidada.
 
 ## Auditoría obligatoria
 
@@ -222,6 +230,8 @@ La respuesta incluye acción, entidad, organización, usuario, sucursal actual y
 | `PRISMA_TRANSACTION_MAX_WAIT_MS` | Espera máxima para obtener una transacción interactiva; por defecto `10000` ms. |
 | `PRISMA_TRANSACTION_TIMEOUT_MS` | Duración máxima de una transacción interactiva; por defecto `30000` ms para tolerar cold starts de Neon. |
 | `USER_TEMPORARY_PASSWORD_TTL_SECONDS` | Vigencia de contraseñas temporales; por defecto `86400` segundos. |
+| `BREVO_API_KEY` | API key transaccional de Brevo. Transporte recomendado en producción; se envía solo en el header HTTPS y nunca se registra. |
+| `BREVO_API_TIMEOUT_MS` | Timeout de la solicitud HTTPS a Brevo; por defecto `10000` ms. |
 | `SMTP_HOST` | Host SMTP de Brevo, normalmente `smtp-relay.brevo.com`. |
 | `SMTP_PORT` | Puerto SMTP de Brevo, normalmente `587`. |
 | `SMTP_SECURE` | `false` para STARTTLS en el puerto 587; `true` solo para TLS implícito. |
@@ -354,7 +364,7 @@ Los modos que escriben validan que la migración legacy ya esté aplicada. No se
 - Start: `npm run start:prod`
 - Health check: `/api/health`
 
-Crear el servicio mediante **New > Blueprint** apuntando a este repositorio. En Render completar `DATABASE_URL`, `DIRECT_URL`, `FRONTEND_URL`, `SMTP_USER`, `SMTP_PASSWORD` y `SMTP_FROM_EMAIL`; `JWT_SECRET` se genera como secreto. No cargar secretos en `render.yaml`.
+Crear el servicio mediante **New > Blueprint** apuntando a este repositorio. En Render completar `DATABASE_URL`, `DIRECT_URL`, `FRONTEND_URL`, `BREVO_API_KEY` y `SMTP_FROM_EMAIL`; `JWT_SECRET` se genera como secreto. Mantener las variables SMTP solo como alternativa si la red del servicio permite ese transporte. No cargar secretos en `render.yaml`.
 
 El build necesita `@nestjs/cli`, TypeScript y Prisma CLI, que permanecen correctamente en `devDependencies`. `--include=dev` fuerza su instalación aunque Render exponga `NODE_ENV=production` o `NPM_CONFIG_PRODUCTION=true`; no mover estas herramientas a dependencias de runtime. Si el servicio fue creado manualmente o tiene un comando sobrescrito en el dashboard, reemplazar `npm install; npm run build` por el comando de build exacto anterior. `npm ci` valida y respeta `package-lock.json`, y `npm run start:prod` ejecuta únicamente el artefacto compilado `dist/main.js`.
 

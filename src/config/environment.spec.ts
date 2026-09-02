@@ -58,8 +58,24 @@ describe('validateEnvironment', () => {
       validateEnvironment({
         ...validEnvironment,
         NODE_ENV: 'production',
+        SMTP_FROM_EMAIL: 'noreply@example.com',
+        SMTP_FROM_NAME: 'Luma Motos',
       }),
-    ).toThrow(/SMTP_HOST.*required/);
+    ).toThrow(/requires BREVO_API_KEY or SMTP_HOST/);
+  });
+
+  it('accepts Brevo HTTPS API delivery configuration in production', () => {
+    const environment = validateEnvironment({
+      ...validEnvironment,
+      NODE_ENV: 'production',
+      BREVO_API_KEY: 'brevo-api-key',
+      SMTP_FROM_EMAIL: 'noreply@example.com',
+      SMTP_FROM_NAME: 'Luma Motos',
+    });
+
+    expect(environment.BREVO_API_KEY).toBe('brevo-api-key');
+    expect(environment.BREVO_API_TIMEOUT_MS).toBe(10_000);
+    expect(environment.SMTP_HOST).toBeUndefined();
   });
 
   it('rejects idle timeouts outside the supported range', () => {

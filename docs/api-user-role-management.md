@@ -97,7 +97,7 @@ Requieren `usuarios.consultar` para lectura y `usuarios.gestionar` para mutacion
 | `GET /api/organizations` | Organizaciones accesibles |
 | `GET /api/branches?organizationId=uuid` | Sucursales activas accesibles |
 
-Alta y reenvío responden `{user,delivery:{status:"DELIVERED",expiresAt}}`. Si SMTP falla, el intento queda `FAILED` y se responde `503 INVITATION_DELIVERY_FAILED`; nunca se devuelve éxito.
+Alta y reenvío responden `{user,delivery:{status:"DELIVERED",expiresAt}}`. Si Brevo falla, el intento queda `FAILED` y se responde `503 INVITATION_DELIVERY_FAILED` con `details: {userId,persisted:true,invitationStatus:"FAILED",retryEndpoint}`. La cuenta o el reseteo ya confirmados no se ocultan como si hubieran sido revertidos y nunca se devuelve éxito.
 
 Un usuario contiene:
 

@@ -392,11 +392,21 @@ describe('UsersService', () => {
         actor,
       ),
     ).rejects.toMatchObject({
-      response: { code: 'INVITATION_DELIVERY_FAILED' },
+      response: {
+        code: 'INVITATION_DELIVERY_FAILED',
+        message:
+          'The user was created, but the invitation email could not be delivered',
+        details: {
+          userId: targetUser.id,
+          persisted: true,
+          invitationStatus: 'FAILED',
+          retryEndpoint: `/api/users/${targetUser.id}/invitation/resend`,
+        },
+      },
     });
     expect(updateUsers.mock.calls[0]?.[0].data).toMatchObject({
       estado_invitacion: 'FAILED',
-      invitacion_error: 'SMTP_DELIVERY_FAILED',
+      invitacion_error: 'SMTP_DELIVERY_FAILED: smtp unavailable',
     });
     expect(JSON.stringify(auditedEvents)).not.toContain('temporary-argon-hash');
   });
@@ -419,6 +429,37 @@ describe('UsersService', () => {
       sendTemporaryPassword.mock.calls[0]?.[0].temporaryPassword;
     expect(deliveredPassword).toBeTruthy();
     expect(JSON.stringify(result)).not.toContain(deliveredPassword);
+  });
+
+  it('does not report a stale invitation as failed', async () => {
+    createUser.mockResolvedValue({ id: targetUser.id });
+    createPersonnel.mockResolvedValue({ id: targetUser.personal.id });
+    findOrganization.mockResolvedValue({
+      id: actor.organization.id,
+      tipo: 'CASA_CENTRAL',
+    });
+    findRole.mockResolvedValue({
+      id: targetUser.roles.id,
+      codigo: targetUser.roles.codigo,
+    });
+    findUserOrThrow.mockResolvedValue(targetUser);
+    sendTemporaryPassword.mockRejectedValue(new Error('smtp unavailable'));
+    updateUsers.mockResolvedValue({ count: 0 });
+
+    await expect(
+      service.create(
+        {
+          email: targetUser.correo,
+          fullName: targetUser.personal.nombre_completo,
+          organizationId: actor.organization.id,
+          roleCode: targetUser.roles.codigo,
+          globalAccess: false,
+        },
+        actor,
+      ),
+    ).rejects.toMatchObject({
+      response: { code: 'VERSION_CONFLICT' },
+    });
   });
 
   it('does not reset the last active administrator credentials', async () => {

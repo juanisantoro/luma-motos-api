@@ -1202,7 +1202,7 @@ export class UsersService {
           },
         },
         async (transaction) => {
-          await transaction.usuarios.updateMany({
+          const updated = await transaction.usuarios.updateMany({
             where: {
               id: user.id,
               organizacion_id: user.organizacion_id,
@@ -1214,12 +1214,27 @@ export class UsersService {
               invitacion_error: `SMTP_DELIVERY_FAILED: ${detail}`.slice(0, 240),
             },
           });
+          if (updated.count !== 1) {
+            throw apiError(
+              HttpStatus.CONFLICT,
+              'VERSION_CONFLICT',
+              'Invitation was superseded by another request',
+            );
+          }
         },
       );
       throw apiError(
         HttpStatus.SERVICE_UNAVAILABLE,
         'INVITATION_DELIVERY_FAILED',
-        'The invitation email could not be delivered',
+        reason === 'creation'
+          ? 'The user was created, but the invitation email could not be delivered'
+          : 'The temporary password was reset, but the invitation email could not be delivered',
+        {
+          userId: user.id,
+          persisted: true,
+          invitationStatus: 'FAILED',
+          retryEndpoint: `/api/users/${user.id}/invitation/resend`,
+        },
       );
     }
 
