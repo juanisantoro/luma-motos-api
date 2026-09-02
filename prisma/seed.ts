@@ -335,6 +335,12 @@ const managedPermissions = [
     roles: ['ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
   },
   {
+    codigo: 'creditos.bcra.detalle',
+    modulo: 'creditos',
+    descripcion: 'Ve el detalle completo (todas las entidades y períodos) de una consulta de situación crediticia BCRA. Sin este permiso solo se ve el resumen tipo semáforo.',
+    roles: ['GERENTE', 'ADMINISTRADOR'],
+  },
+  {
     codigo: 'caja.consultar',
     modulo: 'caja',
     descripcion: 'Consulta cuentas, saldos y movimientos de caja.',

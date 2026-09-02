@@ -121,6 +121,66 @@ export class InventoryService {
       limit: query.limit,
     };
   }
+  // Dashboard support: sellable catalog versions for the organization that
+  // currently have zero EN_STOCK units in a given branch. Used by the
+  // ADMINISTRATIVA home's "Alertas de gestión" panel. Deliberately reuses
+  // the same "sellable" definition as pricePolicy()/catalog (puede_vender)
+  // rather than inventing a new one, and caps the result since a branch
+  // could in principle have many out-of-stock models.
+  async zeroStockModels(
+    actor: AuthenticatedUser,
+    branchId: string,
+    limit = 20,
+  ) {
+    return this.prisma.withTenant(this.scope(actor), async (tx) => {
+      const sellable = await tx.catalogo_organizaciones.findMany({
+        where: {
+          organizacion_id: actor.organization.id,
+          puede_vender: true,
+          versiones_vehiculos: { activo: true },
+        },
+        select: {
+          versiones_vehiculos: {
+            select: {
+              id: true,
+              nombre: true,
+              modelos_vehiculos: {
+                select: {
+                  nombre: true,
+                  tipo_vehiculo: true,
+                  marcas_vehiculos: { select: { nombre: true } },
+                },
+              },
+            },
+          },
+        },
+      });
+      if (!sellable.length) return { items: [], total: 0 };
+      const stocked = await tx.unidades_vehiculos.groupBy({
+        by: ['version_id'],
+        where: {
+          organizacion_id: actor.organization.id,
+          sucursal_id: branchId,
+          estado_inventario: luma_estado_inventario.EN_STOCK,
+        },
+        _count: { _all: true },
+      });
+      const stockedVersionIds = new Set(
+        stocked.map((row) => row.version_id),
+      );
+      const zero = sellable
+        .map((row) => row.versiones_vehiculos)
+        .filter((version) => !stockedVersionIds.has(version.id))
+        .map((version) => ({
+          versionId: version.id,
+          vehicleType: version.modelos_vehiculos.tipo_vehiculo,
+          brand: version.modelos_vehiculos.marcas_vehiculos.nombre,
+          model: version.modelos_vehiculos.nombre,
+          version: version.nombre,
+        }));
+      return { items: zero.slice(0, limit), total: zero.length };
+    });
+  }
   async findOne(id: string, actor: AuthenticatedUser) {
     return this.prisma.withTenant(this.scope(actor), async (tx) =>
       this.unit(await this.unitOr404(tx, id, actor), actor),

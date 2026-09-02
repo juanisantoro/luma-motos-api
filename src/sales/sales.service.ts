@@ -22,6 +22,10 @@ import {
   activePricePolicyRequired,
   findEffectivePricePolicy,
 } from '../catalog/price-policy';
+import {
+  commissionOperationEligibility,
+  commissionPeriod,
+} from '../commissions/commissions.calculation';
 import { assertValidUnitColor } from '../common/unit-colors';
 import {
   normalizeClientDocument,
@@ -255,6 +259,309 @@ export class SalesService {
       },
       actor,
     );
+  }
+
+  // Dashboard support: the calling actor's own personal.id, for callers
+  // (e.g. DashboardService) that need it to pass as sellerId into
+  // monthlyPerformance()/topModels() below - actorPersonnelId() itself
+  // stays private since every other caller already has a tx in hand.
+  async resolveSellerId(actor: AuthenticatedUser) {
+    return this.prisma.withTenant(this.scope(actor), (tx) =>
+      this.actorPersonnelId(tx, actor, actor.organization.id),
+    );
+  }
+
+  // --- Dashboard support. All four reuse commissionOperationEligibility()
+  // and commissionPeriod() from the commissions module so "a computable
+  // sale" and "the current/previous month" stay exactly the definitions the
+  // rest of the app (commission calculations) already uses - these are
+  // plain functions, not services, so importing them here does not create
+  // a module dependency on CommissionsModule.
+
+  private async periodPerformance(
+    actor: AuthenticatedUser,
+    period: string,
+    opts: { branchId?: string; sellerId?: string },
+  ) {
+    const range = commissionPeriod(period);
+    return this.prisma.withTenant(this.scope(actor), async (tx) => {
+      const rows = await tx.operaciones.findMany({
+        where: {
+          organizacion_id: actor.organization.id,
+          sucursal_id: opts.branchId,
+          fecha_operacion: { gte: range.from, lte: range.to },
+          asignaciones_personal_operacion: opts.sellerId
+            ? {
+                some: {
+                  personal_id: opts.sellerId,
+                  rol_asignacion: { in: SELLER_ASSIGNMENT_ROLES },
+                },
+              }
+            : undefined,
+        },
+        select: { estado_operacion: true, precio_acordado: true },
+      });
+      const eligible = rows.filter(
+        (row) => commissionOperationEligibility(row.estado_operacion).computable,
+      );
+      return {
+        units: eligible.length,
+        amount: eligible.reduce(
+          (sum, row) => sum + Number(row.precio_acordado),
+          0,
+        ),
+      };
+    });
+  }
+
+  // Current vs. previous calendar month units/amount, scoped to a branch
+  // and/or a single seller (assigned as VENDEDOR/CALLCENTER) when given.
+  // Used by every home's "ventas del mes" KPI.
+  async monthlyPerformance(
+    actor: AuthenticatedUser,
+    opts: { branchId?: string; sellerId?: string } = {},
+  ) {
+    const now = new Date();
+    const currentPeriod = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
+    const previousDate = new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1),
+    );
+    const previousPeriod = `${previousDate.getUTCFullYear()}-${String(previousDate.getUTCMonth() + 1).padStart(2, '0')}`;
+    const [currentMonth, previousMonth] = await Promise.all([
+      this.periodPerformance(actor, currentPeriod, opts),
+      this.periodPerformance(actor, previousPeriod, opts),
+    ]);
+    return { period: currentPeriod, currentMonth, previousMonth };
+  }
+
+  // Units/amount for the current month, one row per active branch in the
+  // organization (ADMINISTRADOR home's "Ventas por sucursal") - always
+  // returns every active branch, including ones with zero sales, so it
+  // reads correctly whether the organization has one branch or many.
+  async salesByBranch(actor: AuthenticatedUser, period: string) {
+    const range = commissionPeriod(period);
+    return this.prisma.withTenant(this.scope(actor), async (tx) => {
+      const [rows, branches] = await Promise.all([
+        tx.operaciones.findMany({
+          where: {
+            organizacion_id: actor.organization.id,
+            fecha_operacion: { gte: range.from, lte: range.to },
+          },
+          select: {
+            estado_operacion: true,
+            precio_acordado: true,
+            sucursal_id: true,
+          },
+        }),
+        tx.sucursales.findMany({
+          where: { organizacion_id: actor.organization.id, activa: true },
+          select: { id: true, nombre: true },
+          orderBy: { nombre: 'asc' },
+        }),
+      ]);
+      const byBranch = new Map<string, { units: number; amount: number }>();
+      for (const row of rows) {
+        if (!commissionOperationEligibility(row.estado_operacion).computable)
+          continue;
+        const acc = byBranch.get(row.sucursal_id) ?? { units: 0, amount: 0 };
+        acc.units += 1;
+        acc.amount += Number(row.precio_acordado);
+        byBranch.set(row.sucursal_id, acc);
+      }
+      return branches.map((branch) => ({
+        branchId: branch.id,
+        branchName: branch.nombre,
+        units: byBranch.get(branch.id)?.units ?? 0,
+        amount: byBranch.get(branch.id)?.amount ?? 0,
+      }));
+    });
+  }
+
+  // Top selling models by units for the current month, scoped to a branch
+  // and/or a single seller when given ("Modelos más vendidos" /
+  // "Tus modelos más vendidos" panels across all four homes).
+  async topModels(
+    actor: AuthenticatedUser,
+    opts: {
+      branchId?: string;
+      sellerId?: string;
+      period: string;
+      limit?: number;
+    },
+  ) {
+    const range = commissionPeriod(opts.period);
+    const limit = opts.limit ?? 5;
+    return this.prisma.withTenant(this.scope(actor), async (tx) => {
+      const rows = await tx.operaciones.findMany({
+        where: {
+          organizacion_id: actor.organization.id,
+          sucursal_id: opts.branchId,
+          fecha_operacion: { gte: range.from, lte: range.to },
+          asignaciones_personal_operacion: opts.sellerId
+            ? {
+                some: {
+                  personal_id: opts.sellerId,
+                  rol_asignacion: { in: SELLER_ASSIGNMENT_ROLES },
+                },
+              }
+            : undefined,
+        },
+        select: {
+          estado_operacion: true,
+          precio_acordado: true,
+          version_id: true,
+        },
+      });
+      const byVersion = new Map<string, { units: number; amount: number }>();
+      for (const row of rows) {
+        if (!commissionOperationEligibility(row.estado_operacion).computable)
+          continue;
+        const acc = byVersion.get(row.version_id) ?? { units: 0, amount: 0 };
+        acc.units += 1;
+        acc.amount += Number(row.precio_acordado);
+        byVersion.set(row.version_id, acc);
+      }
+      const ranked = [...byVersion.entries()]
+        .sort((left, right) => right[1].units - left[1].units)
+        .slice(0, limit);
+      if (!ranked.length) return [];
+      const versions = await tx.versiones_vehiculos.findMany({
+        where: { id: { in: ranked.map(([versionId]) => versionId) } },
+        select: {
+          id: true,
+          nombre: true,
+          modelos_vehiculos: {
+            select: {
+              nombre: true,
+              tipo_vehiculo: true,
+              marcas_vehiculos: { select: { nombre: true } },
+            },
+          },
+        },
+      });
+      const byId = new Map(versions.map((version) => [version.id, version]));
+      return ranked.map(([versionId, aggregate]) => {
+        const version = byId.get(versionId);
+        return {
+          versionId,
+          vehicleType: version?.modelos_vehiculos.tipo_vehiculo ?? null,
+          brand: version?.modelos_vehiculos.marcas_vehiculos.nombre ?? '—',
+          model: version?.modelos_vehiculos.nombre ?? '—',
+          version: version?.nombre ?? '—',
+          units: aggregate.units,
+          amount: aggregate.amount,
+        };
+      });
+    });
+  }
+
+  // "Mis operaciones" (VENDEDOR/CALLCENTER home): the actor's own
+  // operations that need some action - rejected (to correct), awaiting
+  // approval, approved (interpreted as "ready to sign/close", the only
+  // meaningful next step once ventas.aprobar has already happened), or with
+  // an active reservation expiring within the next 48h. A reservation
+  // expiring soon takes priority over a status-based reason for the same
+  // operation.
+  async sellerAttentionOperations(actor: AuthenticatedUser, limit = 8) {
+    return this.prisma.withTenant(this.scope(actor), async (tx) => {
+      const sellerId = await this.actorPersonnelId(
+        tx,
+        actor,
+        actor.organization.id,
+      );
+      const sellerFilter = {
+        some: {
+          personal_id: sellerId,
+          rol_asignacion: { in: SELLER_ASSIGNMENT_ROLES },
+        },
+      };
+      const [statusRows, expiringReservations] = await Promise.all([
+        tx.operaciones.findMany({
+          where: {
+            organizacion_id: actor.organization.id,
+            estado_operacion: {
+              in: [
+                luma_estado_operacion.RECHAZADA,
+                luma_estado_operacion.PENDIENTE_APROBACION,
+                luma_estado_operacion.APROBADA,
+              ],
+            },
+            asignaciones_personal_operacion: sellerFilter,
+          },
+          select: {
+            id: true,
+            numero_operacion: true,
+            estado_operacion: true,
+            precio_acordado: true,
+            fecha_operacion: true,
+            clientes: { select: { nombre_completo: true } },
+          },
+          orderBy: [{ fecha_operacion: 'desc' }],
+          take: limit * 2,
+        }),
+        tx.reservas_stock.findMany({
+          where: {
+            organizacion_id: actor.organization.id,
+            estado: estado_reserva_luma.ACTIVO,
+            vence_en: { lte: new Date(Date.now() + 48 * 60 * 60 * 1000) },
+            operaciones: { asignaciones_personal_operacion: sellerFilter },
+          },
+          select: {
+            vence_en: true,
+            operaciones: {
+              select: {
+                id: true,
+                numero_operacion: true,
+                precio_acordado: true,
+                clientes: { select: { nombre_completo: true } },
+              },
+            },
+          },
+          take: limit,
+        }),
+      ]);
+      type AttentionReason =
+        | 'RECHAZADA'
+        | 'PENDIENTE_APROBACION'
+        | 'LISTA_PARA_FIRMAR'
+        | 'RESERVA_POR_VENCER';
+      type AttentionItem = {
+        operationId: string;
+        operationNumber: string;
+        clientName: string;
+        amount: number;
+        reason: AttentionReason;
+        reservationExpiresAt?: string;
+      };
+      const items = new Map<string, AttentionItem>();
+      for (const row of statusRows) {
+        const reason: AttentionReason =
+          row.estado_operacion === luma_estado_operacion.RECHAZADA
+            ? 'RECHAZADA'
+            : row.estado_operacion === luma_estado_operacion.PENDIENTE_APROBACION
+              ? 'PENDIENTE_APROBACION'
+              : 'LISTA_PARA_FIRMAR';
+        items.set(row.id, {
+          operationId: row.id,
+          operationNumber: row.numero_operacion.toString(),
+          clientName: row.clientes.nombre_completo,
+          amount: Number(row.precio_acordado),
+          reason,
+        });
+      }
+      for (const reservation of expiringReservations) {
+        const operation = reservation.operaciones;
+        items.set(operation.id, {
+          operationId: operation.id,
+          operationNumber: operation.numero_operacion.toString(),
+          clientName: operation.clientes.nombre_completo,
+          amount: Number(operation.precio_acordado),
+          reason: 'RESERVA_POR_VENCER',
+          reservationExpiresAt: reservation.vence_en.toISOString(),
+        });
+      }
+      return [...items.values()].slice(0, limit);
+    });
   }
 
   async createTradeIn(

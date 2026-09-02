@@ -7,5 +7,6 @@ import { CreditPlansService } from './credit-plans.service';
   imports: [CashModule],
   controllers: [CreditPlansController],
   providers: [CreditPlansService],
+  exports: [CreditPlansService],
 })
 export class CreditPlansModule {}

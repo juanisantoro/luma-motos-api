@@ -3,6 +3,7 @@ import { ConfigModule } from '@nestjs/config';
 import { APP_GUARD } from '@nestjs/core';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { AuditModule } from './audit/audit.module';
+import { BcraModule } from './bcra/bcra.module';
 import { MutationAuditGuard } from './audit/guards/mutation-audit.guard';
 import { AuthModule } from './auth/auth.module';
 import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
@@ -28,6 +29,7 @@ import { SupplierPurchasesModule } from './supplier-purchases/supplier-purchases
 import { CommissionsModule } from './commissions/commissions.module';
 import { CreditPlansModule } from './credit-plans/credit-plans.module';
 import { RolesModule } from './roles/roles.module';
+import { DashboardModule } from './dashboard/dashboard.module';
 
 @Module({
   imports: [
@@ -64,6 +66,8 @@ import { RolesModule } from './roles/roles.module';
     VehiclePaymentsModule,
     CommissionsModule,
     CreditPlansModule,
+    BcraModule,
+    DashboardModule,
   ],
   providers: [
     {

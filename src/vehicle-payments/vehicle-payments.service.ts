@@ -177,6 +177,31 @@ export class VehiclePaymentsService {
     };
   }
 
+  // Dashboard support: count of vehicle-documentation payments still
+  // PENDIENTE for units belonging to one branch, plus how many of those
+  // have been pending for more than 5 days. pagos_vehiculo has no
+  // sucursal_id of its own, so this joins through the unit's branch -
+  // same join shape as joinedSelect() above, just without the catalog
+  // joins this doesn't need.
+  async unconfirmedSummary(actor: AuthenticatedUser, branchId: string) {
+    const rows = await this.prisma.withTenant(this.scope(actor), (tx) =>
+      tx.$queryRaw<Array<{ count: bigint; stale_count: bigint }>>(Prisma.sql`
+        SELECT
+          COUNT(*)::bigint AS count,
+          COUNT(*) FILTER (WHERE p.fecha <= CURRENT_DATE - INTERVAL '5 days')::bigint AS stale_count
+        FROM pagos_vehiculo p
+        JOIN unidades_vehiculos u ON u.id = p.unidad_vehiculo_id
+        WHERE p.organizacion_id = ${actor.organization.id}::uuid
+          AND u.sucursal_id = ${branchId}::uuid
+          AND p.estado = 'PENDIENTE'
+      `),
+    );
+    return {
+      count: Number(rows[0]?.count ?? 0),
+      staleCount: Number(rows[0]?.stale_count ?? 0),
+    };
+  }
+
   async findAll(query: VehiclePaymentQueryDto, actor: AuthenticatedUser) {
     this.assertOrganization(actor, query.organizationId);
     const organizationId =

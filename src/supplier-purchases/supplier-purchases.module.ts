@@ -7,5 +7,6 @@ import { SupplierPurchasesService } from './supplier-purchases.service';
   imports: [CashModule],
   controllers: [SupplierPurchasesController],
   providers: [SupplierPurchasesService],
+  exports: [SupplierPurchasesService],
 })
 export class SupplierPurchasesModule {}

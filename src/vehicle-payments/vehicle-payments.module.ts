@@ -7,5 +7,6 @@ import { VehiclePaymentsService } from './vehicle-payments.service';
   imports: [CashModule],
   controllers: [VehiclePaymentsController],
   providers: [VehiclePaymentsService],
+  exports: [VehiclePaymentsService],
 })
 export class VehiclePaymentsModule {}

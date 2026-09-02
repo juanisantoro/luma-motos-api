@@ -106,6 +106,25 @@ export class CreditInquiriesService {
     private readonly audit: AuditService,
   ) {}
 
+  // Dashboard support (ADMINISTRATIVA home): the latest inquiries recorded
+  // for one branch, any resultado - unlike findRejected() above this is not
+  // filtered to RECHAZADA, and it skips the per-client attemptCounts join
+  // that powers the full consultas crediticias screen since the dashboard
+  // panel only shows client/entity/resultado.
+  async recent(actor: AuthenticatedUser, branchId: string, limit: number) {
+    return this.prisma.withTenant(this.scope(actor), (tx) =>
+      tx.consultas_crediticias.findMany({
+        where: {
+          organizacion_id: actor.organization.id,
+          sucursal_id: branchId,
+        },
+        select: inquirySelect,
+        orderBy: [{ consultado_en: 'desc' }, { id: 'desc' }],
+        take: limit,
+      }),
+    );
+  }
+
   async findRejected(query: RejectedInquiryQueryDto, actor: AuthenticatedUser) {
     const normalizedSearch = query.search
       ? normalizeClientName(query.search)

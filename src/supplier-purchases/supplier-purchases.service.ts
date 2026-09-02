@@ -70,6 +70,22 @@ export class SupplierPurchasesService {
     private readonly cash: CashService,
   ) {}
 
+  // Dashboard support (ADMINISTRADOR home): count of purchases recorded
+  // against a catalog version but not yet turned into a physical unit -
+  // create()/update() above accept either unitId or versionId, so a null
+  // unidad_vehiculo_id is exactly "ordered, not yet received" in this
+  // schema (there is no separate receiving-workflow state on this table).
+  async pendingReceiptCount(actor: AuthenticatedUser) {
+    return this.prisma.withTenant(scope(actor), (tx) =>
+      tx.compras_proveedor.count({
+        where: {
+          organizacion_id: actor.organization.id,
+          unidad_vehiculo_id: null,
+        },
+      }),
+    );
+  }
+
   async findAll(query: SupplierPurchaseQueryDto, actor: AuthenticatedUser) {
     assertOrganization(actor, query.organizationId);
     const organizationId =

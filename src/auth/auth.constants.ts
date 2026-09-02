@@ -54,6 +54,7 @@ export const PERMISSION_CODES = {
   CREDIT_PLANS_READ: 'creditos.consultar',
   CREDIT_PLANS_MANAGE: 'creditos.gestionar',
   CREDIT_PLANS_COLLECT: 'creditos.cobrar',
+  CREDIT_PLANS_BCRA_DETAIL: 'creditos.bcra.detalle',
   CASH_READ: 'caja.consultar',
   CASH_MANAGE: 'caja.gestionar',
   CASH_TRANSFER: 'caja.transferir',

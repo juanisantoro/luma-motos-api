@@ -73,6 +73,35 @@ export class ExpensesService {
     private readonly cash: CashService,
   ) {}
 
+  // Dashboard support: total and count of expenses still owed (PENDIENTE,
+  // PAGO_PARCIAL or VENCIDO) whose fecha_vencimiento falls within [from, to]
+  // for one branch. Used by the ADMINISTRATIVA home's "gastos por pagar
+  // esta semana" KPI - a narrower read than findAll() above, which has no
+  // fecha_vencimiento filter (only fecha_generacion).
+  async payableInRange(
+    actor: AuthenticatedUser,
+    branchId: string,
+    from: Date,
+    to: Date,
+  ) {
+    return this.prisma.withTenant(scope(actor), async (tx) => {
+      const result = await tx.gastos.aggregate({
+        where: {
+          organizacion_id: actor.organization.id,
+          sucursal_id: branchId,
+          estado_pago: { in: ['PENDIENTE', 'PAGO_PARCIAL', 'VENCIDO'] },
+          fecha_vencimiento: { gte: from, lte: to },
+        },
+        _sum: { importe: true },
+        _count: { _all: true },
+      });
+      return {
+        amount: Number(result._sum.importe ?? 0),
+        count: result._count._all,
+      };
+    });
+  }
+
   async findAll(query: ExpenseQueryDto, actor: AuthenticatedUser) {
     assertOrganization(actor, query.organizationId);
     const organizationId =

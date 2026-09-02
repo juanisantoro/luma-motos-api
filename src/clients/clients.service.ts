@@ -54,6 +54,41 @@ export class ClientsService {
     private readonly auditService: AuditService,
   ) {}
 
+  // Dashboard support (ADMINISTRADOR home): clients created org-wide since
+  // a given instant. clientes has no sucursal_id (a client is not owned by
+  // one branch), so this is necessarily organization-wide - there is no
+  // per-branch variant to offer a manager/administrativa home.
+  async countCreatedSince(actor: AuthenticatedUser, since: Date) {
+    return this.prisma.withTenant(this.scope(actor), (tx) =>
+      tx.clientes.count({
+        where: {
+          organizacion_id: actor.organization.id,
+          creado_en: { gte: since },
+        },
+      }),
+    );
+  }
+
+  // Dashboard support (VENDEDOR/CALLCENTER home): clients the actor
+  // themselves loaded since a given instant. clientes also has no
+  // creado_por_personal_id, so per-actor attribution reads it off the
+  // audit trail create() below always writes (CLIENT_AUDIT_ACTIONS.CREATED)
+  // instead - usuario_id on registros_auditoria is the same auth user id
+  // (actor.id) recorded there.
+  async countCreatedByActorSince(actor: AuthenticatedUser, since: Date) {
+    return this.prisma.withTenant(this.scope(actor), (tx) =>
+      tx.registros_auditoria.count({
+        where: {
+          organizacion_id: actor.organization.id,
+          entidad: 'clientes',
+          accion: CLIENT_AUDIT_ACTIONS.CREATED,
+          usuario_id: actor.id,
+          creado_en: { gte: since },
+        },
+      }),
+    );
+  }
+
   async findAll(query: ClientListQueryDto, actor: AuthenticatedUser) {
     this.assertOrganizationFilter(actor, query.organizationId);
     const normalizedSearch = query.search

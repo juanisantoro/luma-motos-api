@@ -469,6 +469,149 @@ export class CreditPlansService {
     `;
   }
 
+  // --- Dashboard support. All three join cuotas_credito -> operacion_creditos
+  // -> operaciones the same way installmentJoinedSelect() above does, since
+  // that is how a branch is reached from an installment (cuotas_credito
+  // itself only carries organizacion_id). branchId omitted means org-wide
+  // (the ADMINISTRADOR home); passed means one branch (GERENTE/ADMINISTRATIVA).
+
+  // "cartera de créditos personales activa": total financed amount of
+  // credits still ACTIVO, plus how much of their installments is currently
+  // in arrears (vencimiento < today, still PENDIENTE/PARCIAL).
+  async personalCreditPortfolio(actor: AuthenticatedUser, branchId?: string) {
+    return this.prisma.withTenant(this.scope(actor), async (tx) => {
+      const [financed, overdue] = await Promise.all([
+        tx.$queryRaw<Array<{ total: Prisma.Decimal | null }>>(Prisma.sql`
+          SELECT SUM(oc.monto_total) AS total
+          FROM operacion_creditos oc
+          JOIN operaciones o ON o.id = oc.operacion_id
+          WHERE oc.organizacion_id = ${actor.organization.id}::uuid
+            AND oc.estado = 'ACTIVO'
+            ${branchId ? Prisma.sql`AND o.sucursal_id = ${branchId}::uuid` : Prisma.empty}
+        `),
+        tx.$queryRaw<Array<{ total: Prisma.Decimal | null; count: bigint }>>(Prisma.sql`
+          SELECT SUM(c.monto - c.monto_pagado) AS total, COUNT(*)::bigint AS count
+          FROM cuotas_credito c
+          JOIN operacion_creditos oc ON oc.id = c.operacion_credito_id
+          JOIN operaciones o ON o.id = oc.operacion_id
+          WHERE c.organizacion_id = ${actor.organization.id}::uuid
+            AND c.estado IN ('PENDIENTE', 'PARCIAL')
+            AND c.vencimiento < CURRENT_DATE
+            ${branchId ? Prisma.sql`AND o.sucursal_id = ${branchId}::uuid` : Prisma.empty}
+        `),
+      ]);
+      return {
+        financedAmount: Number(financed[0]?.total ?? 0),
+        overdueAmount: Number(overdue[0]?.total ?? 0),
+        overdueInstallments: Number(overdue[0]?.count ?? 0),
+      };
+    });
+  }
+
+  // Alert strip (ADMINISTRATIVA home): total amount and distinct client
+  // count of installments due exactly today for one branch, still unpaid -
+  // unconstrained by any list limit, unlike dueToday() below which is the
+  // capped panel listing.
+  async dueTodaySummary(actor: AuthenticatedUser, branchId: string) {
+    return this.prisma.withTenant(this.scope(actor), async (tx) => {
+      const rows = await tx.$queryRaw<
+        Array<{ total: Prisma.Decimal | null; clients: bigint }>
+      >(Prisma.sql`
+        SELECT SUM(c.monto - c.monto_pagado) AS total, COUNT(DISTINCT o.cliente_id)::bigint AS clients
+        FROM cuotas_credito c
+        JOIN operacion_creditos oc ON oc.id = c.operacion_credito_id
+        JOIN operaciones o ON o.id = oc.operacion_id
+        WHERE c.organizacion_id = ${actor.organization.id}::uuid
+          AND o.sucursal_id = ${branchId}::uuid
+          AND c.estado IN ('PENDIENTE', 'PARCIAL')
+          AND c.vencimiento = CURRENT_DATE
+      `);
+      return {
+        amount: Number(rows[0]?.total ?? 0),
+        clientCount: Number(rows[0]?.clients ?? 0),
+      };
+    });
+  }
+
+  // "cuotas por cobrar esta semana" (ADMINISTRATIVA KPI): amount and count
+  // of installments due within [from, to] for one branch, still unpaid.
+  async dueInRange(
+    actor: AuthenticatedUser,
+    branchId: string,
+    from: Date,
+    to: Date,
+  ) {
+    return this.prisma.withTenant(this.scope(actor), async (tx) => {
+      const rows = await tx.$queryRaw<Array<{ total: Prisma.Decimal | null; count: bigint }>>(
+        Prisma.sql`
+          SELECT SUM(c.monto - c.monto_pagado) AS total, COUNT(*)::bigint AS count
+          FROM cuotas_credito c
+          JOIN operacion_creditos oc ON oc.id = c.operacion_credito_id
+          JOIN operaciones o ON o.id = oc.operacion_id
+          WHERE c.organizacion_id = ${actor.organization.id}::uuid
+            AND o.sucursal_id = ${branchId}::uuid
+            AND c.estado IN ('PENDIENTE', 'PARCIAL')
+            AND c.vencimiento BETWEEN ${from}::date AND ${to}::date
+        `,
+      );
+      return {
+        amount: Number(rows[0]?.total ?? 0),
+        count: Number(rows[0]?.count ?? 0),
+      };
+    });
+  }
+
+  // "Cobranza de hoy" (ADMINISTRATIVA): installments due exactly today for
+  // one branch, still unpaid.
+  async dueToday(actor: AuthenticatedUser, branchId: string, limit: number) {
+    return this.prisma.withTenant(this.scope(actor), (tx) =>
+      tx.$queryRaw<
+        Array<{
+          id: string;
+          numero_cuota: number;
+          monto: Prisma.Decimal;
+          monto_pagado: Prisma.Decimal;
+          cliente_nombre: string;
+        }>
+      >(Prisma.sql`
+        SELECT c.id, c.numero_cuota, c.monto, c.monto_pagado, cl.nombre_completo AS cliente_nombre
+        FROM cuotas_credito c
+        JOIN operacion_creditos oc ON oc.id = c.operacion_credito_id
+        JOIN operaciones o ON o.id = oc.operacion_id
+        JOIN clientes cl ON cl.id = o.cliente_id
+        WHERE c.organizacion_id = ${actor.organization.id}::uuid
+          AND o.sucursal_id = ${branchId}::uuid
+          AND c.estado IN ('PENDIENTE', 'PARCIAL')
+          AND c.vencimiento = CURRENT_DATE
+        ORDER BY c.monto DESC
+        LIMIT ${limit}
+      `),
+    );
+  }
+
+  // "Alertas de gestión" (ADMINISTRATIVA): installments overdue by more
+  // than `days` days for one branch.
+  async overdueAlert(actor: AuthenticatedUser, branchId: string, days: number) {
+    return this.prisma.withTenant(this.scope(actor), async (tx) => {
+      const rows = await tx.$queryRaw<Array<{ total: Prisma.Decimal | null; count: bigint }>>(
+        Prisma.sql`
+          SELECT SUM(c.monto - c.monto_pagado) AS total, COUNT(*)::bigint AS count
+          FROM cuotas_credito c
+          JOIN operacion_creditos oc ON oc.id = c.operacion_credito_id
+          JOIN operaciones o ON o.id = oc.operacion_id
+          WHERE c.organizacion_id = ${actor.organization.id}::uuid
+            AND o.sucursal_id = ${branchId}::uuid
+            AND c.estado IN ('PENDIENTE', 'PARCIAL')
+            AND c.vencimiento < CURRENT_DATE - (${days}::int || ' days')::interval
+        `,
+      );
+      return {
+        amount: Number(rows[0]?.total ?? 0),
+        count: Number(rows[0]?.count ?? 0),
+      };
+    });
+  }
+
   async listInstallments(query: CreditInstallmentQueryDto, actor: AuthenticatedUser) {
     const organizationId =
       query.organizationId ?? (actor.globalAccess ? undefined : actor.organization.id);
