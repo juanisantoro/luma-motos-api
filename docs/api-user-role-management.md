@@ -128,6 +128,35 @@ Un usuario contiene:
 
 `invitation.status` es `PENDING`, `DELIVERED`, `FAILED`, `ACCEPTED` o `EXPIRED`. Los cambios de rol, sucursal, alcance, estado o contraseña revocan todas las sesiones activas.
 
+### Alcance global (`globalAccess`)
+
+`globalAccess` (columna `acceso_global`) es un bypass de aislamiento
+multi-tenant: un usuario con `globalAccess:true` puede operar a través de
+organizaciones, no sólo de sucursales dentro de la suya. Es un concepto
+distinto del alcance `SUCURSAL_PROPIA` vs. `TODAS_LAS_SUCURSALES` de
+comisiones del GERENTE, que sólo afecta atribución de comisión entre
+sucursales de una misma organización.
+
+Otorgar `globalAccess:true` (en `POST /api/users` o en
+`PATCH /api/users/:id/access`) está sujeto a dos reglas, evaluadas en este
+orden:
+
+1. El actor que hace la petición debe él mismo tener `globalAccess:true`.
+   Si no, `403 Forbidden` ("Only a global administrator can grant global
+   access").
+2. El usuario destino debe tener `roleCode = ADMINISTRADOR` y pertenecer a
+   una organización `type = CASA_CENTRAL`. Cualquier otra combinación (por
+   ejemplo un VENDEDOR, o un ADMINISTRADOR de una organización que no es
+   Casa Central) responde `400 Bad Request` ("Global access requires a
+   Casa Central administrator role").
+
+Estas reglas son intencionales — `globalAccess` es una escalada de
+privilegios real, no un simple flag de UI — así que el frontend debe ocultar
+o deshabilitar el checkbox "acceso a toda la organización" salvo cuando el
+rol elegido es ADMINISTRADOR y la organización destino es Casa Central; de
+lo contrario el alta o la edición terminan en un `400` recién al enviar el
+formulario.
+
 ## Roles y permisos
 
 `roles.consultar` habilita lectura y catálogo; `roles.gestionar` habilita mutaciones.
