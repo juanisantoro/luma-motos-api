@@ -17,6 +17,14 @@ const financialInstitutions = [
   'Banco Columbia',
   'Credicuotas',
   'Banco del Sol',
+  'Prendo',
+  'Creditech Unico',
+  'Creditech Duomo',
+  'Santander Consumer',
+  'Provincia',
+  'Directo',
+  'Directo Duomo',
+  'Uala',
 ] as const;
 
 const catalogProducts = [

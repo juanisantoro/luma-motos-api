@@ -938,6 +938,7 @@ export class SalesService {
               : undefined,
             creado_por_personal_id: creatorPersonnelId,
             notas: input.notes?.trim(),
+            numero_boleto: input.ticketNumber?.trim(),
             organizacion_id: organizationId,
           },
         });
@@ -1033,11 +1034,12 @@ export class SalesService {
                 'papersDelivered',
                 'debt',
                 'notes',
+                'ticketNumber',
               ].includes(key),
           )
         )
           throw new ConflictException(
-            'Approved operations only allow delivery, papers, debt, and notes updates',
+            'Approved operations only allow delivery, papers, debt, notes, and ticket number updates',
           );
         const branchId = input.branchId ?? current.sucursal_id;
         if (
@@ -1135,6 +1137,12 @@ export class SalesService {
                 : input.notes === null
                   ? null
                   : input.notes.trim(),
+            numero_boleto:
+              input.ticketNumber === undefined
+                ? undefined
+                : input.ticketNumber === null
+                  ? null
+                  : input.ticketNumber.trim(),
             estado_operacion: approvedUpdate
               ? undefined
               : luma_estado_operacion.BORRADOR,
@@ -2877,6 +2885,7 @@ export class SalesService {
       paymentPlatform: item.plataforma_pago,
       creditAmount: item.monto_credito?.toString() ?? null,
       guarantor: item.respaldo_garante,
+      ticketNumber: item.numero_boleto,
       notes: item.notas,
       rowVersion: item.version_fila,
       organizationId: item.organizacion_id,

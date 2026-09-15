@@ -141,6 +141,7 @@ export class CreateSalesOperationDto {
   @IsOptional() @IsEnum(deuda_operacion_luma) debt?: deuda_operacion_luma;
   @IsOptional() @IsBoolean() submit?: boolean;
   @IsOptional() @IsString() @MaxLength(2000) notes?: string;
+  @IsOptional() @IsString() @MaxLength(40) ticketNumber?: string;
   @IsOptional() @IsUUID() organizationId?: string;
 }
 
@@ -175,6 +176,7 @@ export class UpdateSalesOperationDto {
   @IsOptional() @IsBoolean() papersDelivered?: boolean;
   @IsOptional() @IsEnum(deuda_operacion_luma) debt?: deuda_operacion_luma;
   @IsOptional() @IsString() @MaxLength(2000) notes?: string | null;
+  @IsOptional() @IsString() @MaxLength(40) ticketNumber?: string | null;
 }
 
 export class SalesPaymentComponentDto {

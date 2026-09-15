@@ -24,7 +24,8 @@
     "prisma:migrate:deploy": "prisma migrate deploy",
     "prisma:migrate:baseline": "prisma migrate resolve --applied 20260828000000_enable_pg_trgm && prisma migrate resolve --applied 20260829000000_existing_schema_baseline && prisma migrate resolve --applied 20260829005000_existing_database_invariants && prisma migrate resolve --applied 20260829010000_auth_sessions && prisma migrate resolve --applied 20260829020000_preserve_audit_actor && prisma migrate resolve --applied 20260829030000_multiorganization_schema && prisma migrate resolve --applied 20260829031000_multiorganization_invariants",
     "prisma:seed": "prisma db seed",
-    "user:create-admin": "tsx scripts/create-first-admin.ts"
+    "user:create-admin": "tsx scripts/create-first-admin.ts",
+    "financieras:add": "tsx scripts/add-financieras.ts"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.1",
