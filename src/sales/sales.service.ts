@@ -225,6 +225,7 @@ export class SalesService {
                 patente: { contains: search, mode: 'insensitive' },
               },
             },
+            { numero_boleto: { contains: search, mode: 'insensitive' } },
           ]
         : undefined,
     };
