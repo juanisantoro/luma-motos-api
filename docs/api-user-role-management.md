@@ -147,8 +147,8 @@ orden:
 2. El usuario destino debe tener `roleCode = ADMINISTRADOR` y pertenecer a
    una organización `type = CASA_CENTRAL`. Cualquier otra combinación (por
    ejemplo un VENDEDOR, o un ADMINISTRADOR de una organización que no es
-   Casa Central) responde `400 Bad Request` ("Global access requires a
-   Casa Central administrator role").
+   Casa Central) responde `400 GLOBAL_ACCESS_REQUIRES_CENTRAL_ADMIN` ("Global access
+   requires a Casa Central administrator role").
 
 Estas reglas son intencionales — `globalAccess` es una escalada de
 privilegios real, no un simple flag de UI — así que el frontend debe ocultar
@@ -156,6 +156,15 @@ o deshabilitar el checkbox "acceso a toda la organización" salvo cuando el
 rol elegido es ADMINISTRADOR y la organización destino es Casa Central; de
 lo contrario el alta o la edición terminan en un `400` recién al enviar el
 formulario.
+
+### Cambio de acceso (`PATCH /api/users/:id/access`)
+
+- Los campos omitidos conservan su valor actual. Enviar el rol o el alcance vigentes no cuenta como cambio: el formulario puede reenviar el payload completo.
+- Un usuario puede cambiar su propia sucursal. Sólo se rechaza con `403 SELF_ADMIN_ACCESS_CHANGE_FORBIDDEN` si el request cambia efectivamente su propio rol o `globalAccess`. Como todo cambio de acceso, revoca sus propias sesiones.
+- `globalAccess: true` sólo es válido para el rol `ADMINISTRADOR` de una organización `CASA_CENTRAL` y sólo lo otorga un administrador global; en otro caso responde `400 GLOBAL_ACCESS_REQUIRES_CENTRAL_ADMIN`. Si el rol pasa de `ADMINISTRADOR` a otro y el request omite `globalAccess`, el acceso global se retira automáticamente.
+- `branchId` debe ser una sucursal activa de la organización del usuario editado (no la del actor); si no, `400 BRANCH_INVALID`.
+- Rol y sucursal se replican en `personal` (`rol_id`, `sucursal_principal_id`) y la sucursal reemplaza los accesos de `acceso_personal_sucursal`. Si la cuenta no tiene registro de `personal`, responde `409 USER_PERSONNEL_MISSING` sin modificar nada.
+- Un request que no cambia nada responde `400 USER_ACCESS_UNCHANGED`.
 
 ## Roles y permisos
 
@@ -193,9 +202,9 @@ Los errores tipados responden `{statusCode,code,message,details?}`.
 | --- | --- |
 | `INVALID_CREDENTIALS`, `INVALID_TEMPORARY_CREDENTIALS` | 401 |
 | `PASSWORD_CHANGE_REQUIRED`, `TEMPORARY_PASSWORD_EXPIRED` | 403 |
-| `PASSWORD_POLICY_VIOLATION`, `INVALID_PERMISSION_CODES`, `ROLE_INACTIVE` | 400 |
+| `PASSWORD_POLICY_VIOLATION`, `INVALID_PERMISSION_CODES`, `ROLE_INACTIVE`, `GLOBAL_ACCESS_REQUIRES_CENTRAL_ADMIN`, `BRANCH_INVALID`, `USER_ACCESS_UNCHANGED` | 400 |
 | `CROSS_TENANT_ACCESS`, `SELF_ADMIN_ACCESS_CHANGE_FORBIDDEN` | 403 |
-| `ROLE_CODE_ALREADY_EXISTS`, `ROLE_NAME_ALREADY_EXISTS`, `ROLE_HAS_ACTIVE_USERS`, `SYSTEM_ROLE_PROTECTED`, `LAST_ACTIVE_ADMIN`, `TEMPORARY_PASSWORD_ALREADY_USED`, `VERSION_CONFLICT` | 409 |
+| `ROLE_CODE_ALREADY_EXISTS`, `ROLE_NAME_ALREADY_EXISTS`, `ROLE_HAS_ACTIVE_USERS`, `SYSTEM_ROLE_PROTECTED`, `LAST_ACTIVE_ADMIN`, `TEMPORARY_PASSWORD_ALREADY_USED`, `VERSION_CONFLICT`, `USER_PERSONNEL_MISSING` | 409 |
 | `INVITATION_DELIVERY_FAILED` | 503 |
 
 ## Persistencia y despliegue

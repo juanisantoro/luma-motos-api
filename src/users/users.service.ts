@@ -534,17 +534,6 @@ export class UsersService {
       this.scope(actor),
       (transaction) => this.findManagedUser(transaction, id, actor),
     );
-    if (
-      current.id === actor.id &&
-      (input.roleCode !== undefined || input.globalAccess !== undefined)
-    ) {
-      throw apiError(
-        HttpStatus.FORBIDDEN,
-        'SELF_ADMIN_ACCESS_CHANGE_FORBIDDEN',
-        'You cannot change your own role or global access',
-      );
-    }
-
     const newRoleCode = input.roleCode ?? current.roles?.codigo;
     if (!newRoleCode) {
       throw new ConflictException('The user does not have a valid role');
@@ -553,13 +542,43 @@ export class UsersService {
       input.branchId === undefined
         ? (current.sucursales?.id ?? null)
         : input.branchId;
-    const newGlobalAccess = input.globalAccess ?? current.acceso_global;
     const roleChanged = newRoleCode !== current.roles?.codigo;
+    // Global access is only valid for Casa Central administrators. When the
+    // role moves away from ADMINISTRADOR and the client does not state the
+    // scope explicitly, the global scope is dropped instead of failing: it is
+    // a privilege reduction and the only valid outcome for the new role.
+    const newGlobalAccess =
+      input.globalAccess ??
+      (current.acceso_global && newRoleCode === ROLE_CODES.ADMINISTRADOR);
     const branchChanged = newBranchId !== (current.sucursales?.id ?? null);
     const globalAccessChanged = newGlobalAccess !== current.acceso_global;
 
+    // Clients usually send the full access form. Echoing the current role or
+    // scope is not a self-change, so only real changes are rejected; this
+    // lets an administrator update their own branch.
+    if (current.id === actor.id && (roleChanged || globalAccessChanged)) {
+      throw apiError(
+        HttpStatus.FORBIDDEN,
+        'SELF_ADMIN_ACCESS_CHANGE_FORBIDDEN',
+        'You cannot change your own role or global access',
+      );
+    }
+
     if (!roleChanged && !branchChanged && !globalAccessChanged) {
-      throw new BadRequestException('The request does not change user access');
+      throw apiError(
+        HttpStatus.BAD_REQUEST,
+        'USER_ACCESS_UNCHANGED',
+        'The request does not change user access',
+      );
+    }
+
+    const personnelId = current.personal?.id;
+    if (!personnelId) {
+      throw apiError(
+        HttpStatus.CONFLICT,
+        'USER_PERSONNEL_MISSING',
+        'The user has no personnel record to assign role or branch access',
+      );
     }
 
     const auditEvent: AuthenticatedAuditEvent = {
@@ -628,9 +647,12 @@ export class UsersService {
           acceso_global: newGlobalAccess,
         },
       });
-      const personnel = await transaction.personal.update({
+      await transaction.personal.update({
         where: {
-          usuario_id: current.id,
+          id_organizacion_id: {
+            id: personnelId,
+            organizacion_id: current.organizacion_id,
+          },
         },
         data: {
           rol_id: role.id,
@@ -644,13 +666,13 @@ export class UsersService {
       if (branchChanged) {
         await transaction.acceso_personal_sucursal.deleteMany({
           where: {
-            personal_id: personnel.id,
+            personal_id: personnelId,
           },
         });
         if (branch) {
           await transaction.acceso_personal_sucursal.create({
             data: {
-              personal_id: personnel.id,
+              personal_id: personnelId,
               sucursal_id: branch.id,
               organizacion_id: current.organizacion_id,
             },
@@ -975,7 +997,9 @@ export class UsersService {
       organizationType !== 'CASA_CENTRAL' ||
       roleCode !== ROLE_CODES.ADMINISTRADOR
     ) {
-      throw new BadRequestException(
+      throw apiError(
+        HttpStatus.BAD_REQUEST,
+        'GLOBAL_ACCESS_REQUIRES_CENTRAL_ADMIN',
         'Global access requires a Casa Central administrator role',
       );
     }
@@ -1073,7 +1097,9 @@ export class UsersService {
       },
     });
     if (!branch) {
-      throw new BadRequestException(
+      throw apiError(
+        HttpStatus.BAD_REQUEST,
+        'BRANCH_INVALID',
         'Branch is invalid, inactive, or belongs to another organization',
       );
     }

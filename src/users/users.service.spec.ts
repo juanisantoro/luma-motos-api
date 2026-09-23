@@ -319,6 +319,167 @@ describe('UsersService', () => {
     });
   });
 
+  describe('updateAccess regressions (branch/role assignment)', () => {
+    const sanMiguel = targetUser.sucursales.id;
+    const delViso = '043c98b6-d1af-44a4-9c27-e7360dba346c';
+
+    function arrangeSuccessfulUpdate(
+      current: Record<string, unknown>,
+      roleCode: string,
+    ) {
+      findUser.mockResolvedValue(current);
+      findRole.mockResolvedValue({ id: targetUser.roles.id, codigo: roleCode });
+      findBranch.mockResolvedValue({ id: delViso });
+      findOrganization.mockResolvedValue({
+        id: actor.organization.id,
+        tipo: 'CASA_CENTRAL',
+      });
+      updatePersonnel.mockResolvedValue({ id: targetUser.personal.id });
+      deleteBranchAccess.mockResolvedValue({ count: 1 });
+      createBranchAccess.mockResolvedValue({});
+      updateSessions.mockResolvedValue({ count: 0 });
+      findUserOrThrow.mockResolvedValue(current);
+    }
+
+    it('lets an administrator change their own branch when the form echoes role and scope', async () => {
+      const self = {
+        ...targetUser,
+        id: actor.id,
+        acceso_global: true,
+        contrasena_configurada_en: new Date('2026-08-29T00:00:00.000Z'),
+        roles: { ...targetUser.roles, codigo: 'ADMINISTRADOR' },
+      };
+      arrangeSuccessfulUpdate(self, 'ADMINISTRADOR');
+      updateUsers.mockResolvedValue({ count: 1 });
+      countUsers.mockResolvedValue(2);
+
+      await service.updateAccess(
+        actor.id,
+        { roleCode: 'ADMINISTRADOR', branchId: delViso, globalAccess: true },
+        actor,
+      );
+
+      expect(updateUser.mock.calls[0]?.[0].data).toMatchObject({
+        sucursal_id: delViso,
+        acceso_global: true,
+      });
+      expect(createBranchAccess).toHaveBeenCalledWith({
+        data: {
+          personal_id: targetUser.personal.id,
+          sucursal_id: delViso,
+          organizacion_id: actor.organization.id,
+        },
+      });
+    });
+
+    it('still forbids changing your own role', async () => {
+      findUser.mockResolvedValue({
+        ...targetUser,
+        id: actor.id,
+        roles: { ...targetUser.roles, codigo: 'ADMINISTRADOR' },
+      });
+
+      await expect(
+        service.updateAccess(actor.id, { roleCode: 'VENDEDOR' }, actor),
+      ).rejects.toMatchObject({
+        response: { code: 'SELF_ADMIN_ACCESS_CHANGE_FORBIDDEN' },
+      });
+      expect(executeAudit).not.toHaveBeenCalled();
+    });
+
+    it('assigns the VENDEDOR role and a branch updating personnel by tenant key', async () => {
+      const current = {
+        ...targetUser,
+        roles: { ...targetUser.roles, codigo: 'ADMINISTRATIVA' },
+      };
+      arrangeSuccessfulUpdate(current, 'VENDEDOR');
+
+      await service.updateAccess(
+        targetUser.id,
+        { roleCode: 'VENDEDOR', branchId: delViso, globalAccess: false },
+        actor,
+      );
+
+      expect(updatePersonnel).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            id_organizacion_id: {
+              id: targetUser.personal.id,
+              organizacion_id: actor.organization.id,
+            },
+          },
+          data: { rol_id: targetUser.roles.id, sucursal_principal_id: delViso },
+        }),
+      );
+      expect(deleteBranchAccess).toHaveBeenCalledWith({
+        where: { personal_id: targetUser.personal.id },
+      });
+      expect(auditedEvents[0]).toMatchObject({
+        previousData: { roleCode: 'ADMINISTRATIVA', branchId: sanMiguel },
+        metadata: { roleCode: 'VENDEDOR', branchId: delViso },
+      });
+    });
+
+    it('drops global access when an administrator is reassigned to a non-admin role', async () => {
+      const globalAdmin = {
+        ...targetUser,
+        acceso_global: true,
+        roles: { ...targetUser.roles, codigo: 'ADMINISTRADOR' },
+      };
+      arrangeSuccessfulUpdate(globalAdmin, 'VENDEDOR');
+
+      await service.updateAccess(
+        targetUser.id,
+        { roleCode: 'VENDEDOR', branchId: delViso },
+        actor,
+      );
+
+      expect(updateUser.mock.calls[0]?.[0].data).toMatchObject({
+        acceso_global: false,
+      });
+    });
+
+    it('returns a typed error when global access is requested for a non-admin role', async () => {
+      arrangeSuccessfulUpdate(targetUser, 'VENDEDOR');
+
+      await expect(
+        service.updateAccess(
+          targetUser.id,
+          { roleCode: 'VENDEDOR', branchId: delViso, globalAccess: true },
+          actor,
+        ),
+      ).rejects.toMatchObject({
+        response: { code: 'GLOBAL_ACCESS_REQUIRES_CENTRAL_ADMIN' },
+      });
+      expect(updateUser).not.toHaveBeenCalled();
+    });
+
+    it('returns 409 instead of a 500 when the user has no personnel record', async () => {
+      findUser.mockResolvedValue({ ...targetUser, personal: null });
+
+      await expect(
+        service.updateAccess(
+          targetUser.id,
+          { roleCode: 'VENDEDOR', branchId: delViso },
+          actor,
+        ),
+      ).rejects.toMatchObject({
+        status: 409,
+        response: { code: 'USER_PERSONNEL_MISSING' },
+      });
+      expect(executeAudit).not.toHaveBeenCalled();
+    });
+
+    it('returns a typed error for a branch outside the user organization', async () => {
+      arrangeSuccessfulUpdate(targetUser, 'VENDEDOR');
+      findBranch.mockResolvedValue(null);
+
+      await expect(
+        service.updateAccess(targetUser.id, { branchId: delViso }, actor),
+      ).rejects.toMatchObject({ response: { code: 'BRANCH_INVALID' } });
+    });
+  });
+
   it('does not reactivate a user before password setup', async () => {
     findUser.mockResolvedValue({
       ...targetUser,
