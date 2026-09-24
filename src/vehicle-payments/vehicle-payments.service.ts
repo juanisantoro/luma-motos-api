@@ -8,6 +8,7 @@ import {
 import { Prisma } from '@prisma/client';
 import { AuditService, AuthenticatedAuditEvent } from '../audit/audit.service';
 import type { AuthenticatedUser } from '../auth/auth.types';
+import { BranchScope } from '../branch-scope/branch-scope';
 import { CashService } from '../cash/cash.service';
 import { PrismaService } from '../prisma/prisma.service';
 import {
@@ -178,12 +179,12 @@ export class VehiclePaymentsService {
   }
 
   // Dashboard support: count of vehicle-documentation payments still
-  // PENDIENTE for units belonging to one branch, plus how many of those
+  // PENDIENTE for units belonging to the actor's branch scope, plus how many of those
   // have been pending for more than 5 days. pagos_vehiculo has no
   // sucursal_id of its own, so this joins through the unit's branch -
   // same join shape as joinedSelect() above, just without the catalog
   // joins this doesn't need.
-  async unconfirmedSummary(actor: AuthenticatedUser, branchId: string) {
+  async unconfirmedSummary(actor: AuthenticatedUser, branches: BranchScope) {
     const rows = await this.prisma.withTenant(this.scope(actor), (tx) =>
       tx.$queryRaw<Array<{ count: bigint; stale_count: bigint }>>(Prisma.sql`
         SELECT
@@ -192,7 +193,7 @@ export class VehiclePaymentsService {
         FROM pagos_vehiculo p
         JOIN unidades_vehiculos u ON u.id = p.unidad_vehiculo_id
         WHERE p.organizacion_id = ${actor.organization.id}::uuid
-          AND u.sucursal_id = ${branchId}::uuid
+          AND ${branches.sql(Prisma.sql`u.sucursal_id`)}
           AND p.estado = 'PENDIENTE'
       `),
     );
@@ -212,6 +213,8 @@ export class VehiclePaymentsService {
       Prisma.sql`m.tipo_vehiculo = ${query.vehicleType}::tipo_vehiculo_luma`,
     ];
     if (organizationId) conditions.push(Prisma.sql`p.organizacion_id = ${organizationId}::uuid`);
+    // pagos_vehiculo has no branch of its own: the unit's branch defines it.
+    conditions.push(BranchScope.forActor(actor).sql(Prisma.sql`u.sucursal_id`));
     if (query.conceptId) conditions.push(Prisma.sql`p.concepto_id = ${query.conceptId}::uuid`);
     if (query.providerId) conditions.push(Prisma.sql`p.proveedor_id = ${query.providerId}::uuid`);
     if (query.status) conditions.push(Prisma.sql`p.estado = ${query.status}`);
@@ -274,9 +277,10 @@ export class VehiclePaymentsService {
       await this.assertProviderActive(tx, input.providerId);
       const unit = await tx.unidades_vehiculos.findFirst({
         where: { id: input.unitId, organizacion_id: organizationId },
-        select: { id: true },
+        select: { id: true, sucursal_id: true },
       });
       if (!unit) throw new BadRequestException('Vehicle unit not found');
+      BranchScope.forActor(actor).assert(unit.sucursal_id);
       if (input.operationId) {
         const operation = await tx.operaciones.findFirst({
           where: { id: input.operationId, organizacion_id: organizationId },
@@ -307,9 +311,11 @@ export class VehiclePaymentsService {
       throw new BadRequestException('At least one editable field is required');
     return this.prisma.withTenant(this.scope(actor), async (tx) => {
       const current = await tx.$queryRaw<Array<{ organizacion_id: string }>>(Prisma.sql`
-        SELECT organizacion_id FROM pagos_vehiculo
-        WHERE id = ${id}::uuid
-        AND (${actor.globalAccess} OR organizacion_id = ${actor.organization.id}::uuid)
+        SELECT p.organizacion_id FROM pagos_vehiculo p
+        JOIN unidades_vehiculos u ON u.id = p.unidad_vehiculo_id
+        WHERE p.id = ${id}::uuid
+        AND (${actor.globalAccess} OR p.organizacion_id = ${actor.organization.id}::uuid)
+        AND ${BranchScope.forActor(actor).sql(Prisma.sql`u.sucursal_id`)}
       `);
       if (!current[0]) throw new NotFoundException('Vehicle payment not found');
       const organizationId = current[0].organizacion_id;

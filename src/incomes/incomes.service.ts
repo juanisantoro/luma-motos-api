@@ -10,6 +10,7 @@ import {
 } from '@prisma/client';
 import { AuditService, AuthenticatedAuditEvent } from '../audit/audit.service';
 import type { AuthenticatedUser } from '../auth/auth.types';
+import { BranchScope } from '../branch-scope/branch-scope';
 import { CashService } from '../cash/cash.service';
 import {
   CreateIncomeDto,
@@ -128,7 +129,7 @@ export class IncomesService {
     const search = query.search?.trim();
     const where: Prisma.ingresosWhereInput = {
       organizacion_id: organizationId,
-      sucursal_id: query.branchId,
+      sucursal_id: BranchScope.forActor(actor).where(query.branchId),
       tipo_original: query.type?.trim(),
       unidad_vehiculo_id: query.unitId,
       operacion_id: query.operationId,
@@ -251,24 +252,27 @@ export class IncomesService {
   async create(input: CreateIncomeDto, actor: AuthenticatedUser) {
     assertOrganization(actor, input.organizationId);
     const organizationId = input.organizationId ?? actor.organization.id;
+    const branchId = BranchScope.forActor(actor).resolveBranchId(
+      input.branchId,
+    );
     const total = decimal(input.totalAmount);
     return this.mutate(
       actor,
       'INCOME_CREATED',
       async (tx, event) => {
-        await this.cash.branchOr400(tx, input.branchId, organizationId);
+        await this.cash.branchOr400(tx, branchId, organizationId);
         await this.assertValidType(tx, input.type);
         await this.validateReferences(
           tx,
           input.unitId,
           input.operationId,
-          input.branchId,
+          branchId,
           organizationId,
         );
         const income = await tx.ingresos.create({
           data: {
             organizacion_id: organizationId,
-            sucursal_id: input.branchId,
+            sucursal_id: branchId,
             fecha_ingreso: businessDate(input.incomeDate),
             tipo_original: input.type.trim(),
             descripcion: input.description.trim(),
@@ -294,6 +298,7 @@ export class IncomesService {
   async update(id: string, input: UpdateIncomeDto, actor: AuthenticatedUser) {
     if (!Object.keys(input).length)
       throw new BadRequestException('At least one editable field is required');
+    if (input.branchId) BranchScope.forActor(actor).assert(input.branchId);
     return this.mutate(
       actor,
       'INCOME_UPDATED',
@@ -573,12 +578,14 @@ export class IncomesService {
     actor: AuthenticatedUser,
     lock = false,
   ) {
+    const branchScope = BranchScope.forActor(actor);
     if (lock)
       await tx.$queryRaw`
         SELECT "id"
         FROM "public"."ingresos"
         WHERE "id" = CAST(${id} AS uuid)
           AND (${actor.globalAccess} OR "organizacion_id" = CAST(${actor.organization.id} AS uuid))
+          AND ${branchScope.sql(Prisma.sql`"sucursal_id"`)}
           AND NOT "es_transferencia"
         FOR UPDATE
       `;
@@ -587,6 +594,7 @@ export class IncomesService {
         id,
         es_transferencia: false,
         organizacion_id: actor.globalAccess ? undefined : actor.organization.id,
+        sucursal_id: branchScope.where(),
       },
       include: incomeInclude,
     });

@@ -24,6 +24,22 @@ export interface AuthenticatedUser {
     code: string;
     name: string;
   } | null;
+  /**
+   * Branches the user can see and operate. `allBranches` comes from the
+   * `sucursales.todas` permission or `acceso_global`; otherwise `branches`
+   * lists the main branch plus `acceso_personal_sucursal`. Computed from
+   * PostgreSQL on every authenticated request.
+   */
+  branchScope?: AuthenticatedBranchScope;
+}
+
+export interface AuthenticatedBranchScope {
+  allBranches: boolean;
+  branches: Array<{
+    id: string;
+    code: string;
+    name: string;
+  }>;
 }
 
 export interface JwtPayload {

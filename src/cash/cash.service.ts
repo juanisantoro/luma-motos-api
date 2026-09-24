@@ -12,6 +12,7 @@ import {
 } from '@prisma/client';
 import { AuditService, AuthenticatedAuditEvent } from '../audit/audit.service';
 import type { AuthenticatedUser } from '../auth/auth.types';
+import { BranchScope } from '../branch-scope/branch-scope';
 import {
   CashAccountQueryDto,
   CashMovementQueryDto,
@@ -56,10 +57,22 @@ const accountInclude = {
 
 const transferInclude = {
   cuentas_caja_transferencias_caja_cuenta_origen_idTocuentas_caja: {
-    select: { id: true, codigo: true, nombre: true, tipo_cuenta: true },
+    select: {
+      id: true,
+      codigo: true,
+      nombre: true,
+      tipo_cuenta: true,
+      sucursal_id: true,
+    },
   },
   cuentas_caja_transferencias_caja_cuenta_destino_idTocuentas_caja: {
-    select: { id: true, codigo: true, nombre: true, tipo_cuenta: true },
+    select: {
+      id: true,
+      codigo: true,
+      nombre: true,
+      tipo_cuenta: true,
+      sucursal_id: true,
+    },
   },
   personal: { select: { id: true, nombre_completo: true } },
   movimientos_caja_movimientos_caja_transferencia_idTotransferencias_caja: {
@@ -85,17 +98,33 @@ export class CashService {
       query.organizationId ??
       (actor.globalAccess ? undefined : actor.organization.id);
     const search = query.search?.trim();
+    const branchScope = BranchScope.forActor(actor);
+    const shared =
+      branchScope.whereSharedOrInScope<Prisma.cuentas_cajaWhereInput>();
     const where: Prisma.cuentas_cajaWhereInput = {
       organizacion_id: organizationId,
       tipo_cuenta: query.type,
-      sucursal_id: query.branchId,
-      activo: query.active,
-      OR: search
-        ? [
-            { codigo: { contains: search, mode: 'insensitive' } },
-            { nombre: { contains: search, mode: 'insensitive' } },
-          ]
+      sucursal_id: query.branchId
+        ? branchScope.where(query.branchId)
         : undefined,
+      activo: query.active,
+      AND: [
+        ...(shared && !query.branchId ? [shared] : []),
+        ...(search
+          ? [
+              {
+                OR: [
+                  {
+                    codigo: { contains: search, mode: 'insensitive' as const },
+                  },
+                  {
+                    nombre: { contains: search, mode: 'insensitive' as const },
+                  },
+                ],
+              },
+            ]
+          : []),
+      ],
     };
     return this.prisma.withTenant(scope(actor), async (tx) => {
       const [total, accounts] = await Promise.all([
@@ -131,6 +160,9 @@ export class CashService {
           organizacion_id: actor.globalAccess
             ? undefined
             : actor.organization.id,
+          ...BranchScope.forActor(
+            actor,
+          ).whereSharedOrInScope<Prisma.cuentas_cajaWhereInput>(),
         },
         include: accountInclude,
       });
@@ -143,13 +175,17 @@ export class CashService {
   async createAccount(input: CreateCashAccountDto, actor: AuthenticatedUser) {
     assertOrganization(actor, input.organizationId);
     const organizationId = input.organizationId ?? actor.organization.id;
+    // Organization-level (shared) accounts can only be created with access
+    // to every branch; a scoped user gets its only branch by default.
+    const branchId = BranchScope.forActor(actor).resolveOptionalBranchId(
+      input.branchId,
+    );
     return this.mutate(
       actor,
       'CASH_ACCOUNT_CREATED',
       'cuentas_caja',
       async (tx, event) => {
-        if (input.branchId)
-          await this.branchOr400(tx, input.branchId, organizationId);
+        if (branchId) await this.branchOr400(tx, branchId, organizationId);
         if (input.responsiblePersonnelId)
           await this.personnelOr400(
             tx,
@@ -161,7 +197,7 @@ export class CashService {
             codigo: input.code.trim().toUpperCase(),
             nombre: input.name.trim(),
             tipo_cuenta: input.type,
-            sucursal_id: input.branchId,
+            sucursal_id: branchId,
             personal_responsable_id: input.responsiblePersonnelId,
             moneda: input.currency ?? 'ARS',
             activo: input.active ?? true,
@@ -184,6 +220,8 @@ export class CashService {
   ) {
     if (!Object.keys(input).length)
       throw new BadRequestException('At least one editable field is required');
+    if (input.branchId !== undefined)
+      BranchScope.forActor(actor).assert(input.branchId);
     return this.mutate(
       actor,
       'CASH_ACCOUNT_UPDATED',
@@ -233,6 +271,10 @@ export class CashService {
     const search = query.search?.trim();
     const where: Prisma.movimientos_cajaWhereInput = {
       organizacion_id: organizationId,
+      cuentas_caja:
+        BranchScope.forActor(
+          actor,
+        ).whereSharedOrInScope<Prisma.cuentas_cajaWhereInput>(),
       cuenta_caja_id: query.accountId,
       tipo_movimiento: query.type,
       direccion: query.direction,
@@ -277,6 +319,7 @@ export class CashService {
       (actor.globalAccess ? undefined : actor.organization.id);
     const where: Prisma.transferencias_cajaWhereInput = {
       organizacion_id: organizationId,
+      AND: this.transferVisibility(actor),
       OR: query.accountId
         ? [
             { cuenta_origen_id: query.accountId },
@@ -359,15 +402,18 @@ export class CashService {
             'INVALID_TRANSFER_ACCOUNTS',
             'Source and destination accounts must be different',
           );
+        const branchScope = BranchScope.forActor(actor);
         const source = await this.activeAccountOr400(
           tx,
           input.sourceAccountId,
           organizationId,
+          branchScope,
         );
         const destination = await this.activeAccountOr400(
           tx,
           input.destinationAccountId,
           organizationId,
+          branchScope,
         );
         if (source.moneda !== destination.moneda)
           financialBadRequest(
@@ -585,6 +631,7 @@ export class CashService {
       tx,
       input.accountId,
       organizationId,
+      BranchScope.forActor(actor),
     );
     if (account.moneda !== currency)
       financialBadRequest(
@@ -968,17 +1015,47 @@ export class CashService {
     tx: Prisma.TransactionClient,
     id: string,
     organizationId: string,
+    branchScope: BranchScope,
   ) {
     const account = await tx.cuentas_caja.findFirst({
       where: { id, organizacion_id: organizationId, activo: true },
-      select: { id: true, moneda: true },
+      select: { id: true, moneda: true, sucursal_id: true },
     });
     if (!account)
       financialBadRequest(
         'INVALID_CASH_ACCOUNT',
         'Cash account is invalid or inactive',
       );
+    branchScope.assertSharedOrInScope(account.sucursal_id);
     return account;
+  }
+
+  /**
+   * A transfer is visible when at least one side is an account the actor can
+   * use (shared organization account or branch in scope).
+   */
+  private transferVisibility(
+    actor: AuthenticatedUser,
+  ): Prisma.transferencias_cajaWhereInput[] {
+    const usable =
+      BranchScope.forActor(
+        actor,
+      ).whereSharedOrInScope<Prisma.cuentas_cajaWhereInput>();
+    if (!usable) return [];
+    return [
+      {
+        OR: [
+          {
+            cuentas_caja_transferencias_caja_cuenta_origen_idTocuentas_caja:
+              usable,
+          },
+          {
+            cuentas_caja_transferencias_caja_cuenta_destino_idTocuentas_caja:
+              usable,
+          },
+        ],
+      },
+    ];
   }
 
   private async personnelOr400(
@@ -1003,18 +1080,23 @@ export class CashService {
     actor: AuthenticatedUser,
     lock = false,
   ) {
+    // Editing an account requires its branch in scope; shared organization
+    // accounts are only editable with access to every branch.
+    const branchScope = BranchScope.forActor(actor);
     if (lock)
       await tx.$queryRaw`
         SELECT "id"
         FROM "public"."cuentas_caja"
         WHERE "id" = CAST(${id} AS uuid)
           AND (${actor.globalAccess} OR "organizacion_id" = CAST(${actor.organization.id} AS uuid))
+          AND ${branchScope.sql(Prisma.sql`"sucursal_id"`)}
         FOR UPDATE
       `;
     const account = await tx.cuentas_caja.findFirst({
       where: {
         id,
         organizacion_id: actor.globalAccess ? undefined : actor.organization.id,
+        sucursal_id: branchScope.where(),
       },
       include: accountInclude,
     });
@@ -1040,10 +1122,24 @@ export class CashService {
       where: {
         id,
         organizacion_id: actor.globalAccess ? undefined : actor.organization.id,
+        AND: this.transferVisibility(actor),
       },
       include: transferInclude,
     });
     if (!transfer) financialNotFound('Cash transfer');
+    if (lock) {
+      // Reversing moves money in both accounts: both must be usable.
+      const branchScope = BranchScope.forActor(actor);
+      branchScope.assertSharedOrInScope(
+        transfer.cuentas_caja_transferencias_caja_cuenta_origen_idTocuentas_caja
+          .sucursal_id,
+      );
+      branchScope.assertSharedOrInScope(
+        transfer
+          .cuentas_caja_transferencias_caja_cuenta_destino_idTocuentas_caja
+          .sucursal_id,
+      );
+    }
     return transfer;
   }
 

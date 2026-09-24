@@ -720,11 +720,10 @@ export class UsersService {
         'You cannot deactivate your own account',
       );
     }
-    if (input.active && !current.contrasena_configurada_en) {
-      throw new ConflictException(
-        'The user must change the temporary password first',
-      );
-    }
+    // A user with a pending invitation can be reactivated: the login still
+    // refuses a session until the temporary password is replaced (and asks for
+    // a resend when it expired). Blocking it left users deactivated before
+    // their first access with no way back.
 
     return this.auditService.execute(
       {

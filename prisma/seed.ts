@@ -75,6 +75,13 @@ const managedPermissions = [
     roles: ['ADMINISTRADOR', 'GERENTE'],
   },
   {
+    codigo: 'sucursales.todas',
+    modulo: 'sucursales',
+    descripcion:
+      'Ve y opera datos de todas las sucursales de la organización. Sin este permiso el alcance es la sucursal principal más las habilitadas en acceso_personal_sucursal.',
+    roles: ['ADMINISTRADOR'],
+  },
+  {
     codigo: 'usuarios.consultar',
     modulo: 'usuarios',
     descripcion: 'Consulta usuarios, roles, organizaciones y sucursales.',

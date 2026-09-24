@@ -10,6 +10,7 @@ import {
 } from '@prisma/client';
 import { AuditService, AuthenticatedAuditEvent } from '../audit/audit.service';
 import type { AuthenticatedUser } from '../auth/auth.types';
+import { BranchScope } from '../branch-scope/branch-scope';
 import { CashService } from '../cash/cash.service';
 import {
   CreateSupplierPurchaseDto,
@@ -80,6 +81,7 @@ export class SupplierPurchasesService {
       tx.compras_proveedor.count({
         where: {
           organizacion_id: actor.organization.id,
+          sucursal_id: BranchScope.forActor(actor).where(),
           unidad_vehiculo_id: null,
         },
       }),
@@ -94,7 +96,7 @@ export class SupplierPurchasesService {
     const search = query.search?.trim();
     const where: Prisma.compras_proveedorWhereInput = {
       organizacion_id: organizationId,
-      sucursal_id: query.branchId,
+      sucursal_id: BranchScope.forActor(actor).where(query.branchId),
       proveedor_id: query.supplierId,
       unidad_vehiculo_id: query.unitId,
       version_id: query.versionId,
@@ -187,6 +189,9 @@ export class SupplierPurchasesService {
   async create(input: CreateSupplierPurchaseDto, actor: AuthenticatedUser) {
     assertOrganization(actor, input.organizationId);
     const organizationId = input.organizationId ?? actor.organization.id;
+    const branchId = BranchScope.forActor(actor).resolveBranchId(
+      input.branchId,
+    );
     const base = nonNegativeDecimal(input.baseAmount);
     const additional = nonNegativeDecimal(input.additionalCosts ?? '0');
     const total = base.plus(additional);
@@ -204,19 +209,19 @@ export class SupplierPurchasesService {
       actor,
       'SUPPLIER_PURCHASE_CREATED',
       async (tx, event) => {
-        await this.cash.branchOr400(tx, input.branchId, organizationId);
+        await this.cash.branchOr400(tx, branchId, organizationId);
         await this.supplierOr400(tx, input.supplierId, organizationId);
         const vehicle = await this.vehicleReferences(
           tx,
           input.unitId,
           input.versionId,
-          input.branchId,
+          branchId,
           organizationId,
         );
         const purchase = await tx.compras_proveedor.create({
           data: {
             proveedor_id: input.supplierId,
-            sucursal_id: input.branchId,
+            sucursal_id: branchId,
             version_id: vehicle.versionId,
             unidad_vehiculo_id: vehicle.unitId,
             fecha_compra: businessDate(input.purchaseDate),
@@ -246,6 +251,7 @@ export class SupplierPurchasesService {
   ) {
     if (!Object.keys(input).length)
       throw new BadRequestException('At least one editable field is required');
+    if (input.branchId) BranchScope.forActor(actor).assert(input.branchId);
     return this.mutate(
       actor,
       'SUPPLIER_PURCHASE_UPDATED',
@@ -530,18 +536,21 @@ export class SupplierPurchasesService {
     actor: AuthenticatedUser,
     lock = false,
   ) {
+    const branchScope = BranchScope.forActor(actor);
     if (lock)
       await tx.$queryRaw`
         SELECT "id"
         FROM "public"."compras_proveedor"
         WHERE "id" = CAST(${id} AS uuid)
           AND (${actor.globalAccess} OR "organizacion_id" = CAST(${actor.organization.id} AS uuid))
+          AND ${branchScope.sql(Prisma.sql`"sucursal_id"`)}
         FOR UPDATE
       `;
     const purchase = await tx.compras_proveedor.findFirst({
       where: {
         id,
         organizacion_id: actor.globalAccess ? undefined : actor.organization.id,
+        sucursal_id: branchScope.where(),
       },
       include: purchaseInclude,
     });

@@ -104,6 +104,7 @@ describe('Application security (e2e)', () => {
       permissions: ['clientes.consultar'],
     },
     branch: null,
+    branchScope: { allBranches: false, branches: [] },
   };
   const databaseUser = {
     id: authenticatedUser.id,
@@ -123,6 +124,8 @@ describe('Application security (e2e)', () => {
       nombre_completo: authenticatedUser.name,
       puede_iniciar_sesion: true,
       estado: 'ACTIVO',
+      sucursales: null,
+      acceso_personal_sucursal: [],
     },
     roles: {
       id: authenticatedUser.role.id,

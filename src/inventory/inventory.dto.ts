@@ -1,8 +1,9 @@
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
   ArrayMaxSize,
   ArrayMinSize,
   IsArray,
+  IsBoolean,
   IsDateString,
   IsEnum,
   IsIn,
@@ -64,6 +65,17 @@ export class InventoryMovementQueryDto {
 
 export class InventoryBranchQueryDto {
   @IsOptional() @IsUUID() organizationId?: string;
+  /**
+   * Default `false`: only branches inside the user's branch scope. `true`
+   * lists every active branch of the organization with an `inScope` flag, for
+   * pickers such as a transfer destination.
+   */
+  @IsOptional()
+  @Transform(({ value }: { value: unknown }) =>
+    value === 'true' ? true : value === 'false' ? false : value,
+  )
+  @IsBoolean()
+  includeOutOfScope?: boolean;
 }
 
 export class CreateInventoryUnitDto {
@@ -86,7 +98,7 @@ export class CreateInventoryUnitDto {
   mileageKm?: number;
   @IsOptional() @IsString() @MaxLength(80) color?: string;
   @IsOptional() @IsString() @IsIn(UNIT_FINISHES) acabado?: string;
-  @IsUUID() branchId!: string;
+  @IsOptional() @IsUUID() branchId?: string;
   @IsOptional() @IsUUID() supplierId?: string;
   @IsEnum(origen_adquisicion_luma) acquisitionOrigin!: origen_adquisicion_luma;
   @IsOptional()
@@ -149,7 +161,7 @@ export class CreateCatalogInventoryDto {
   @Type(() => InitialPricePolicyDto)
   pricePolicy!: InitialPricePolicyDto;
   @IsEnum(condicion_vehiculo_luma) condition!: condicion_vehiculo_luma;
-  @IsUUID() branchId!: string;
+  @IsOptional() @IsUUID() branchId?: string;
   @IsOptional() @IsUUID() supplierId?: string;
   @IsEnum(origen_adquisicion_luma)
   acquisitionOrigin!: origen_adquisicion_luma;

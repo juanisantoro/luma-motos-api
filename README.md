@@ -97,7 +97,7 @@ Los permisos se administran mediante el seed:
 - `usuarios.consultar`: asignado a **Administrador** y **Gerente**.
 - `usuarios.gestionar`: asignado solo a **Administrador**.
 
-Los usuarios sin acceso global quedan limitados por RLS a su organización. Un administrador global de Casa Central puede seleccionar otra organización; el backend valida que la sucursal pertenezca a ella. La organización asignada al crear el usuario no se modifica posteriormente para preservar la trazabilidad histórica.
+Los usuarios sin acceso global quedan limitados por RLS a su organización. Dentro de la organización, los datos operativos (ventas, stock, abastecimiento, compras, ingresos, gastos, caja, pagos de vehículo, créditos y dashboard) se acotan además a las sucursales del usuario salvo que tenga `sucursales.todas` (seed: ADMINISTRADOR) o `acceso_global`; ver [`docs/api-branch-scope.md`](docs/api-branch-scope.md). Un administrador global de Casa Central puede seleccionar otra organización; el backend valida que la sucursal pertenezca a ella. La organización asignada al crear el usuario no se modifica posteriormente para preservar la trazabilidad histórica.
 
 | Endpoint | Permiso | Uso |
 | --- | --- | --- |

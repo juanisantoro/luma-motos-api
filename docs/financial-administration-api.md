@@ -457,3 +457,7 @@ Stable codes include `INVALID_AMOUNT`, `INVALID_BUSINESS_DATE`,
 
 DTO validation and malformed UUIDs return Nest's standard `400` response.
 Missing permissions return `403`.
+
+## Alcance por sucursal
+
+Compras, ingresos, gastos, cuentas, movimientos y transferencias se acotan a las sucursales del usuario. `branchId` es opcional en el alta de compras e ingresos cuando el usuario tiene una sola sucursal. Las cuentas de caja sin sucursal son compartidas por la organización (visibles y usables para pagos/cobranzas, editables sólo con `sucursales.todas`). Nuevo código de error: `403 BRANCH_OUT_OF_SCOPE` y `400 BRANCH_REQUIRED`. Ver [`api-branch-scope.md`](api-branch-scope.md).

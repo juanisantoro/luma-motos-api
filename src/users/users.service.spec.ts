@@ -1,4 +1,3 @@
-import { ConflictException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
 import {
@@ -480,8 +479,8 @@ describe('UsersService', () => {
     });
   });
 
-  it('does not reactivate a user before password setup', async () => {
-    findUser.mockResolvedValue({
+  it('reactivates a user whose invitation is still pending', async () => {
+    const inactive = {
       ...targetUser,
       activo: false,
       personal: {
@@ -489,12 +488,30 @@ describe('UsersService', () => {
         puede_iniciar_sesion: false,
         estado: 'INACTIVO',
       },
-    });
+    };
+    findUser.mockResolvedValue(inactive);
+    findUserOrThrow.mockResolvedValue(targetUser);
+    updateUser.mockResolvedValue({});
+    updatePersonnel.mockResolvedValue({});
 
-    await expect(
-      service.updateStatus(targetUser.id, { active: true }, actor),
-    ).rejects.toBeInstanceOf(ConflictException);
-    expect(executeAudit).not.toHaveBeenCalled();
+    const result = await service.updateStatus(
+      targetUser.id,
+      { active: true },
+      actor,
+    );
+
+    expect(executeAudit).toHaveBeenCalledTimes(1);
+    expect(updateUser.mock.calls[0]?.[0].data).toEqual({ activo: true });
+    expect(updatePersonnel).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: { puede_iniciar_sesion: true, estado: 'ACTIVO' },
+      }),
+    );
+    // The temporary password is untouched: the first login still forces it.
+    expect(result.user).toMatchObject({
+      active: true,
+      passwordChangeRequired: true,
+    });
   });
 
   it('prevents non-global administrators from creating cross-tenant users', async () => {

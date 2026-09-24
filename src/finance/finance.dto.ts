@@ -80,7 +80,7 @@ export class ExpenseQueryDto extends FinancialQueryDto {
 
 export class CreateSupplierPurchaseDto {
   @IsOptional() @IsUUID() organizationId?: string;
-  @IsUUID() branchId!: string;
+  @IsOptional() @IsUUID() branchId?: string;
   @IsDateString() @Matches(BUSINESS_DATE_PATTERN) purchaseDate!: string;
   @IsUUID() supplierId!: string;
   @IsOptional() @IsUUID() unitId?: string;
@@ -109,7 +109,7 @@ export class UpdateSupplierPurchaseDto {
 
 export class CreateIncomeDto {
   @IsOptional() @IsUUID() organizationId?: string;
-  @IsUUID() branchId!: string;
+  @IsOptional() @IsUUID() branchId?: string;
   @IsDateString() @Matches(BUSINESS_DATE_PATTERN) incomeDate!: string;
   @IsString() @IsNotEmpty() @MaxLength(120) type!: string;
   @IsOptional() @IsString() @MaxLength(160) reference?: string;

@@ -12,6 +12,7 @@ export const ROLE_CODES = {
 export type RoleCode = (typeof ROLE_CODES)[keyof typeof ROLE_CODES];
 
 export const PERMISSION_CODES = {
+  BRANCHES_ALL: 'sucursales.todas',
   USERS_READ: 'usuarios.consultar',
   USERS_MANAGE: 'usuarios.gestionar',
   ROLES_READ: 'roles.consultar',

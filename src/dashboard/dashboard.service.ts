@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { luma_estado_inventario, tipo_vehiculo_luma } from '@prisma/client';
 import { PERMISSION_CODES, ROLE_CODES } from '../auth/auth.constants';
 import type { AuthenticatedUser } from '../auth/auth.types';
+import { BranchScope } from '../branch-scope/branch-scope';
 import { CashService } from '../cash/cash.service';
 import { ClientsService } from '../clients/clients.service';
 import { CommissionsService } from '../commissions/commissions.service';
@@ -81,6 +82,12 @@ export class DashboardService {
       date: new Date().toISOString().slice(0, 10),
     };
 
+    // Data is always restricted to the actor's branch scope (sucursales.todas
+    // / acceso_global => every branch; otherwise main branch + accesses).
+    // The role code only picks which screen layout is returned.
+    const branches = BranchScope.forActor(actor);
+    const hasBranches = branches.allBranches || branches.branchIds.length > 0;
+
     switch (actor.role.code) {
       case ROLE_CODES.ADMINISTRADOR:
         return {
@@ -89,24 +96,24 @@ export class DashboardService {
           ...(await this.buildAdminHome(actor, has)),
         };
       case ROLE_CODES.GERENTE:
-        return actor.branch
+        return hasBranches
           ? {
               role: 'GERENTE' as const,
               greeting,
-              ...(await this.buildManagerHome(actor, actor.branch.id, has)),
+              ...(await this.buildManagerHome(actor, branches, has)),
             }
           : { role: 'GERENTE' as const, greeting };
       case ROLE_CODES.ADMINISTRATIVA:
-        return actor.branch
+        return hasBranches
           ? {
               role: 'ADMINISTRATIVA' as const,
               greeting,
-              ...(await this.buildAdministrativeHome(actor, actor.branch.id, has)),
+              ...(await this.buildAdministrativeHome(actor, branches, has)),
             }
           : { role: 'ADMINISTRATIVA' as const, greeting };
       case ROLE_CODES.VENDEDOR:
       case ROLE_CODES.CALLCENTER:
-        return actor.branch
+        return hasBranches
           ? {
               role: 'VENDEDOR' as const,
               greeting,
@@ -166,33 +173,37 @@ export class DashboardService {
     };
   }
 
-  // --- GERENTE: the manager's own branch. ---------------------------------
+  // --- GERENTE: the manager's branch scope (today a single branch; more
+  // through acceso_personal_sucursal without code changes). ---------------
 
   private async buildManagerHome(
     actor: AuthenticatedUser,
-    branchId: string,
+    branches: BranchScope,
     has: (code: string) => boolean,
   ) {
     const period = currentPeriodKey();
+    // Commission suggestions are queried per branch; with several allowed
+    // branches the ranking uses the user's main branch.
+    const rankingBranchId = actor.branch?.id ?? branches.singleBranchId;
     const [monthlySales, ownCommission, creditOverdue, approvals, teamRanking, topModels] =
       await Promise.all([
         has(PERMISSION_CODES.SALES_READ)
-          ? this.sales.monthlyPerformance(actor, { branchId })
+          ? this.sales.monthlyPerformance(actor)
           : null,
         has(PERMISSION_CODES.COMMISSIONS_READ)
           ? this.estimatedCommission(actor, period, 'MANAGER')
           : null,
         has(PERMISSION_CODES.CREDIT_PLANS_READ)
-          ? this.creditPlans.personalCreditPortfolio(actor, branchId)
+          ? this.creditPlans.personalCreditPortfolio(actor, branches)
           : null,
         has(PERMISSION_CODES.SALES_APPROVE)
-          ? this.approvalsAcrossVehicleTypes(actor, branchId, 10)
+          ? this.approvalsAcrossVehicleTypes(actor, 10)
           : null,
-        has(PERMISSION_CODES.COMMISSIONS_READ)
-          ? this.teamRanking(actor, branchId, period)
+        has(PERMISSION_CODES.COMMISSIONS_READ) && rankingBranchId
+          ? this.teamRanking(actor, rankingBranchId, period)
           : null,
         has(PERMISSION_CODES.SALES_READ)
-          ? this.sales.topModels(actor, { branchId, period, limit: 5 })
+          ? this.sales.topModels(actor, { period, limit: 5 })
           : null,
       ]);
     return {
@@ -212,7 +223,7 @@ export class DashboardService {
 
   private async buildAdministrativeHome(
     actor: AuthenticatedUser,
-    branchId: string,
+    branches: BranchScope,
     has: (code: string) => boolean,
   ) {
     const period = currentPeriodKey();
@@ -228,31 +239,31 @@ export class DashboardService {
       topModels,
     ] = await Promise.all([
       has(PERMISSION_CODES.CREDIT_PLANS_READ)
-        ? this.creditPlans.dueTodaySummary(actor, branchId)
+        ? this.creditPlans.dueTodaySummary(actor, branches)
         : null,
-      has(PERMISSION_CODES.CASH_READ) ? this.cashBalance(actor, branchId) : null,
+      has(PERMISSION_CODES.CASH_READ) ? this.cashBalance(actor) : null,
       has(PERMISSION_CODES.CREDIT_PLANS_READ)
-        ? this.creditPlans.dueInRange(actor, branchId, todayUtcStart(), daysAheadUtcEnd(6))
+        ? this.creditPlans.dueInRange(actor, branches, todayUtcStart(), daysAheadUtcEnd(6))
         : null,
       has(PERMISSION_CODES.VEHICLE_PAYMENTS_READ)
-        ? this.vehiclePayments.unconfirmedSummary(actor, branchId)
+        ? this.vehiclePayments.unconfirmedSummary(actor, branches)
         : null,
       has(PERMISSION_CODES.EXPENSES_READ)
-        ? this.expenses.payableInRange(actor, branchId, todayUtcStart(), daysAheadUtcEnd(6))
+        ? this.expenses.payableInRange(actor, branches, todayUtcStart(), daysAheadUtcEnd(6))
         : null,
       has(PERMISSION_CODES.CREDIT_PLANS_COLLECT)
-        ? this.creditPlans.dueToday(actor, branchId, 10)
+        ? this.creditPlans.dueToday(actor, branches, 10)
         : null,
       has(PERMISSION_CODES.CREDIT_INQUIRIES_READ)
-        ? this.creditInquiries.recent(actor, branchId, 8)
+        ? this.creditInquiries.recent(actor, branches, 8)
         : null,
       has(PERMISSION_CODES.CREDIT_PLANS_READ) ||
       has(PERMISSION_CODES.VEHICLE_PAYMENTS_READ) ||
       has(PERMISSION_CODES.INVENTORY_READ)
-        ? this.administrativeManagementAlerts(actor, branchId, has)
+        ? this.administrativeManagementAlerts(actor, branches, has)
         : null,
       has(PERMISSION_CODES.SALES_READ)
-        ? this.sales.topModels(actor, { branchId, period, limit: 5 })
+        ? this.sales.topModels(actor, { period, limit: 5 })
         : null,
     ]);
     // "comisiones por pagar" was in scope but ADMINISTRATIVA holds none of
@@ -283,18 +294,18 @@ export class DashboardService {
 
   private async administrativeManagementAlerts(
     actor: AuthenticatedUser,
-    branchId: string,
+    branches: BranchScope,
     has: (code: string) => boolean,
   ) {
     const [overdueInstallments, staleVehiclePayments, zeroStockModels] = await Promise.all([
       has(PERMISSION_CODES.CREDIT_PLANS_READ)
-        ? this.creditPlans.overdueAlert(actor, branchId, 30)
+        ? this.creditPlans.overdueAlert(actor, branches, 30)
         : null,
       has(PERMISSION_CODES.VEHICLE_PAYMENTS_READ)
-        ? this.vehiclePayments.unconfirmedSummary(actor, branchId)
+        ? this.vehiclePayments.unconfirmedSummary(actor, branches)
         : null,
       has(PERMISSION_CODES.INVENTORY_READ)
-        ? this.inventory.zeroStockModels(actor, branchId, 10)
+        ? this.inventory.zeroStockModels(actor, branches, 10)
         : null,
     ]);
     return {
@@ -362,12 +373,12 @@ export class DashboardService {
 
   private async approvalsAcrossVehicleTypes(
     actor: AuthenticatedUser,
-    branchId: string,
     limit: number,
   ) {
+    // No branchId: pendingApprovals() applies the actor's branch scope.
     const pages: ApprovalPage[] = await Promise.all(
       VEHICLE_TYPES.map((vehicleType) =>
-        this.sales.pendingApprovals({ vehicleType, branchId, page: 1, limit }, actor),
+        this.sales.pendingApprovals({ vehicleType, page: 1, limit }, actor),
       ),
     );
     const items = pages
@@ -451,14 +462,18 @@ export class DashboardService {
     return { period, amount };
   }
 
-  private async cashBalance(actor: AuthenticatedUser, branchId: string) {
+  // Branch cash only: findAccounts() already applies the branch scope, and
+  // shared organization accounts (without branch) are left out of the KPI.
+  private async cashBalance(actor: AuthenticatedUser) {
     const page: CashAccountPage = await this.cash.findAccounts(
-      { branchId, active: true, page: 1, limit: 100 },
+      { active: true, page: 1, limit: 100 },
       actor,
     );
-    return page.items.reduce(
-      (sum: number, account: CashAccountItem) => sum + Number(account.balance),
-      0,
-    );
+    return page.items
+      .filter((account: CashAccountItem) => account.branch !== null)
+      .reduce(
+        (sum: number, account: CashAccountItem) => sum + Number(account.balance),
+        0,
+      );
   }
 }

@@ -6,6 +6,7 @@ import {
 import { Prisma } from '@prisma/client';
 import { AuditService, AuthenticatedAuditEvent } from '../audit/audit.service';
 import type { AuthenticatedUser } from '../auth/auth.types';
+import { BranchScope } from '../branch-scope/branch-scope';
 import { CashService } from '../cash/cash.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { buildInstallmentSchedule, simulateCredit } from './credit-calculator';
@@ -312,9 +313,14 @@ export class CreditPlansService {
     tx: Prisma.TransactionClient,
     operationId: string,
     organizationId: string,
+    actor: AuthenticatedUser,
   ) {
     const operation = await tx.operaciones.findFirst({
-      where: { id: operationId, organizacion_id: organizationId },
+      where: {
+        id: operationId,
+        organizacion_id: organizationId,
+        sucursal_id: BranchScope.forActor(actor).where(),
+      },
       select: { id: true },
     });
     if (!operation) throw new NotFoundException('Sales operation not found');
@@ -322,7 +328,12 @@ export class CreditPlansService {
 
   async getOperationCredit(operationId: string, actor: AuthenticatedUser) {
     return this.prisma.withTenant(this.scope(actor), async (tx) => {
-      await this.assertOperationInScope(tx, operationId, actor.organization.id);
+      await this.assertOperationInScope(
+        tx,
+        operationId,
+        actor.organization.id,
+        actor,
+      );
       const rows = await tx.$queryRaw<OperationCreditRow[]>(Prisma.sql`
         SELECT oc.id, oc.operacion_id, oc.plan_credito_id, oc.metodo_calculo,
           oc.cantidad_cuotas, oc.tasa_interes, oc.monto_financiado, oc.interes_total,
@@ -380,7 +391,7 @@ export class CreditPlansService {
     };
     return this.audit.execute(event, async (tx) => {
       const organizationId = actor.organization.id;
-      await this.assertOperationInScope(tx, operationId, organizationId);
+      await this.assertOperationInScope(tx, operationId, organizationId, actor);
 
       const planRows = await tx.$queryRaw<CreditPlanRow[]>(Prisma.sql`
         SELECT id, nombre, metodo_calculo, cantidad_cuotas, tasa_interes,
@@ -472,13 +483,16 @@ export class CreditPlansService {
   // --- Dashboard support. All three join cuotas_credito -> operacion_creditos
   // -> operaciones the same way installmentJoinedSelect() above does, since
   // that is how a branch is reached from an installment (cuotas_credito
-  // itself only carries organizacion_id). branchId omitted means org-wide
-  // (the ADMINISTRADOR home); passed means one branch (GERENTE/ADMINISTRATIVA).
+  // itself only carries organizacion_id). `branches` is the actor's branch
+  // scope: every branch for ADMINISTRADOR, the allowed ones otherwise.
 
   // "cartera de créditos personales activa": total financed amount of
   // credits still ACTIVO, plus how much of their installments is currently
   // in arrears (vencimiento < today, still PENDIENTE/PARCIAL).
-  async personalCreditPortfolio(actor: AuthenticatedUser, branchId?: string) {
+  async personalCreditPortfolio(
+    actor: AuthenticatedUser,
+    branches: BranchScope = BranchScope.forActor(actor),
+  ) {
     return this.prisma.withTenant(this.scope(actor), async (tx) => {
       const [financed, overdue] = await Promise.all([
         tx.$queryRaw<Array<{ total: Prisma.Decimal | null }>>(Prisma.sql`
@@ -487,7 +501,7 @@ export class CreditPlansService {
           JOIN operaciones o ON o.id = oc.operacion_id
           WHERE oc.organizacion_id = ${actor.organization.id}::uuid
             AND oc.estado = 'ACTIVO'
-            ${branchId ? Prisma.sql`AND o.sucursal_id = ${branchId}::uuid` : Prisma.empty}
+            AND ${branches.sql(Prisma.sql`o.sucursal_id`)}
         `),
         tx.$queryRaw<Array<{ total: Prisma.Decimal | null; count: bigint }>>(Prisma.sql`
           SELECT SUM(c.monto - c.monto_pagado) AS total, COUNT(*)::bigint AS count
@@ -497,7 +511,7 @@ export class CreditPlansService {
           WHERE c.organizacion_id = ${actor.organization.id}::uuid
             AND c.estado IN ('PENDIENTE', 'PARCIAL')
             AND c.vencimiento < CURRENT_DATE
-            ${branchId ? Prisma.sql`AND o.sucursal_id = ${branchId}::uuid` : Prisma.empty}
+            AND ${branches.sql(Prisma.sql`o.sucursal_id`)}
         `),
       ]);
       return {
@@ -512,7 +526,7 @@ export class CreditPlansService {
   // count of installments due exactly today for one branch, still unpaid -
   // unconstrained by any list limit, unlike dueToday() below which is the
   // capped panel listing.
-  async dueTodaySummary(actor: AuthenticatedUser, branchId: string) {
+  async dueTodaySummary(actor: AuthenticatedUser, branches: BranchScope) {
     return this.prisma.withTenant(this.scope(actor), async (tx) => {
       const rows = await tx.$queryRaw<
         Array<{ total: Prisma.Decimal | null; clients: bigint }>
@@ -522,7 +536,7 @@ export class CreditPlansService {
         JOIN operacion_creditos oc ON oc.id = c.operacion_credito_id
         JOIN operaciones o ON o.id = oc.operacion_id
         WHERE c.organizacion_id = ${actor.organization.id}::uuid
-          AND o.sucursal_id = ${branchId}::uuid
+          AND ${branches.sql(Prisma.sql`o.sucursal_id`)}
           AND c.estado IN ('PENDIENTE', 'PARCIAL')
           AND c.vencimiento = CURRENT_DATE
       `);
@@ -537,7 +551,7 @@ export class CreditPlansService {
   // of installments due within [from, to] for one branch, still unpaid.
   async dueInRange(
     actor: AuthenticatedUser,
-    branchId: string,
+    branches: BranchScope,
     from: Date,
     to: Date,
   ) {
@@ -549,7 +563,7 @@ export class CreditPlansService {
           JOIN operacion_creditos oc ON oc.id = c.operacion_credito_id
           JOIN operaciones o ON o.id = oc.operacion_id
           WHERE c.organizacion_id = ${actor.organization.id}::uuid
-            AND o.sucursal_id = ${branchId}::uuid
+            AND ${branches.sql(Prisma.sql`o.sucursal_id`)}
             AND c.estado IN ('PENDIENTE', 'PARCIAL')
             AND c.vencimiento BETWEEN ${from}::date AND ${to}::date
         `,
@@ -563,7 +577,11 @@ export class CreditPlansService {
 
   // "Cobranza de hoy" (ADMINISTRATIVA): installments due exactly today for
   // one branch, still unpaid.
-  async dueToday(actor: AuthenticatedUser, branchId: string, limit: number) {
+  async dueToday(
+    actor: AuthenticatedUser,
+    branches: BranchScope,
+    limit: number,
+  ) {
     return this.prisma.withTenant(this.scope(actor), (tx) =>
       tx.$queryRaw<
         Array<{
@@ -580,7 +598,7 @@ export class CreditPlansService {
         JOIN operaciones o ON o.id = oc.operacion_id
         JOIN clientes cl ON cl.id = o.cliente_id
         WHERE c.organizacion_id = ${actor.organization.id}::uuid
-          AND o.sucursal_id = ${branchId}::uuid
+          AND ${branches.sql(Prisma.sql`o.sucursal_id`)}
           AND c.estado IN ('PENDIENTE', 'PARCIAL')
           AND c.vencimiento = CURRENT_DATE
         ORDER BY c.monto DESC
@@ -591,7 +609,11 @@ export class CreditPlansService {
 
   // "Alertas de gestión" (ADMINISTRATIVA): installments overdue by more
   // than `days` days for one branch.
-  async overdueAlert(actor: AuthenticatedUser, branchId: string, days: number) {
+  async overdueAlert(
+    actor: AuthenticatedUser,
+    branches: BranchScope,
+    days: number,
+  ) {
     return this.prisma.withTenant(this.scope(actor), async (tx) => {
       const rows = await tx.$queryRaw<Array<{ total: Prisma.Decimal | null; count: bigint }>>(
         Prisma.sql`
@@ -600,7 +622,7 @@ export class CreditPlansService {
           JOIN operacion_creditos oc ON oc.id = c.operacion_credito_id
           JOIN operaciones o ON o.id = oc.operacion_id
           WHERE c.organizacion_id = ${actor.organization.id}::uuid
-            AND o.sucursal_id = ${branchId}::uuid
+            AND ${branches.sql(Prisma.sql`o.sucursal_id`)}
             AND c.estado IN ('PENDIENTE', 'PARCIAL')
             AND c.vencimiento < CURRENT_DATE - (${days}::int || ' days')::interval
         `,
@@ -617,7 +639,9 @@ export class CreditPlansService {
       query.organizationId ?? (actor.globalAccess ? undefined : actor.organization.id);
     const search = query.search?.trim();
 
-    const conditions: Prisma.Sql[] = [];
+    const conditions: Prisma.Sql[] = [
+      BranchScope.forActor(actor).sql(Prisma.sql`o.sucursal_id`),
+    ];
     if (organizationId) conditions.push(Prisma.sql`c.organizacion_id = ${organizationId}::uuid`);
     if (query.operationId) conditions.push(Prisma.sql`oc.operacion_id = ${query.operationId}::uuid`);
     if (query.status) {
@@ -686,9 +710,12 @@ export class CreditPlansService {
           estado: CreditInstallmentStatus;
         }>
       >(Prisma.sql`
-        SELECT organizacion_id, operacion_credito_id, monto, monto_pagado, estado
-        FROM cuotas_credito
-        WHERE id = ${id}::uuid AND organizacion_id = ${organizationId}::uuid
+        SELECT c.organizacion_id, c.operacion_credito_id, c.monto, c.monto_pagado, c.estado
+        FROM cuotas_credito c
+        JOIN operacion_creditos oc ON oc.id = c.operacion_credito_id
+        JOIN operaciones o ON o.id = oc.operacion_id
+        WHERE c.id = ${id}::uuid AND c.organizacion_id = ${organizationId}::uuid
+          AND ${BranchScope.forActor(actor).sql(Prisma.sql`o.sucursal_id`)}
       `);
       if (!current[0]) throw new NotFoundException('Installment not found');
       if (current[0].estado === 'PAGADA') {

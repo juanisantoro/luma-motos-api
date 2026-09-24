@@ -106,7 +106,7 @@ export class InlineSalesClientDto {
 
 export class CreateSalesOperationDto {
   @IsEnum(tipo_vehiculo_luma) vehicleType!: tipo_vehiculo_luma;
-  @IsUUID() branchId!: string;
+  @IsOptional() @IsUUID() branchId?: string;
   @ValidateIf((input: CreateSalesOperationDto) => !input.client)
   @IsUUID()
   clientId?: string;

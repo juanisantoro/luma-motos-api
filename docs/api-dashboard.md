@@ -245,3 +245,7 @@ uno de cuatro componentes: `AdminDashboard`, `ManagerDashboard`,
 `AdministrativeDashboard` o `SellerDashboard` (este último reutilizado para
 VENDEDOR y CALLCENTER). Reemplazó la grilla genérica de accesos a módulos
 que existía antes de este home por perfil.
+
+## Alcance por sucursal
+
+Todas las métricas se calculan sobre las sucursales del actor (`user.branchScope`), no sólo sobre `branch`. GERENTE, ADMINISTRATIVA y VENDEDOR/CALLCENTER reciben su pantalla cuando tienen al menos una sucursal en alcance; si en el futuro se les habilitan más sucursales vía `acceso_personal_sucursal`, los KPIs las suman sin cambios. "Saldo de caja" suma sólo cuentas con sucursal. El ranking del equipo (comisiones) sigue consultándose por la sucursal principal. Ver [`api-branch-scope.md`](api-branch-scope.md).

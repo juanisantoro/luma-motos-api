@@ -6,6 +6,10 @@ import { ExtractJwt, Strategy } from 'passport-jwt';
 import { EnvironmentVariables } from '../../config/environment';
 import { PrismaService } from '../../prisma/prisma.service';
 import { JWT_AUDIENCE, JWT_ISSUER } from '../auth.constants';
+import {
+  branchScopeUserSelect,
+  buildBranchScope,
+} from '../../branch-scope/branch-scope';
 import { AuthenticatedPrincipal, JwtPayload } from '../auth.types';
 
 @Injectable()
@@ -100,6 +104,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
                 nombre_completo: true,
                 puede_iniciar_sesion: true,
                 estado: true,
+                ...branchScopeUserSelect.personal.select,
               },
             },
             roles: {
@@ -181,6 +186,9 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       throw new UnauthorizedException();
     }
 
+    const permissions = result.roles.permisos_rol.map(
+      (permission) => permission.codigo_permiso,
+    );
     return {
       sessionId: payload.sid,
       user: {
@@ -200,9 +208,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
           code: result.roles.codigo,
           name: result.roles.nombre,
           system: result.roles.es_sistema,
-          permissions: result.roles.permisos_rol.map(
-            (permission) => permission.codigo_permiso,
-          ),
+          permissions,
         },
         branch: result.sucursales
           ? {
@@ -211,6 +217,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
               name: result.sucursales.nombre,
             }
           : null,
+        branchScope: buildBranchScope(result, permissions),
       },
     };
   }

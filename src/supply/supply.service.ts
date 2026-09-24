@@ -12,6 +12,7 @@ import {
 } from '@prisma/client';
 import { AuditService, AuthenticatedAuditEvent } from '../audit/audit.service';
 import { AuthenticatedUser } from '../auth/auth.types';
+import { BranchScope } from '../branch-scope/branch-scope';
 import { assertValidUnitColor } from '../common/unit-colors';
 import { PrismaService } from '../prisma/prisma.service';
 import { normalizeVin, validateVin } from '../inventory/vin';
@@ -70,7 +71,9 @@ export class SupplyService {
       proveedor_id: query.supplierId,
       version_id: query.versionId,
       condicion: query.condition,
-      sucursal_llegada_id: query.arrivalBranchId,
+      sucursal_llegada_id: BranchScope.forActor(actor).where(
+        query.arrivalBranchId,
+      ),
       versiones_vehiculos: query.vehicleType
         ? { modelos_vehiculos: { tipo_vehiculo: query.vehicleType } }
         : undefined,
@@ -105,6 +108,8 @@ export class SupplyService {
   async create(input: CreateSupplyRequestDto, actor: AuthenticatedUser) {
     this.assertOrg(actor, input.organizationId);
     const organizationId = input.organizationId ?? actor.organization.id;
+    const branchScope = BranchScope.forActor(actor);
+    const arrivalBranchId = branchScope.resolveBranchId(input.arrivalBranchId);
     return this.mutate(
       actor,
       'SUPPLY_REQUEST_CREATED',
@@ -112,11 +117,15 @@ export class SupplyService {
       async (tx) => {
         const personalId = await this.personalId(tx, actor, organizationId);
         await this.supplierOr400(tx, input.supplierId, organizationId);
-        await this.branchOr400(tx, input.arrivalBranchId, organizationId);
+        await this.branchOr400(tx, arrivalBranchId, organizationId);
         await this.versionOr400(tx, input.versionId, organizationId);
         if (input.operationId) {
           const operation = await tx.operaciones.findFirst({
-            where: { id: input.operationId, organizacion_id: organizationId },
+            where: {
+              id: input.operationId,
+              organizacion_id: organizationId,
+              sucursal_id: branchScope.where(),
+            },
             select: { id: true },
           });
           if (!operation)
@@ -148,7 +157,7 @@ export class SupplyService {
             disponibilidad_proveedor_id: input.supplierAvailabilityId,
             version_id: input.versionId,
             condicion: input.condition,
-            sucursal_llegada_id: input.arrivalBranchId,
+            sucursal_llegada_id: arrivalBranchId,
             color: input.color?.trim(),
             referencia_proveedor: input.supplierReference?.trim(),
             costo_estimado: input.estimatedCost,
@@ -234,7 +243,7 @@ export class SupplyService {
       async (tx, event) => {
         const locked = await tx.$queryRaw<
           Array<{ id: string }>
-        >`SELECT "id" FROM "public"."solicitudes_abastecimiento" WHERE "id" = CAST(${id} AS uuid) AND (${actor.globalAccess} OR "organizacion_id" = CAST(${actor.organization.id} AS uuid)) FOR UPDATE`;
+        >`SELECT "id" FROM "public"."solicitudes_abastecimiento" WHERE "id" = CAST(${id} AS uuid) AND (${actor.globalAccess} OR "organizacion_id" = CAST(${actor.organization.id} AS uuid)) AND ${BranchScope.forActor(actor).sql(Prisma.sql`"sucursal_llegada_id"`)} FOR UPDATE`;
         if (!locked.length)
           throw new NotFoundException('Supply request not found');
         const current = await this.requestOr404(tx, id, actor);
@@ -481,16 +490,18 @@ export class SupplyService {
     actor: AuthenticatedUser,
     lock = false,
   ) {
+    const branchScope = BranchScope.forActor(actor);
     if (lock) {
       const rows = await tx.$queryRaw<
         Array<{ id: string }>
-      >`SELECT "id" FROM "public"."solicitudes_abastecimiento" WHERE "id" = CAST(${id} AS uuid) AND (${actor.globalAccess} OR "organizacion_id" = CAST(${actor.organization.id} AS uuid)) FOR UPDATE`;
+      >`SELECT "id" FROM "public"."solicitudes_abastecimiento" WHERE "id" = CAST(${id} AS uuid) AND (${actor.globalAccess} OR "organizacion_id" = CAST(${actor.organization.id} AS uuid)) AND ${branchScope.sql(Prisma.sql`"sucursal_llegada_id"`)} FOR UPDATE`;
       if (!rows.length) throw new NotFoundException('Supply request not found');
     }
     const item = await tx.solicitudes_abastecimiento.findFirst({
       where: {
         id,
         organizacion_id: actor.globalAccess ? undefined : actor.organization.id,
+        sucursal_llegada_id: branchScope.where(),
       },
       include: requestInclude,
     });

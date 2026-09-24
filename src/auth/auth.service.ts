@@ -3,6 +3,10 @@ import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { Prisma } from '@prisma/client';
 import { AuditService } from '../audit/audit.service';
+import {
+  branchScopeUserSelect,
+  buildBranchScope,
+} from '../branch-scope/branch-scope';
 import { EnvironmentVariables } from '../config/environment';
 import { apiError } from '../common/api-error';
 import { MailService } from '../mail/mail.service';
@@ -44,6 +48,7 @@ const userForAuthenticationSelect = {
       nombre_completo: true,
       puede_iniciar_sesion: true,
       estado: true,
+      ...branchScopeUserSelect.personal.select,
     },
   },
   roles: {
@@ -742,6 +747,9 @@ export class AuthService {
       throw new UnauthorizedException('Invalid email or password');
     }
 
+    const permissions = user.roles.permisos_rol.map(
+      (permission) => permission.codigo_permiso,
+    );
     return {
       id: user.id,
       email: user.correo,
@@ -759,9 +767,7 @@ export class AuthService {
         code: user.roles.codigo,
         name: user.roles.nombre,
         system: user.roles.es_sistema,
-        permissions: user.roles.permisos_rol.map(
-          (permission) => permission.codigo_permiso,
-        ),
+        permissions,
       },
       branch: user.sucursales
         ? {
@@ -770,6 +776,7 @@ export class AuthService {
             name: user.sucursales.nombre,
           }
         : null,
+      branchScope: buildBranchScope(user, permissions),
     };
   }
 

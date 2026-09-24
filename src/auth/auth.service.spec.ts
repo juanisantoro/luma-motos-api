@@ -161,6 +161,7 @@ describe('AuthService', () => {
           permissions: ['usuarios.consultar', 'usuarios.gestionar'],
         },
         branch: null,
+        branchScope: { allBranches: true, branches: [] },
       },
     });
     expect(signAsync).toHaveBeenCalledWith({

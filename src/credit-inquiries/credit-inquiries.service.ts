@@ -17,6 +17,7 @@ import {
 } from '../audit/audit.service';
 import { PERMISSION_CODES } from '../auth/auth.constants';
 import type { AuthenticatedUser } from '../auth/auth.types';
+import { BranchScope } from '../branch-scope/branch-scope';
 import {
   normalizeClientDocument,
   normalizeClientName,
@@ -111,12 +112,12 @@ export class CreditInquiriesService {
   // filtered to RECHAZADA, and it skips the per-client attemptCounts join
   // that powers the full consultas crediticias screen since the dashboard
   // panel only shows client/entity/resultado.
-  async recent(actor: AuthenticatedUser, branchId: string, limit: number) {
+  async recent(actor: AuthenticatedUser, branches: BranchScope, limit: number) {
     return this.prisma.withTenant(this.scope(actor), (tx) =>
       tx.consultas_crediticias.findMany({
         where: {
           organizacion_id: actor.organization.id,
-          sucursal_id: branchId,
+          sucursal_id: branches.where(),
         },
         select: inquirySelect,
         orderBy: [{ consultado_en: 'desc' }, { id: 'desc' }],

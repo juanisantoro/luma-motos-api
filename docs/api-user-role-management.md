@@ -91,7 +91,7 @@ Requieren `usuarios.consultar` para lectura y `usuarios.gestionar` para mutacion
 | `GET /api/users/:id` | Detalle tenant-scoped |
 | `POST /api/users` | `{email,fullName,organizationId,branchId?,roleCode,globalAccess?,employeeCode?,phone?}` |
 | `PATCH /api/users/:id/access` | `{roleCode?,branchId?: uuid|null,globalAccess?}` |
-| `PATCH /api/users/:id/status` | `{active}` |
+| `PATCH /api/users/:id/status` | `{active}`. Un usuario con la invitación pendiente también se puede reactivar: su primer ingreso sigue exigiendo cambiar la contraseña temporal (o reenviarla si venció) |
 | `POST /api/users/:id/invitation/resend` | Regenera la credencial, invalida la anterior, revoca sesiones y envía un nuevo correo |
 | `POST /api/users/:id/temporary-password` | Alias compatible de reenvío/regeneración |
 | `GET /api/organizations` | Organizaciones accesibles |
@@ -217,3 +217,7 @@ npm run prisma:seed
 ```
 
 En producción el bloque SMTP completo es obligatorio. `DATABASE_URL` debe usar un rol runtime sin `BYPASSRLS`; `DIRECT_URL`, el propietario de migraciones. `USER_TEMPORARY_PASSWORD_TTL_SECONDS` configura la vigencia y `FRONTEND_URL/primer-acceso` se incluye en el correo.
+
+## Alcance por sucursal
+
+Nuevo permiso `sucursales.todas` (seed: ADMINISTRADOR). Login y `GET /api/auth/me` devuelven `user.branchScope = {allBranches, branches:[{id,code,name}]}`, recalculado en cada request desde la sucursal del usuario, la sucursal principal del personal y `acceso_personal_sucursal`. Ver [`api-branch-scope.md`](api-branch-scope.md).

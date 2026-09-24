@@ -10,6 +10,7 @@ import {
 } from '@prisma/client';
 import { AuditService, AuthenticatedAuditEvent } from '../audit/audit.service';
 import type { AuthenticatedUser } from '../auth/auth.types';
+import { BranchScope } from '../branch-scope/branch-scope';
 import { CashService } from '../cash/cash.service';
 import {
   CreateExpenseDto,
@@ -80,7 +81,7 @@ export class ExpensesService {
   // fecha_vencimiento filter (only fecha_generacion).
   async payableInRange(
     actor: AuthenticatedUser,
-    branchId: string,
+    branches: BranchScope,
     from: Date,
     to: Date,
   ) {
@@ -88,7 +89,7 @@ export class ExpensesService {
       const result = await tx.gastos.aggregate({
         where: {
           organizacion_id: actor.organization.id,
-          sucursal_id: branchId,
+          sucursal_id: branches.where(),
           estado_pago: { in: ['PENDIENTE', 'PAGO_PARCIAL', 'VENCIDO'] },
           fecha_vencimiento: { gte: from, lte: to },
         },
@@ -110,7 +111,7 @@ export class ExpensesService {
     const search = query.search?.trim();
     const where: Prisma.gastosWhereInput = {
       organizacion_id: organizationId,
-      sucursal_id: query.branchId,
+      sucursal_id: BranchScope.forActor(actor).where(query.branchId),
       categoria: query.category?.trim(),
       recuperable: query.recoverable,
       fecha_generacion:
@@ -195,6 +196,11 @@ export class ExpensesService {
   async create(input: CreateExpenseDto, actor: AuthenticatedUser) {
     assertOrganization(actor, input.organizationId);
     const organizationId = input.organizationId ?? actor.organization.id;
+    // Organization-level expenses (without branch) are reserved to users with
+    // every branch; a scoped user gets its only branch by default.
+    const branchId = BranchScope.forActor(actor).resolveOptionalBranchId(
+      input.branchId,
+    );
     const total = decimal(input.totalAmount);
     const expenseDate = businessDate(input.expenseDate);
     this.assertExpensePeriod(expenseDate, input.month, input.year);
@@ -212,12 +218,11 @@ export class ExpensesService {
       actor,
       'EXPENSE_CREATED',
       async (tx, event) => {
-        if (input.branchId)
-          await this.cash.branchOr400(tx, input.branchId, organizationId);
+        if (branchId) await this.cash.branchOr400(tx, branchId, organizationId);
         const expense = await tx.gastos.create({
           data: {
             organizacion_id: organizationId,
-            sucursal_id: input.branchId,
+            sucursal_id: branchId,
             fecha_generacion: expenseDate,
             categoria: input.category.trim(),
             referencia_origen: input.reference.trim(),
@@ -250,6 +255,8 @@ export class ExpensesService {
   async update(id: string, input: UpdateExpenseDto, actor: AuthenticatedUser) {
     if (!Object.keys(input).length)
       throw new BadRequestException('At least one editable field is required');
+    if (input.branchId !== undefined)
+      BranchScope.forActor(actor).assert(input.branchId);
     return this.mutate(
       actor,
       'EXPENSE_UPDATED',
@@ -607,18 +614,21 @@ export class ExpensesService {
     actor: AuthenticatedUser,
     lock = false,
   ) {
+    const branchScope = BranchScope.forActor(actor);
     if (lock)
       await tx.$queryRaw`
         SELECT "id"
         FROM "public"."gastos"
         WHERE "id" = CAST(${id} AS uuid)
           AND (${actor.globalAccess} OR "organizacion_id" = CAST(${actor.organization.id} AS uuid))
+          AND ${branchScope.sql(Prisma.sql`"sucursal_id"`)}
         FOR UPDATE
       `;
     const expense = await tx.gastos.findFirst({
       where: {
         id,
         organizacion_id: actor.globalAccess ? undefined : actor.organization.id,
+        sucursal_id: branchScope.where(),
       },
       include: expenseInclude,
     });

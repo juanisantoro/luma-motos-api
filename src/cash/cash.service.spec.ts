@@ -29,7 +29,7 @@ describe('CashService', () => {
       code: 'ADMINISTRADOR',
       name: 'Administrador',
       system: true,
-      permissions: ['caja.transferir', 'caja.reversar'],
+      permissions: ['caja.transferir', 'caja.reversar', 'sucursales.todas'],
     },
     branch: null,
   };

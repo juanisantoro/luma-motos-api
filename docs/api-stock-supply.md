@@ -197,3 +197,7 @@ same serialized shapes with `replayed:true`; a different normalized VIN returns
 409 `VIN conflicts with the completed supply reception`. Supply list/detail
 responses also expose `receivedUnit:null|{id,vin,chassis,inventoryStatus,
 branchId}`.
+
+## Alcance por sucursal
+
+Unidades, movimientos y pedidos de abastecimiento se filtran por las sucursales del usuario. `branchId` (unidades) y `arrivalBranchId` (abastecimiento) son opcionales en el alta cuando el usuario tiene una sola sucursal. `GET /inventory/branches` devuelve sólo las sucursales del alcance con `inScope`; `includeOutOfScope=true` devuelve todas las activas (destino de traslado). Fuera del alcance: `403 BRANCH_OUT_OF_SCOPE` para `branchId` enviados y `404` para registros existentes. Ver [`api-branch-scope.md`](api-branch-scope.md).

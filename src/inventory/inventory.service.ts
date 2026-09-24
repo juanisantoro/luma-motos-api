@@ -13,6 +13,7 @@ import {
 } from '@prisma/client';
 import { AuditService, AuthenticatedAuditEvent } from '../audit/audit.service';
 import { AuthenticatedUser } from '../auth/auth.types';
+import { BranchScope } from '../branch-scope/branch-scope';
 import { CatalogService } from '../catalog/catalog.service';
 import { assertValidUnitColor } from '../common/unit-colors';
 import { PrismaService } from '../prisma/prisma.service';
@@ -63,7 +64,7 @@ export class InventoryService {
       organizacion_id: organizationId,
       condicion: query.condition,
       estado_inventario: query.inventoryStatus,
-      sucursal_id: query.branchId,
+      sucursal_id: BranchScope.forActor(actor).where(query.branchId),
       version_id: query.versionId,
       proveedor_id: query.supplierId,
       versiones_vehiculos: {
@@ -129,7 +130,7 @@ export class InventoryService {
   // could in principle have many out-of-stock models.
   async zeroStockModels(
     actor: AuthenticatedUser,
-    branchId: string,
+    branches: BranchScope,
     limit = 20,
   ) {
     return this.prisma.withTenant(this.scope(actor), async (tx) => {
@@ -160,7 +161,7 @@ export class InventoryService {
         by: ['version_id'],
         where: {
           organizacion_id: actor.organization.id,
-          sucursal_id: branchId,
+          sucursal_id: branches.where(),
           estado_inventario: luma_estado_inventario.EN_STOCK,
         },
         _count: { _all: true },
@@ -189,11 +190,15 @@ export class InventoryService {
   async create(input: CreateInventoryUnitDto, actor: AuthenticatedUser) {
     this.assertOrganization(actor, input.organizationId);
     const organizationId = input.organizationId ?? actor.organization.id;
+    const branchId = BranchScope.forActor(actor).resolveBranchId(
+      input.branchId,
+    );
     return this.mutate(
       actor,
       'INVENTORY_UNIT_CREATED',
       'unidades_vehiculos',
-      async (tx) => this.createUnit(tx, input, actor, organizationId),
+      async (tx) =>
+        this.createUnit(tx, { ...input, branchId }, actor, organizationId),
       undefined,
       organizationId,
     );
@@ -216,13 +221,18 @@ export class InventoryService {
       );
     const targetOrganizationId =
       organizationIds.size === 1 ? [...organizationIds][0] : undefined;
+    const branchScope = BranchScope.forActor(actor);
+    const units = input.units.map((unit) => ({
+      ...unit,
+      branchId: branchScope.resolveBranchId(unit.branchId),
+    }));
     return this.mutate(
       actor,
       'INVENTORY_UNITS_BULK_CREATED',
       'unidades_vehiculos',
       async (tx) => {
         const items = [];
-        for (const unit of input.units) {
+        for (const unit of units) {
           items.push(
             await this.createUnit(
               tx,
@@ -253,6 +263,9 @@ export class InventoryService {
         'Bulk inventory units must have unique VINs',
       );
     const organizationId = input.organizationId ?? actor.organization.id;
+    const branchId = BranchScope.forActor(actor).resolveBranchId(
+      input.branchId,
+    );
     const catalog = this.catalog;
     if (!catalog)
       throw new Error('Catalog provisioning service is unavailable');
@@ -287,7 +300,7 @@ export class InventoryService {
                 !requested ||
                 unit.organizacion_id !== organizationId ||
                 unit.version_id !== version.id ||
-                unit.sucursal_id !== input.branchId ||
+                unit.sucursal_id !== branchId ||
                 unit.condicion !== input.condition ||
                 unit.proveedor_id !== (input.supplierId ?? null) ||
                 unit.origen_adquisicion !== input.acquisitionOrigin ||
@@ -341,7 +354,7 @@ export class InventoryService {
                 ...unit,
                 versionId: version.id,
                 condition: input.condition,
-                branchId: input.branchId,
+                branchId,
                 supplierId: input.supplierId,
                 acquisitionOrigin: input.acquisitionOrigin,
                 purchaseCost: input.purchaseCost,
@@ -535,10 +548,15 @@ export class InventoryService {
     const organizationId =
       query.organizationId ??
       (actor.globalAccess ? undefined : actor.organization.id);
+    const branchScope = BranchScope.forActor(actor);
     return this.prisma.withTenant(this.scope(actor), (tx) =>
       tx.sucursales
         .findMany({
-          where: { activa: true, organizacion_id: organizationId },
+          where: {
+            activa: true,
+            organizacion_id: organizationId,
+            id: query.includeOutOfScope ? undefined : branchScope.where(),
+          },
           select: {
             id: true,
             codigo: true,
@@ -553,6 +571,7 @@ export class InventoryService {
             code: row.codigo,
             name: row.nombre,
             organizationId: row.organizacion_id,
+            inScope: branchScope.includes(row.id),
           })),
         ),
     );
@@ -567,7 +586,7 @@ export class InventoryService {
   }
   private async createUnit(
     tx: Prisma.TransactionClient,
-    input: CreateInventoryUnitDto,
+    input: CreateInventoryUnitDto & { branchId: string },
     actor: AuthenticatedUser,
     organizationId: string,
   ) {
@@ -622,16 +641,18 @@ export class InventoryService {
     actor: AuthenticatedUser,
     lock = false,
   ) {
+    const branchScope = BranchScope.forActor(actor);
     if (lock) {
       const rows = await tx.$queryRaw<
         Array<{ id: string }>
-      >`SELECT "id" FROM "public"."unidades_vehiculos" WHERE "id" = CAST(${id} AS uuid) AND (${actor.globalAccess} OR "organizacion_id" = CAST(${actor.organization.id} AS uuid)) FOR UPDATE`;
+      >`SELECT "id" FROM "public"."unidades_vehiculos" WHERE "id" = CAST(${id} AS uuid) AND (${actor.globalAccess} OR "organizacion_id" = CAST(${actor.organization.id} AS uuid)) AND ${branchScope.sql(Prisma.sql`"sucursal_id"`)} FOR UPDATE`;
       if (!rows.length) throw new NotFoundException('Inventory unit not found');
     }
     const row = await tx.unidades_vehiculos.findFirst({
       where: {
         id,
         organizacion_id: actor.globalAccess ? undefined : actor.organization.id,
+        sucursal_id: branchScope.where(),
       },
       include: unitInclude,
     });

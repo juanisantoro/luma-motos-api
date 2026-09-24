@@ -170,3 +170,7 @@ branches:[{id,code,name}]}`; `branch` es la sucursal principal y `branches`
   devuelve `{id,legalName}` para financieras activas.
 - `GET /api/sales/operations/price-policy` requiere `branchId`, `versionId` y
   `vehicleType`; acepta `condition`, `operationDate` y `organizationId`.
+
+## Alcance por sucursal
+
+Listados, detalle, aprobaciones, altas, ediciones y lookups de vendedores/contactos quedan acotados a las sucursales del usuario (`sucursales.todas` o `acceso_global` ven todas). `branchId` fuera del alcance responde `403 BRANCH_OUT_OF_SCOPE`; una operación de otra sucursal responde `404`. En `POST /sales/operations` `branchId` es opcional cuando el usuario tiene una sola sucursal: el backend la asume. Ver [`api-branch-scope.md`](api-branch-scope.md).

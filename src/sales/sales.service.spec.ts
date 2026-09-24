@@ -28,7 +28,7 @@ describe('SalesService', () => {
       code: 'ADMINISTRADOR',
       name: 'Administrador',
       system: true,
-      permissions: [],
+      permissions: ['sucursales.todas'],
     },
     branch: null,
   };

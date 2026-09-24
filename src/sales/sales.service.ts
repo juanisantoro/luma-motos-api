@@ -16,6 +16,7 @@ import {
   tipo_movimiento_inventario_luma,
 } from '@prisma/client';
 import { AuditService, AuthenticatedAuditEvent } from '../audit/audit.service';
+import { BranchScope } from '../branch-scope/branch-scope';
 import { ROLE_CODES } from '../auth/auth.constants';
 import type { AuthenticatedUser } from '../auth/auth.types';
 import {
@@ -168,6 +169,7 @@ export class SalesService {
     const organizationId =
       query.organizationId ??
       (actor.globalAccess ? undefined : actor.organization.id);
+    const branchFilter = BranchScope.forActor(actor).where(query.branchId);
     const sellerId =
       query.mine || sellerRestricted
         ? await this.prisma.withTenant(this.scope(actor), (tx) =>
@@ -184,7 +186,7 @@ export class SalesService {
     const where: Prisma.operacionesWhereInput = {
       organizacion_id: organizationId,
       estado_operacion: query.status,
-      sucursal_id: query.branchId,
+      sucursal_id: branchFilter,
       cliente_id: query.clientId,
       version_id: query.versionId,
       versiones_vehiculos: {
@@ -289,7 +291,7 @@ export class SalesService {
       const rows = await tx.operaciones.findMany({
         where: {
           organizacion_id: actor.organization.id,
-          sucursal_id: opts.branchId,
+          sucursal_id: BranchScope.forActor(actor).where(opts.branchId),
           fecha_operacion: { gte: range.from, lte: range.to },
           asignaciones_personal_operacion: opts.sellerId
             ? {
@@ -341,11 +343,13 @@ export class SalesService {
   // reads correctly whether the organization has one branch or many.
   async salesByBranch(actor: AuthenticatedUser, period: string) {
     const range = commissionPeriod(period);
+    const branchFilter = BranchScope.forActor(actor).where();
     return this.prisma.withTenant(this.scope(actor), async (tx) => {
       const [rows, branches] = await Promise.all([
         tx.operaciones.findMany({
           where: {
             organizacion_id: actor.organization.id,
+            sucursal_id: branchFilter,
             fecha_operacion: { gte: range.from, lte: range.to },
           },
           select: {
@@ -355,7 +359,11 @@ export class SalesService {
           },
         }),
         tx.sucursales.findMany({
-          where: { organizacion_id: actor.organization.id, activa: true },
+          where: {
+            organizacion_id: actor.organization.id,
+            activa: true,
+            id: branchFilter,
+          },
           select: { id: true, nombre: true },
           orderBy: { nombre: 'asc' },
         }),
@@ -396,7 +404,7 @@ export class SalesService {
       const rows = await tx.operaciones.findMany({
         where: {
           organizacion_id: actor.organization.id,
-          sucursal_id: opts.branchId,
+          sucursal_id: BranchScope.forActor(actor).where(opts.branchId),
           fecha_operacion: { gte: range.from, lte: range.to },
           asignaciones_personal_operacion: opts.sellerId
             ? {
@@ -480,6 +488,7 @@ export class SalesService {
         tx.operaciones.findMany({
           where: {
             organizacion_id: actor.organization.id,
+            sucursal_id: BranchScope.forActor(actor).where(),
             estado_operacion: {
               in: [
                 luma_estado_operacion.RECHAZADA,
@@ -505,7 +514,10 @@ export class SalesService {
             organizacion_id: actor.organization.id,
             estado: estado_reserva_luma.ACTIVO,
             vence_en: { lte: new Date(Date.now() + 48 * 60 * 60 * 1000) },
-            operaciones: { asignaciones_personal_operacion: sellerFilter },
+            operaciones: {
+              sucursal_id: BranchScope.forActor(actor).where(),
+              asignaciones_personal_operacion: sellerFilter,
+            },
           },
           select: {
             vence_en: true,
@@ -705,6 +717,9 @@ export class SalesService {
       );
     const organizationId = actor.organization.id;
     const search = query.search?.trim();
+    // Default lookup: personnel of the branches the actor can operate. An
+    // explicit branchId must itself be inside that scope.
+    const branchFilter = BranchScope.forActor(actor).where(query.branchId);
     return this.prisma.withTenant(this.scope(actor), async (tx) => {
       if (query.branchId)
         await this.branchOr400(tx, query.branchId, organizationId);
@@ -718,12 +733,12 @@ export class SalesService {
                 codigo: { in: [ROLE_CODES.VENDEDOR, ROLE_CODES.CALLCENTER] },
               }
             : undefined,
-        OR: query.branchId
+        OR: branchFilter
           ? [
-              { sucursal_principal_id: query.branchId },
+              { sucursal_principal_id: branchFilter },
               {
                 acceso_personal_sucursal: {
-                  some: { sucursal_id: query.branchId },
+                  some: { sucursal_id: branchFilter },
                 },
               },
             ]
@@ -817,6 +832,7 @@ export class SalesService {
   async pricePolicy(query: SalesPricePolicyQueryDto, actor: AuthenticatedUser) {
     this.assertOrganizationSelection(actor, query.organizationId);
     const organizationId = query.organizationId ?? actor.organization.id;
+    BranchScope.forActor(actor).assert(query.branchId);
     return this.prisma.withTenant(this.scope(actor), async (tx) => {
       await this.branchOr400(tx, query.branchId, organizationId);
       await this.versionOr400(
@@ -859,11 +875,14 @@ export class SalesService {
       input.agreedPrice,
     );
     const organizationId = input.organizationId ?? actor.organization.id;
+    const branchId = BranchScope.forActor(actor).resolveBranchId(
+      input.branchId,
+    );
     return this.mutate(
       actor,
       'SALES_OPERATION_CREATED',
       async (tx) => {
-        await this.branchOr400(tx, input.branchId, organizationId);
+        await this.branchOr400(tx, branchId, organizationId);
         const clientId = await this.resolveClient(tx, input, organizationId);
         await this.versionOr400(
           tx,
@@ -909,13 +928,13 @@ export class SalesService {
         const policy = await this.pricePolicyOr400(
           tx,
           input.versionId,
-          input.branchId,
+          branchId,
           organizationId,
           input.operationDate ?? new Date(),
         );
         const operation = await tx.operaciones.create({
           data: {
-            sucursal_id: input.branchId,
+            sucursal_id: branchId,
             cliente_id: clientId,
             version_id: input.versionId,
             condicion: input.condition,
@@ -1008,6 +1027,7 @@ export class SalesService {
       throw new ForbiddenException(
         'Sellers cannot assign operations to another seller',
       );
+    if (input.branchId) BranchScope.forActor(actor).assert(input.branchId);
     return this.mutate(
       actor,
       'SALES_OPERATION_UPDATED',
@@ -2424,12 +2444,14 @@ export class SalesService {
     lock = false,
   ) {
     const isSellerLikeActor = this.isSellerLikeRole(actor.role.code);
+    const branchScope = BranchScope.forActor(actor);
     if (lock) {
       const rows = await tx.$queryRaw<Array<{ id: string }>>`
         SELECT "id"
         FROM "public"."operaciones"
         WHERE "id" = CAST(${id} AS uuid)
           AND (${actor.globalAccess} OR "organizacion_id" = CAST(${actor.organization.id} AS uuid))
+          AND ${branchScope.sql(Prisma.sql`"sucursal_id"`)}
           AND (
             ${!isSellerLikeActor}
             OR EXISTS (
@@ -2453,6 +2475,7 @@ export class SalesService {
       where: {
         id,
         organizacion_id: actor.globalAccess ? undefined : actor.organization.id,
+        sucursal_id: branchScope.where(),
         asignaciones_personal_operacion: isSellerLikeActor
           ? {
               some: {
