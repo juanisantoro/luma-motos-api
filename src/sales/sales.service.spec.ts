@@ -33,7 +33,22 @@ describe('SalesService', () => {
     branch: null,
   };
 
-  function service(transaction: Prisma.TransactionClient) {
+  // Presenting an operation also reads patent payments (pagos_vehiculo);
+  // tests that don't care about licensing get empty defaults.
+  function withLicensingDefaults(transaction: Prisma.TransactionClient) {
+    return Object.assign(
+      {
+        conceptos_pago_vehiculo: {
+          findUnique: jest.fn().mockResolvedValue(null),
+        },
+        pagos_vehiculo: { findMany: jest.fn().mockResolvedValue([]) },
+      },
+      transaction,
+    ) as Prisma.TransactionClient;
+  }
+
+  function service(rawTransaction: Prisma.TransactionClient) {
+    const transaction = withLicensingDefaults(rawTransaction);
     const execute = jest
       .fn<
         Promise<unknown>,
@@ -49,7 +64,8 @@ describe('SalesService', () => {
     );
   }
 
-  function queryService(transaction: Prisma.TransactionClient) {
+  function queryService(rawTransaction: Prisma.TransactionClient) {
+    const transaction = withLicensingDefaults(rawTransaction);
     return new SalesService(
       {
         withTenant: jest
@@ -280,6 +296,7 @@ describe('SalesService', () => {
           supplierAvailabilityId: availabilityId,
           agreedPrice: 100,
           paymentPlatform: 'EFECTIVO',
+          licensingMode: 'BONIFICADA',
           submit: false,
         },
         actor,
@@ -291,6 +308,9 @@ describe('SalesService', () => {
     });
     expect(operationCreate.mock.calls[0]?.[0].data).toMatchObject({
       cliente_id: clientId,
+      incluye_casco: false,
+      modalidad_patentamiento: 'BONIFICADA',
+      importe_patentamiento: undefined,
     });
   });
 
@@ -322,6 +342,7 @@ describe('SalesService', () => {
           condition: 'NUEVO',
           agreedPrice: 100,
           paymentPlatform: 'EFECTIVO',
+          licensingMode: 'BONIFICADA',
           submit: false,
         },
         actor,
@@ -1004,6 +1025,449 @@ describe('SalesService', () => {
         // support in the session report.
         rol_asignacion: { in: ['VENDEDOR', 'CALLCENTER'] },
       },
+    });
+  });
+  describe('helmet and licensing', () => {
+    function licensedOperation(status: string, overrides = {}) {
+      return {
+        ...completeOperation(status),
+        numero_boleto: 'B-0001',
+        incluye_casco: true,
+        modalidad_patentamiento: 'PAGA_CLIENTE',
+        importe_patentamiento: new Prisma.Decimal(85000),
+        patente_estimada_desde: new Date('2026-09-11T00:00:00.000Z'),
+        patente_estimada_hasta: new Date('2026-09-18T00:00:00.000Z'),
+        ingresos_financieros: [],
+        ...overrides,
+      };
+    }
+
+    function createTransaction(
+      operationCreate: jest.Mock,
+      created: ReturnType<typeof completeOperation>,
+    ) {
+      return {
+        $queryRaw: jest.fn().mockResolvedValue([]),
+        $executeRaw: jest.fn().mockResolvedValue(1),
+        sucursales: {
+          findFirst: jest.fn().mockResolvedValue({ id: 'branch' }),
+        },
+        clientes: {
+          findFirst: jest.fn().mockResolvedValue({
+            id: '904e2a34-8285-48fa-b64c-24a80d94f9cb',
+            activo: true,
+          }),
+        },
+        versiones_vehiculos: {
+          findUnique: jest.fn().mockResolvedValue({
+            alcance: 'GLOBAL',
+            organizacion_propietaria_id: null,
+            catalogo_organizaciones: [],
+            modelos_vehiculos: { tipo_vehiculo: 'MOTO' },
+          }),
+        },
+        personal: {
+          findFirst: jest.fn().mockResolvedValue({
+            id: '11b5de9b-9bc2-4777-bb78-9c7267b73aca',
+          }),
+        },
+        politicas_precios_vehiculos: {
+          findFirst: jest.fn().mockResolvedValue({
+            precio_lista: new Prisma.Decimal(100),
+            precio_minimo: new Prisma.Decimal(90),
+            moneda: 'ARS',
+          }),
+        },
+        operaciones: {
+          create: operationCreate,
+          findFirst: jest.fn().mockResolvedValue(created),
+        },
+        asignaciones_personal_operacion: {
+          create: jest.fn().mockResolvedValue({}),
+        },
+        disponibilidad_proveedor: {
+          findFirst: jest.fn().mockResolvedValue({
+            id: availabilityId,
+            proveedor_id: '0a44e64e-351e-4d9b-9150-5f20e34e4d61',
+            vence_en: null,
+            cantidad_informada: 1,
+          }),
+        },
+        proveedores: {
+          findFirst: jest.fn().mockResolvedValue({
+            id: '0a44e64e-351e-4d9b-9150-5f20e34e4d61',
+          }),
+        },
+        reservas_stock: {
+          count: jest.fn().mockResolvedValue(0),
+          create: jest.fn().mockResolvedValue({}),
+        },
+        solicitudes_abastecimiento: {
+          create: jest.fn().mockResolvedValue({}),
+        },
+      } as unknown as Prisma.TransactionClient;
+    }
+
+    const baseCreate = {
+      vehicleType: 'MOTO' as const,
+      branchId: '84e778cc-7616-4792-b6db-d89f100bb6f1',
+      clientId: '904e2a34-8285-48fa-b64c-24a80d94f9cb',
+      versionId: '4de88c4c-3382-4f9b-ae60-98147159c977',
+      condition: 'NUEVO' as const,
+      supplierAvailabilityId: availabilityId,
+      agreedPrice: 100,
+      paymentPlatform: 'EFECTIVO' as const,
+      submit: false,
+    };
+
+    it('persists helmet, licensing mode, amount and the estimated window on create', async () => {
+      const operationCreate = jest
+        .fn<Promise<unknown>, [Prisma.operacionesCreateArgs]>()
+        .mockResolvedValue(operation('BORRADOR'));
+      const created = licensedOperation('BORRADOR');
+
+      await expect(
+        service(createTransaction(operationCreate, created)).create(
+          {
+            ...baseCreate,
+            // Friday: +10 business days = Fri 11/09, +15 = Fri 18/09.
+            operationDate: '2026-08-28',
+            includesHelmet: true,
+            licensingMode: 'PAGA_CLIENTE',
+            licensingAmount: 85000,
+            ticketNumber: ' B-0001 ',
+          },
+          actor,
+        ),
+      ).resolves.toMatchObject({
+        ticketNumber: 'B-0001',
+        includesHelmet: true,
+        licensing: {
+          mode: 'PAGA_CLIENTE',
+          amount: '85000',
+          estimatedFrom: '2026-09-11',
+          estimatedTo: '2026-09-18',
+          status: 'COBRO_PENDIENTE',
+        },
+      });
+      expect(operationCreate.mock.calls[0]?.[0].data).toMatchObject({
+        numero_boleto: 'B-0001',
+        incluye_casco: true,
+        modalidad_patentamiento: 'PAGA_CLIENTE',
+        importe_patentamiento: 85000,
+        patente_estimada_desde: new Date('2026-09-11T00:00:00.000Z'),
+        patente_estimada_hasta: new Date('2026-09-18T00:00:00.000Z'),
+      });
+    });
+
+    it('rejects a licensing amount when the patent is bonified', async () => {
+      const operationCreate = jest.fn();
+      await expect(
+        service(
+          createTransaction(operationCreate, licensedOperation('BORRADOR')),
+        ).create(
+          {
+            ...baseCreate,
+            licensingMode: 'BONIFICADA',
+            licensingAmount: 1000,
+          },
+          actor,
+        ),
+      ).rejects.toMatchObject({
+        response: { code: 'LICENSING_AMOUNT_NOT_ALLOWED' },
+      });
+      expect(operationCreate).not.toHaveBeenCalled();
+    });
+
+    it('recomputes the estimated window when the operation date changes', async () => {
+      const current = licensedOperation('BORRADOR');
+      const update = jest
+        .fn<Promise<unknown>, [Prisma.operacionesUpdateArgs]>()
+        .mockResolvedValue({});
+      const transaction = {
+        $queryRaw: jest.fn().mockResolvedValue([{ id: operationId }]),
+        operaciones: {
+          findFirst: jest.fn().mockResolvedValue(current),
+          update,
+        },
+        reservas_stock: { findFirst: jest.fn().mockResolvedValue(null) },
+      } as unknown as Prisma.TransactionClient;
+
+      await service(transaction).update(
+        operationId,
+        { expectedVersion: 2, operationDate: '2026-09-07' },
+        actor,
+      );
+      expect(update.mock.calls[0]?.[0].data).toMatchObject({
+        patente_estimada_desde: new Date('2026-09-21T00:00:00.000Z'),
+        patente_estimada_hasta: new Date('2026-09-28T00:00:00.000Z'),
+      });
+    });
+
+    it('clears the amount when PATCH switches the draft to BONIFICADA', async () => {
+      const current = licensedOperation('BORRADOR');
+      const update = jest
+        .fn<Promise<unknown>, [Prisma.operacionesUpdateArgs]>()
+        .mockResolvedValue({});
+      const transaction = {
+        $queryRaw: jest.fn().mockResolvedValue([{ id: operationId }]),
+        operaciones: {
+          findFirst: jest.fn().mockResolvedValue(current),
+          update,
+        },
+        reservas_stock: { findFirst: jest.fn().mockResolvedValue(null) },
+      } as unknown as Prisma.TransactionClient;
+
+      await service(transaction).update(
+        operationId,
+        {
+          expectedVersion: 2,
+          licensingMode: 'BONIFICADA',
+          includesHelmet: false,
+        },
+        actor,
+      );
+      expect(update.mock.calls[0]?.[0].data).toMatchObject({
+        modalidad_patentamiento: 'BONIFICADA',
+        importe_patentamiento: null,
+        incluye_casco: false,
+      });
+    });
+
+    it('does not let PATCH change licensing on an approved operation', async () => {
+      const transaction = {
+        $queryRaw: jest.fn().mockResolvedValue([{ id: operationId }]),
+        operaciones: {
+          findFirst: jest.fn().mockResolvedValue(licensedOperation('APROBADA')),
+        },
+      } as unknown as Prisma.TransactionClient;
+
+      await expect(
+        service(transaction).update(
+          operationId,
+          { expectedVersion: 2, licensingMode: 'BONIFICADA' },
+          actor,
+        ),
+      ).rejects.toThrow(ConflictException);
+    });
+
+    it('manages licensing of an approved operation without touching its status', async () => {
+      const current = licensedOperation('APROBADA', {
+        modalidad_patentamiento: 'BONIFICADA',
+        importe_patentamiento: null,
+        patente_estimada_desde: null,
+        patente_estimada_hasta: null,
+      });
+      const updated = licensedOperation('APROBADA', { version_fila: 3 });
+      const update = jest
+        .fn<Promise<unknown>, [Prisma.operacionesUpdateArgs]>()
+        .mockResolvedValue({});
+      const transaction = {
+        $queryRaw: jest.fn().mockResolvedValue([{ id: operationId }]),
+        operaciones: {
+          findFirst: jest
+            .fn()
+            .mockResolvedValueOnce(current)
+            .mockResolvedValueOnce(updated),
+          update,
+        },
+      } as unknown as Prisma.TransactionClient;
+
+      await expect(
+        service(transaction).updateLicensing(
+          operationId,
+          { expectedVersion: 2, mode: 'PAGA_CLIENTE', amount: 85000 },
+          actor,
+        ),
+      ).resolves.toMatchObject({
+        status: 'APROBADA',
+        licensing: { mode: 'PAGA_CLIENTE', amount: '85000' },
+      });
+      const data = update.mock.calls[0]?.[0].data;
+      expect(data).toMatchObject({
+        modalidad_patentamiento: 'PAGA_CLIENTE',
+        importe_patentamiento: 85000,
+        // Historical operation without a window gets one from its date.
+        patente_estimada_desde: new Date('2026-09-11T00:00:00.000Z'),
+        patente_estimada_hasta: new Date('2026-09-18T00:00:00.000Z'),
+      });
+      expect(data).not.toHaveProperty('estado_operacion');
+    });
+
+    it('rejects stale versions and cancelled operations when managing licensing', async () => {
+      const stale = {
+        $queryRaw: jest.fn().mockResolvedValue([{ id: operationId }]),
+        operaciones: {
+          findFirst: jest.fn().mockResolvedValue(licensedOperation('APROBADA')),
+        },
+      } as unknown as Prisma.TransactionClient;
+      await expect(
+        service(stale).updateLicensing(
+          operationId,
+          { expectedVersion: 1, mode: 'BONIFICADA' },
+          actor,
+        ),
+      ).rejects.toThrow(ConflictException);
+
+      const cancelled = {
+        $queryRaw: jest.fn().mockResolvedValue([{ id: operationId }]),
+        operaciones: {
+          findFirst: jest
+            .fn()
+            .mockResolvedValue(licensedOperation('CANCELADA')),
+        },
+      } as unknown as Prisma.TransactionClient;
+      await expect(
+        service(cancelled).updateLicensing(
+          operationId,
+          { expectedVersion: 2, mode: 'BONIFICADA' },
+          actor,
+        ),
+      ).rejects.toMatchObject({
+        response: { code: 'LICENSING_OPERATION_CANCELLED' },
+      });
+    });
+
+    it('blocks BONIFICADA once a patent collection from the client exists', async () => {
+      const transaction = {
+        $queryRaw: jest.fn().mockResolvedValue([{ id: operationId }]),
+        operaciones: {
+          findFirst: jest.fn().mockResolvedValue(
+            licensedOperation('APROBADA', {
+              ingresos_financieros: [
+                {
+                  id: 'income-1',
+                  importe: new Prisma.Decimal(85000),
+                  estado_registro: 'PENDIENTE',
+                  fecha_ingreso: new Date('2026-09-15T00:00:00.000Z'),
+                },
+              ],
+            }),
+          ),
+          update: jest.fn(),
+        },
+      } as unknown as Prisma.TransactionClient;
+
+      await expect(
+        service(transaction).updateLicensing(
+          operationId,
+          { expectedVersion: 2, mode: 'BONIFICADA' },
+          actor,
+        ),
+      ).rejects.toMatchObject({
+        response: {
+          code: 'LICENSING_COLLECTION_REGISTERED',
+          details: { incomeIds: ['income-1'] },
+        },
+      });
+    });
+
+    it('reports collection and payment status from linked incomes and vehicle payments', async () => {
+      const bonified = licensedOperation('APROBADA', {
+        id: operationId,
+        modalidad_patentamiento: 'BONIFICADA',
+        importe_patentamiento: null,
+      });
+      const paymentsFindMany = jest
+        .fn<Promise<unknown[]>, [Prisma.pagos_vehiculoFindManyArgs]>()
+        .mockResolvedValue([
+          {
+            id: 'payment-1',
+            operacion_id: operationId,
+            importe: new Prisma.Decimal(60000),
+            estado: 'PAGADO',
+            fecha: new Date('2026-09-12T00:00:00.000Z'),
+          },
+        ]);
+      const transaction = {
+        operaciones: {
+          count: jest.fn().mockResolvedValue(1),
+          findMany: jest.fn().mockResolvedValue([bonified]),
+        },
+        conceptos_pago_vehiculo: {
+          findUnique: jest.fn().mockResolvedValue({ id: 'concept-patente' }),
+        },
+        pagos_vehiculo: { findMany: paymentsFindMany },
+      } as unknown as Prisma.TransactionClient;
+
+      const result = await queryService(transaction).findAll(
+        { vehicleType: 'MOTO', page: 1, limit: 50 },
+        actor,
+      );
+      expect(result.items[0]).toMatchObject({
+        ticketNumber: 'B-0001',
+        licensing: {
+          mode: 'BONIFICADA',
+          status: 'PAGADO',
+          payment: {
+            status: 'PAGADO',
+            amount: '60000.00',
+            paymentIds: ['payment-1'],
+          },
+          collection: { status: 'SIN_REGISTRAR' },
+        },
+      });
+      expect(paymentsFindMany.mock.calls[0]?.[0].where).toEqual({
+        concepto_id: 'concept-patente',
+        operacion_id: { in: [operationId] },
+      });
+    });
+
+    it('filters by licensing mode, undefined mode, overdue window and ticket number', async () => {
+      const findMany = jest
+        .fn<Promise<unknown[]>, [Prisma.operacionesFindManyArgs]>()
+        .mockResolvedValue([]);
+      const transaction = {
+        operaciones: { count: jest.fn().mockResolvedValue(0), findMany },
+      } as unknown as Prisma.TransactionClient;
+      const query = queryService(transaction);
+
+      await query.findAll(
+        {
+          vehicleType: 'MOTO',
+          licensingMode: 'PAGA_CLIENTE',
+          search: 'B-0001',
+          page: 1,
+          limit: 50,
+        },
+        actor,
+      );
+      const byMode = findMany.mock.calls[0]?.[0].where;
+      expect(byMode?.modalidad_patentamiento).toBe('PAGA_CLIENTE');
+      expect(byMode?.OR).toContainEqual({
+        numero_boleto: { contains: 'B-0001', mode: 'insensitive' },
+      });
+
+      await query.findAll(
+        {
+          vehicleType: 'MOTO',
+          licensingMode: 'SIN_DEFINIR',
+          page: 1,
+          limit: 50,
+        },
+        actor,
+      );
+      expect(
+        findMany.mock.calls[1]?.[0].where?.modalidad_patentamiento,
+      ).toBeNull();
+
+      await query.findAll(
+        { vehicleType: 'MOTO', licensingOverdue: true, page: 1, limit: 50 },
+        actor,
+      );
+      const overdue = (
+        findMany.mock.calls[2]?.[0].where?.AND as Prisma.operacionesWhereInput[]
+      )[0];
+      expect(overdue).toMatchObject({
+        estado_operacion: {
+          in: ['PENDIENTE_APROBACION', 'APROBADA', 'CERRADA'],
+        },
+        patente_estimada_hasta: { lt: expect.any(Date) as Date },
+        OR: [
+          { unidad_vehiculo_id: null },
+          { unidades_vehiculos: { patente: null } },
+        ],
+      });
     });
   });
 });

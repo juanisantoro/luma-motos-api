@@ -38,6 +38,7 @@ export const PERMISSION_CODES = {
   SALES_APPROVE: 'ventas.aprobar',
   SALES_CANCEL: 'ventas.cancelar',
   SALES_CLOSE: 'ventas.cerrar',
+  SALES_LICENSING_MANAGE: 'ventas.patentamiento.gestionar',
   STOCK_RESERVATIONS_MANAGE: 'reservas_stock.gestionar',
   PURCHASES_READ: 'compras.consultar',
   PURCHASES_MANAGE: 'compras.gestionar',

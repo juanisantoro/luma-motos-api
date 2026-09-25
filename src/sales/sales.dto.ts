@@ -7,6 +7,7 @@ import {
   IsBoolean,
   IsDateString,
   IsEnum,
+  IsIn,
   IsInt,
   IsNotEmpty,
   IsNumber,
@@ -25,6 +26,7 @@ import {
   deuda_operacion_luma,
   luma_estado_entrega,
   luma_estado_operacion,
+  modalidad_patentamiento_luma,
   plataforma_pago_luma,
   tipo_componente_pago_luma,
   tipo_documento_luma,
@@ -36,6 +38,19 @@ export enum SalesAssignmentRole {
   CALLCENTER = 'CALLCENTER',
   CONTACTO = 'CONTACTO',
 }
+
+// "SIN_DEFINIR" filters historical operations created before the licensing
+// mode existed (modalidad_patentamiento IS NULL).
+export const SALES_LICENSING_MODE_FILTERS = [
+  modalidad_patentamiento_luma.BONIFICADA,
+  modalidad_patentamiento_luma.PAGA_CLIENTE,
+  'SIN_DEFINIR',
+] as const;
+export type SalesLicensingModeFilter =
+  (typeof SALES_LICENSING_MODE_FILTERS)[number];
+
+const toBoolean = ({ value }: { value: unknown }) =>
+  value === 'true' ? true : value === 'false' ? false : value;
 
 export class SalesOperationQueryDto {
   @IsEnum(tipo_vehiculo_luma) vehicleType!: tipo_vehiculo_luma;
@@ -51,6 +66,10 @@ export class SalesOperationQueryDto {
   mine?: boolean;
   @IsOptional() @IsUUID() versionId?: string;
   @IsOptional() @IsString() @MaxLength(80) search?: string;
+  @IsOptional()
+  @IsIn(SALES_LICENSING_MODE_FILTERS)
+  licensingMode?: SalesLicensingModeFilter;
+  @IsOptional() @Transform(toBoolean) @IsBoolean() licensingOverdue?: boolean;
   @IsOptional() @IsDateString() from?: string;
   @IsOptional() @IsDateString() to?: string;
   @Type(() => Number) @IsInt() @Min(1) page = 1;
@@ -142,6 +161,14 @@ export class CreateSalesOperationDto {
   @IsOptional() @IsBoolean() submit?: boolean;
   @IsOptional() @IsString() @MaxLength(2000) notes?: string;
   @IsOptional() @IsString() @MaxLength(40) ticketNumber?: string;
+  @IsOptional() @IsBoolean() includesHelmet?: boolean;
+  @IsEnum(modalidad_patentamiento_luma)
+  licensingMode!: modalidad_patentamiento_luma;
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0.01)
+  licensingAmount?: number;
   @IsOptional() @IsUUID() organizationId?: string;
 }
 
@@ -177,6 +204,27 @@ export class UpdateSalesOperationDto {
   @IsOptional() @IsEnum(deuda_operacion_luma) debt?: deuda_operacion_luma;
   @IsOptional() @IsString() @MaxLength(2000) notes?: string | null;
   @IsOptional() @IsString() @MaxLength(40) ticketNumber?: string | null;
+  @IsOptional() @IsBoolean() includesHelmet?: boolean;
+  @IsOptional()
+  @IsEnum(modalidad_patentamiento_luma)
+  licensingMode?: modalidad_patentamiento_luma;
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0.01)
+  licensingAmount?: number | null;
+}
+
+// Administrative management of the licensing mode from the operations grid.
+// Replaces mode and amount together: omitting amount clears it.
+export class UpdateSalesLicensingDto {
+  @Type(() => Number) @IsInt() @Min(0) expectedVersion!: number;
+  @IsEnum(modalidad_patentamiento_luma) mode!: modalidad_patentamiento_luma;
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0.01)
+  amount?: number | null;
 }
 
 export class SalesPaymentComponentDto {

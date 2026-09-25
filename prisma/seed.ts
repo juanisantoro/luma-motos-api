@@ -248,6 +248,13 @@ const managedPermissions = [
     roles: ['ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
   },
   {
+    codigo: 'ventas.patentamiento.gestionar',
+    modulo: 'ventas',
+    descripcion:
+      'Gestiona la modalidad e importe de patentamiento de operaciones desde la grilla administrativa.',
+    roles: ['ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+  },
+  {
     codigo: 'reservas_stock.gestionar',
     modulo: 'reservas_stock',
     descripcion: 'Reserva y libera unidades para operaciones comerciales.',

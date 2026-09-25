@@ -224,6 +224,7 @@ describe('Sales assignee tenant isolation (e2e)', () => {
           contactId: field === 'contactId' ? foreignPersonnelId : undefined,
           agreedPrice: 100,
           paymentPlatform: 'EFECTIVO',
+          licensingMode: 'BONIFICADA',
           submit: false,
         })
         .expect(400)

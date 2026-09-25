@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  HttpStatus,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -9,6 +10,7 @@ import {
   estado_reserva_luma,
   luma_estado_inventario,
   luma_estado_operacion,
+  modalidad_patentamiento_luma,
   plataforma_pago_luma,
   Prisma,
   tipo_componente_pago_luma,
@@ -27,6 +29,7 @@ import {
   commissionOperationEligibility,
   commissionPeriod,
 } from '../commissions/commissions.calculation';
+import { apiError } from '../common/api-error';
 import { assertValidUnitColor } from '../common/unit-colors';
 import {
   normalizeClientDocument,
@@ -34,6 +37,15 @@ import {
 } from '../clients/client-normalization';
 import { normalizeVin } from '../inventory/vin';
 import { PrismaService } from '../prisma/prisma.service';
+import {
+  argentinaToday,
+  LICENSING_INCOME_TYPE,
+  LICENSING_PAYMENT_CONCEPT,
+  LicensingPayment,
+  licensingEstimate,
+  licensingSummary,
+  OVERDUE_ELIGIBLE_OPERATION_STATES,
+} from './licensing';
 import {
   ApproveSalesOperationDto,
   CreateSalesOperationDto,
@@ -48,6 +60,7 @@ import {
   SalesOperationQueryDto,
   SalesPricePolicyQueryDto,
   SalesSellerQueryDto,
+  UpdateSalesLicensingDto,
   UpdateSalesOperationDto,
   VersionedSalesActionDto,
 } from './sales.dto';
@@ -138,6 +151,20 @@ const operationInclude = {
   personal: {
     select: { id: true, nombre_completo: true },
   },
+  // Patent collections from the client (PAGA_CLIENTE) are incomes of type
+  // "Patente" linked to the operation.
+  ingresos_financieros: {
+    where: {
+      tipo_original: { equals: LICENSING_INCOME_TYPE, mode: 'insensitive' },
+    },
+    select: {
+      id: true,
+      importe: true,
+      estado_registro: true,
+      fecha_ingreso: true,
+    },
+    orderBy: [{ fecha_ingreso: 'asc' as const }, { id: 'asc' as const }],
+  },
 } satisfies Prisma.operacionesInclude;
 
 type OperationRecord = Prisma.operacionesGetPayload<{
@@ -183,7 +210,24 @@ export class SalesService {
     const search = query.search?.trim();
     const operationNumber =
       search && /^\d+$/.test(search) ? BigInt(search) : undefined;
+    const overdueWhere: Prisma.operacionesWhereInput = {
+      estado_operacion: { in: [...OVERDUE_ELIGIBLE_OPERATION_STATES] },
+      patente_estimada_hasta: { lt: argentinaToday() },
+      OR: [
+        { unidad_vehiculo_id: null },
+        { unidades_vehiculos: { patente: null } },
+      ],
+    };
     const where: Prisma.operacionesWhereInput = {
+      AND: [
+        query.licensingOverdue === undefined
+          ? {}
+          : query.licensingOverdue
+            ? overdueWhere
+            : { NOT: overdueWhere },
+      ],
+      modalidad_patentamiento:
+        query.licensingMode === 'SIN_DEFINIR' ? null : query.licensingMode,
       organizacion_id: organizationId,
       estado_operacion: query.status,
       sucursal_id: branchFilter,
@@ -233,8 +277,8 @@ export class SalesService {
     };
     const [total, items] = await this.prisma.withTenant(
       this.scope(actor),
-      (tx) =>
-        Promise.all([
+      async (tx) => {
+        const [count, rows] = await Promise.all([
           tx.operaciones.count({ where }),
           tx.operaciones.findMany({
             relationLoadStrategy: 'join',
@@ -244,10 +288,12 @@ export class SalesService {
             skip: (query.page - 1) * query.limit,
             take: query.limit,
           }),
-        ]),
+        ]);
+        return [count, await this.presentMany(tx, rows)] as const;
+      },
     );
     return {
-      items: items.map((item) => this.operation(item)),
+      items,
       total,
       page: query.page,
       limit: query.limit,
@@ -649,7 +695,7 @@ export class SalesService {
             version_fila: { increment: 1 },
           },
         });
-        return this.operation(await this.operationOr404(tx, id, actor));
+        return this.present(tx, await this.operationOr404(tx, id, actor));
       },
       id,
     );
@@ -657,7 +703,7 @@ export class SalesService {
 
   async findOne(id: string, actor: AuthenticatedUser) {
     return this.prisma.withTenant(this.scope(actor), async (tx) =>
-      this.operation(await this.operationOr404(tx, id, actor)),
+      this.present(tx, await this.operationOr404(tx, id, actor)),
     );
   }
 
@@ -874,6 +920,11 @@ export class SalesService {
       input.creditAmount,
       input.agreedPrice,
     );
+    this.assertLicensingContract(input.licensingMode, input.licensingAmount);
+    const operationDate = input.operationDate
+      ? new Date(input.operationDate)
+      : new Date();
+    const estimate = licensingEstimate(operationDate);
     const organizationId = input.organizationId ?? actor.organization.id;
     const branchId = BranchScope.forActor(actor).resolveBranchId(
       input.branchId,
@@ -938,9 +989,7 @@ export class SalesService {
             cliente_id: clientId,
             version_id: input.versionId,
             condicion: input.condition,
-            fecha_operacion: input.operationDate
-              ? new Date(input.operationDate)
-              : new Date(),
+            fecha_operacion: operationDate,
             precio_lista: policy.precio_lista,
             precio_minimo: policy.precio_minimo,
             precio_acordado: input.agreedPrice,
@@ -959,6 +1008,11 @@ export class SalesService {
             creado_por_personal_id: creatorPersonnelId,
             notas: input.notes?.trim(),
             numero_boleto: input.ticketNumber?.trim(),
+            incluye_casco: input.includesHelmet ?? false,
+            modalidad_patentamiento: input.licensingMode,
+            importe_patentamiento: input.licensingAmount,
+            patente_estimada_desde: estimate.from,
+            patente_estimada_hasta: estimate.to,
             organizacion_id: organizationId,
           },
         });
@@ -1004,7 +1058,8 @@ export class SalesService {
             actor,
           );
         }
-        return this.operation(
+        return this.present(
+          tx,
           await this.operationOr404(tx, operation.id, actor),
         );
       },
@@ -1083,6 +1138,23 @@ export class SalesService {
               : input.creditAmount,
             input.agreedPrice ?? current.precio_acordado.toNumber(),
           );
+        const licensingMode =
+          input.licensingMode ?? current.modalidad_patentamiento;
+        // Switching to BONIFICADA without an explicit amount clears it.
+        const licensingAmount =
+          input.licensingAmount !== undefined
+            ? input.licensingAmount
+            : input.licensingMode === modalidad_patentamiento_luma.BONIFICADA
+              ? null
+              : current.importe_patentamiento?.toNumber();
+        if (
+          input.licensingMode !== undefined ||
+          input.licensingAmount !== undefined
+        )
+          this.assertLicensingContract(licensingMode, licensingAmount);
+        const estimate = input.operationDate
+          ? licensingEstimate(new Date(input.operationDate))
+          : undefined;
         const activeReservation = await this.activeReservation(tx, current.id);
         if (input.branchId) {
           await this.branchOr400(tx, input.branchId, current.organizacion_id);
@@ -1164,6 +1236,15 @@ export class SalesService {
                 : input.ticketNumber === null
                   ? null
                   : input.ticketNumber.trim(),
+            incluye_casco: input.includesHelmet,
+            modalidad_patentamiento: input.licensingMode,
+            importe_patentamiento:
+              input.licensingMode !== undefined ||
+              input.licensingAmount !== undefined
+                ? licensingAmount
+                : undefined,
+            patente_estimada_desde: estimate?.from,
+            patente_estimada_hasta: estimate?.to,
             estado_operacion: approvedUpdate
               ? undefined
               : luma_estado_operacion.BORRADOR,
@@ -1209,7 +1290,69 @@ export class SalesService {
               },
             });
         }
-        return this.operation(await this.operationOr404(tx, id, actor));
+        return this.present(tx, await this.operationOr404(tx, id, actor));
+      },
+      id,
+    );
+  }
+
+  // Administrative management of the licensing mode/amount from the
+  // operations grid. Unlike PATCH /:id it works in any state except
+  // CANCELADA (the plate arrives after the sale is approved or closed) and
+  // never changes the operation status.
+  async updateLicensing(
+    id: string,
+    input: UpdateSalesLicensingDto,
+    actor: AuthenticatedUser,
+  ) {
+    const amount =
+      input.mode === modalidad_patentamiento_luma.PAGA_CLIENTE
+        ? (input.amount ?? null)
+        : input.amount;
+    this.assertLicensingContract(input.mode, amount);
+    return this.mutate(
+      actor,
+      'SALES_OPERATION_LICENSING_UPDATED',
+      async (tx, event) => {
+        const current = await this.operationOr404(tx, id, actor, true);
+        this.setTargetOrganization(event, actor, current.organizacion_id);
+        this.assertVersion(current.version_fila, input.expectedVersion);
+        if (current.estado_operacion === luma_estado_operacion.CANCELADA)
+          throw apiError(
+            HttpStatus.CONFLICT,
+            'LICENSING_OPERATION_CANCELLED',
+            'Licensing cannot be managed on a cancelled operation',
+          );
+        if (
+          input.mode === modalidad_patentamiento_luma.BONIFICADA &&
+          current.ingresos_financieros.length > 0
+        )
+          throw apiError(
+            HttpStatus.CONFLICT,
+            'LICENSING_COLLECTION_REGISTERED',
+            'The operation already has a patent collection from the client',
+            { incomeIds: current.ingresos_financieros.map((row) => row.id) },
+          );
+        const estimate =
+          current.patente_estimada_desde === null
+            ? licensingEstimate(current.fecha_operacion)
+            : undefined;
+        await tx.operaciones.update({
+          where: {
+            id_organizacion_id: {
+              id,
+              organizacion_id: current.organizacion_id,
+            },
+          },
+          data: {
+            modalidad_patentamiento: input.mode,
+            importe_patentamiento: amount ?? null,
+            patente_estimada_desde: estimate?.from,
+            patente_estimada_hasta: estimate?.to,
+            version_fila: { increment: 1 },
+          },
+        });
+        return this.present(tx, await this.operationOr404(tx, id, actor));
       },
       id,
     );
@@ -1259,7 +1402,7 @@ export class SalesService {
             version_fila: { increment: 1 },
           },
         });
-        return this.operation(await this.operationOr404(tx, id, actor));
+        return this.present(tx, await this.operationOr404(tx, id, actor));
       },
       id,
     );
@@ -1310,7 +1453,7 @@ export class SalesService {
           },
           data: { unidad_vehiculo_id: null, version_fila: { increment: 1 } },
         });
-        return this.operation(await this.operationOr404(tx, id, actor));
+        return this.present(tx, await this.operationOr404(tx, id, actor));
       },
       id,
     );
@@ -1329,7 +1472,7 @@ export class SalesService {
         this.setTargetOrganization(event, actor, operation.organizacion_id);
         this.assertVersion(operation.version_fila, input.expectedVersion);
         await this.submitLockedOperation(tx, operation, actor);
-        return this.operation(await this.operationOr404(tx, id, actor));
+        return this.present(tx, await this.operationOr404(tx, id, actor));
       },
       id,
     );
@@ -1421,7 +1564,7 @@ export class SalesService {
             version_fila: { increment: 1 },
           },
         });
-        return this.operation(await this.operationOr404(tx, id, actor));
+        return this.present(tx, await this.operationOr404(tx, id, actor));
       },
       id,
     );
@@ -1515,7 +1658,7 @@ export class SalesService {
             version_fila: { increment: 1 },
           },
         });
-        return this.operation(await this.operationOr404(tx, id, actor));
+        return this.present(tx, await this.operationOr404(tx, id, actor));
       },
       id,
     );
@@ -1597,7 +1740,7 @@ export class SalesService {
             version_fila: { increment: 1 },
           },
         });
-        return this.operation(await this.operationOr404(tx, id, actor));
+        return this.present(tx, await this.operationOr404(tx, id, actor));
       },
       id,
     );
@@ -1701,7 +1844,7 @@ export class SalesService {
               estado: approved ? 'PENDIENTE_CONFIRMACION' : 'CANCELADA',
             },
           });
-        return this.operation(await this.operationOr404(tx, id, actor));
+        return this.present(tx, await this.operationOr404(tx, id, actor));
       },
       id,
     );
@@ -1881,6 +2024,22 @@ export class SalesService {
         organizacion_id: operation.organizacion_id,
       },
     });
+  }
+
+  private assertLicensingContract(
+    mode: modalidad_patentamiento_luma | null | undefined,
+    amount: number | null | undefined,
+  ) {
+    if (
+      amount !== null &&
+      amount !== undefined &&
+      mode !== modalidad_patentamiento_luma.PAGA_CLIENTE
+    )
+      throw apiError(
+        HttpStatus.BAD_REQUEST,
+        'LICENSING_AMOUNT_NOT_ALLOWED',
+        'A licensing amount is only allowed when the client pays the patent',
+      );
   }
 
   private assertPaymentContract(
@@ -2872,7 +3031,56 @@ export class SalesService {
       });
   }
 
-  private operation(item: OperationRecord) {
+  private async present(tx: Prisma.TransactionClient, item: OperationRecord) {
+    return (await this.presentMany(tx, [item]))[0];
+  }
+
+  // Patent payments to the gestoría (BONIFICADA) live in pagos_vehiculo,
+  // which is intentionally not related to operaciones in the Prisma schema,
+  // so they are fetched in one extra query per page.
+  private async presentMany(
+    tx: Prisma.TransactionClient,
+    items: OperationRecord[],
+  ) {
+    const paymentsByOperation = new Map<string, LicensingPayment[]>();
+    if (items.length) {
+      const concept = await tx.conceptos_pago_vehiculo.findUnique({
+        where: { nombre_normalizado: LICENSING_PAYMENT_CONCEPT },
+        select: { id: true },
+      });
+      const payments = concept
+        ? await tx.pagos_vehiculo.findMany({
+            where: {
+              concepto_id: concept.id,
+              operacion_id: { in: items.map((item) => item.id) },
+            },
+            select: {
+              id: true,
+              operacion_id: true,
+              importe: true,
+              estado: true,
+              fecha: true,
+            },
+            orderBy: [{ fecha: 'asc' }, { id: 'asc' }],
+          })
+        : [];
+      for (const payment of payments) {
+        const list = paymentsByOperation.get(payment.operacion_id!) ?? [];
+        list.push(payment);
+        paymentsByOperation.set(payment.operacion_id!, list);
+      }
+    }
+    const today = argentinaToday();
+    return items.map((item) =>
+      this.operation(item, paymentsByOperation.get(item.id) ?? [], today),
+    );
+  }
+
+  private operation(
+    item: OperationRecord,
+    licensingPayments: LicensingPayment[] = [],
+    today = argentinaToday(),
+  ) {
     const seller = item.asignaciones_personal_operacion.find((assignment) =>
       (SELLER_ASSIGNMENT_ROLES as readonly string[]).includes(
         assignment.rol_asignacion,
@@ -2910,6 +3118,18 @@ export class SalesService {
       creditAmount: item.monto_credito?.toString() ?? null,
       guarantor: item.respaldo_garante,
       ticketNumber: item.numero_boleto,
+      includesHelmet: item.incluye_casco,
+      licensing: licensingSummary({
+        mode: item.modalidad_patentamiento,
+        amount: item.importe_patentamiento,
+        estimatedFrom: item.patente_estimada_desde,
+        estimatedTo: item.patente_estimada_hasta,
+        operationStatus: item.estado_operacion,
+        plateLoaded: Boolean(currentUnit?.patente),
+        incomes: item.ingresos_financieros ?? [],
+        payments: licensingPayments,
+        today,
+      }),
       notes: item.notas,
       rowVersion: item.version_fila,
       organizationId: item.organizacion_id,

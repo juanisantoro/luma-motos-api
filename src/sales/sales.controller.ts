@@ -25,6 +25,7 @@ import {
   SalesFinancialInstitutionQueryDto,
   SalesPricePolicyQueryDto,
   SalesSellerQueryDto,
+  UpdateSalesLicensingDto,
   UpdateSalesOperationDto,
   VersionedSalesActionDto,
 } from './sales.dto';
@@ -111,6 +112,17 @@ export class SalesController {
     @CurrentUser() actor: AuthenticatedUser,
   ) {
     return this.service.update(id, input, actor);
+  }
+
+  @Patch(':id/licensing')
+  @Permissions(PERMISSION_CODES.SALES_LICENSING_MANAGE)
+  @AuditedMutation()
+  updateLicensing(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() input: UpdateSalesLicensingDto,
+    @CurrentUser() actor: AuthenticatedUser,
+  ) {
+    return this.service.updateLicensing(id, input, actor);
   }
 
   @Post(':id/reservation')

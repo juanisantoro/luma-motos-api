@@ -313,6 +313,7 @@ describe('Branch scope (e2e)', () => {
           unitId: 'edc9ce1d-dbf3-4691-a2d2-79e4e9563dd2',
           agreedPrice: 100,
           paymentPlatform: 'EFECTIVO',
+          licensingMode: 'BONIFICADA',
         },
       ],
       [
