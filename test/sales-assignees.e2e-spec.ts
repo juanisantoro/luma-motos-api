@@ -10,6 +10,7 @@ import { Prisma } from '@prisma/client';
 import request from 'supertest';
 import { App } from 'supertest/types';
 import { AuditService } from '../src/audit/audit.service';
+import { CashService } from '../src/cash/cash.service';
 import type {
   AuthenticatedPrincipal,
   AuthenticatedUser,
@@ -50,6 +51,7 @@ const actor: AuthenticatedUser = {
   controllers: [SalesController],
   providers: [
     SalesService,
+    { provide: CashService, useValue: {} },
     { provide: PrismaService, useValue: {} },
     { provide: AuditService, useValue: {} },
   ],

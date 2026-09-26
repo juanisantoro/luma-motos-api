@@ -1,8 +1,13 @@
-import { BadRequestException, ConflictException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+} from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { AuditService } from '../audit/audit.service';
 import type { AuthenticatedAuditEvent } from '../audit/audit.service';
 import type { AuthenticatedUser } from '../auth/auth.types';
+import { CashService } from '../cash/cash.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { SalesService } from './sales.service';
 
@@ -47,7 +52,10 @@ describe('SalesService', () => {
     ) as Prisma.TransactionClient;
   }
 
-  function service(rawTransaction: Prisma.TransactionClient) {
+  function service(
+    rawTransaction: Prisma.TransactionClient,
+    cash = {} as CashService,
+  ) {
     const transaction = withLicensingDefaults(rawTransaction);
     const execute = jest
       .fn<
@@ -61,6 +69,7 @@ describe('SalesService', () => {
     return new SalesService(
       {} as PrismaService,
       { execute } as unknown as AuditService,
+      cash,
     );
   }
 
@@ -78,6 +87,7 @@ describe('SalesService', () => {
           ),
       } as unknown as PrismaService,
       {} as AuditService,
+      {} as CashService,
     );
   }
 
@@ -891,6 +901,7 @@ describe('SalesService', () => {
     const lookupService = new SalesService(
       { withTenant } as unknown as PrismaService,
       {} as AuditService,
+      {} as CashService,
     );
 
     await expect(
@@ -1160,6 +1171,75 @@ describe('SalesService', () => {
       });
     });
 
+    const sellerActor: AuthenticatedUser = {
+      ...actor,
+      role: {
+        ...actor.role,
+        code: 'VENDEDOR',
+        name: 'Vendedor',
+        permissions: ['ventas.gestionar'],
+      },
+      branch: {
+        id: '84e778cc-7616-4792-b6db-d89f100bb6f1',
+        code: 'CASA',
+        name: 'Casa',
+      },
+    };
+    // personal.findFirst in createTransaction resolves this id for the actor.
+    const ownPersonnelId = '11b5de9b-9bc2-4777-bb78-9c7267b73aca';
+
+    it('lets a seller send their own personnel id as sellerId', async () => {
+      const operationCreate = jest
+        .fn<Promise<unknown>, [Prisma.operacionesCreateArgs]>()
+        .mockResolvedValue(operation('BORRADOR'));
+      const assignmentCreate = jest
+        .fn<
+          Promise<unknown>,
+          [Prisma.asignaciones_personal_operacionCreateArgs]
+        >()
+        .mockResolvedValue({});
+      const transaction = {
+        ...createTransaction(operationCreate, licensedOperation('BORRADOR')),
+        asignaciones_personal_operacion: { create: assignmentCreate },
+      } as unknown as Prisma.TransactionClient;
+
+      await expect(
+        service(transaction).create(
+          {
+            ...baseCreate,
+            sellerId: ownPersonnelId,
+            licensingMode: 'BONIFICADA',
+          },
+          sellerActor,
+        ),
+      ).resolves.toMatchObject({ id: operationId });
+      expect(operationCreate).toHaveBeenCalled();
+      expect(assignmentCreate.mock.calls[0]?.[0]).toMatchObject({
+        data: { personal_id: ownPersonnelId },
+      });
+    });
+
+    it('forbids a seller from assigning another seller', async () => {
+      const operationCreate = jest.fn();
+      await expect(
+        service(
+          createTransaction(operationCreate, licensedOperation('BORRADOR')),
+        ).create(
+          {
+            ...baseCreate,
+            sellerId: '21b5de9b-9bc2-4777-bb78-9c7267b73aca',
+            licensingMode: 'BONIFICADA',
+          },
+          sellerActor,
+        ),
+      ).rejects.toThrow(
+        new ForbiddenException(
+          'Sellers cannot assign operations to another seller',
+        ),
+      );
+      expect(operationCreate).not.toHaveBeenCalled();
+    });
+
     it('rejects a licensing amount when the patent is bonified', async () => {
       const operationCreate = jest.fn();
       await expect(
@@ -1359,6 +1439,147 @@ describe('SalesService', () => {
           code: 'LICENSING_COLLECTION_REGISTERED',
           details: { incomeIds: ['income-1'] },
         },
+      });
+    });
+
+    describe('patent collection from the grid', () => {
+      const accountId = 'b1c2d3e4-0000-4000-8000-000000000001';
+      const idempotencyKey = 'c1c2d3e4-0000-4000-8000-000000000002';
+
+      function collectionSetup(
+        current: ReturnType<typeof licensedOperation>,
+        repeated: { ingreso_id: string | null } | null = null,
+      ) {
+        const incomeCreate = jest
+          .fn<Promise<unknown>, [Prisma.ingresosCreateArgs]>()
+          .mockResolvedValue({ id: 'income-new' });
+        const incomeUpdate = jest
+          .fn<Promise<unknown>, [Prisma.ingresosUpdateArgs]>()
+          .mockResolvedValue({});
+        const registerEntityMovement = jest.fn().mockResolvedValue({});
+        const settledAmount = jest
+          .fn()
+          .mockResolvedValue(new Prisma.Decimal(85000));
+        const transaction = {
+          $queryRaw: jest.fn().mockResolvedValue([{ id: operationId }]),
+          operaciones: { findFirst: jest.fn().mockResolvedValue(current) },
+          movimientos_caja: {
+            findFirst: jest.fn().mockResolvedValue(repeated),
+          },
+          tipos_ingreso: {
+            findFirst: jest.fn().mockResolvedValue({ nombre: 'Patente' }),
+          },
+          ingresos: { create: incomeCreate, update: incomeUpdate },
+        } as unknown as Prisma.TransactionClient;
+        const cash = {
+          registerEntityMovement,
+          settledAmount,
+        } as unknown as CashService;
+        return {
+          sales: service(transaction, cash),
+          incomeCreate,
+          incomeUpdate,
+          registerEntityMovement,
+        };
+      }
+
+      it('creates the Patente income and its cash movement in one step', async () => {
+        const setup = collectionSetup(licensedOperation('APROBADA'));
+
+        await setup.sales.collectLicensing(
+          operationId,
+          {
+            idempotencyKey,
+            accountId,
+            amount: '85000',
+            collectionDate: '2026-09-20',
+          },
+          actor,
+        );
+
+        expect(setup.incomeCreate.mock.calls[0]?.[0].data).toMatchObject({
+          tipo_original: 'Patente',
+          operacion_id: operationId,
+          unidad_vehiculo_id: unitId,
+          importe: new Prisma.Decimal(85000),
+          referencia: 'B-0001',
+          fecha_ingreso: new Date('2026-09-20T00:00:00.000Z'),
+          estado_registro: 'PENDIENTE',
+        });
+        expect(setup.registerEntityMovement).toHaveBeenCalledWith(
+          expect.anything(),
+          actor,
+          organizationId,
+          'ARS',
+          expect.objectContaining({
+            idempotencyKey,
+            accountId,
+            amount: '85000.00',
+            reference: 'B-0001',
+            occurredAt: '2026-09-20T12:00:00.000-03:00',
+          }),
+          { ingreso_id: 'income-new' },
+          'INGRESO',
+          'CREDITO',
+        );
+        expect(setup.incomeUpdate.mock.calls[0]?.[0].data).toEqual({
+          estado_registro: 'PAGADO',
+        });
+      });
+
+      it('only collects when the client pays the patent', async () => {
+        const setup = collectionSetup(
+          licensedOperation('APROBADA', {
+            modalidad_patentamiento: 'BONIFICADA',
+            importe_patentamiento: null,
+          }),
+        );
+        await expect(
+          setup.sales.collectLicensing(
+            operationId,
+            { idempotencyKey, accountId, amount: '85000' },
+            actor,
+          ),
+        ).rejects.toMatchObject({
+          response: { code: 'LICENSING_COLLECTION_NOT_ALLOWED' },
+        });
+        expect(setup.incomeCreate).not.toHaveBeenCalled();
+      });
+
+      it('does not duplicate the income when the same request is retried', async () => {
+        const setup = collectionSetup(
+          licensedOperation('APROBADA', {
+            ingresos_financieros: [
+              {
+                id: 'income-previous',
+                importe: new Prisma.Decimal(85000),
+                estado_registro: 'PAGADO',
+                fecha_ingreso: new Date('2026-09-20T00:00:00.000Z'),
+              },
+            ],
+          }),
+          { ingreso_id: 'income-previous' },
+        );
+        await expect(
+          setup.sales.collectLicensing(
+            operationId,
+            { idempotencyKey, accountId, amount: '85000' },
+            actor,
+          ),
+        ).resolves.toMatchObject({ licensing: { status: 'COBRADO' } });
+        expect(setup.incomeCreate).not.toHaveBeenCalled();
+        expect(setup.registerEntityMovement).not.toHaveBeenCalled();
+      });
+
+      it('rejects a zero amount before opening a transaction', async () => {
+        const setup = collectionSetup(licensedOperation('APROBADA'));
+        await expect(
+          setup.sales.collectLicensing(
+            operationId,
+            { idempotencyKey, accountId, amount: '0' },
+            actor,
+          ),
+        ).rejects.toMatchObject({ response: { code: 'INVALID_AMOUNT' } });
       });
     });
 

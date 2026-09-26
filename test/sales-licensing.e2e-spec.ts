@@ -55,6 +55,7 @@ const service = {
   create: serviceMethod({ id: operationId }),
   update: serviceMethod({ id: operationId }),
   updateLicensing: serviceMethod({ id: operationId }),
+  collectLicensing: serviceMethod({ id: operationId }),
   findAll: serviceMethod({ items: [], total: 0 }),
 };
 
@@ -205,6 +206,57 @@ describe('Sales operation helmet and licensing (e2e)', () => {
       .send({ expectedVersion: 3, mode: 'PAGA_CLIENTE', status: 'PAGADO' })
       .expect(400);
     expect(service.updateLicensing).not.toHaveBeenCalled();
+  });
+
+  describe('patent collection', () => {
+    const path = `/api/sales/operations/${operationId}/licensing/collections`;
+    const body = {
+      idempotencyKey: 'c1c2d3e4-0000-4000-8000-000000000002',
+      accountId: 'b1c2d3e4-0000-4000-8000-000000000001',
+      amount: '85000.00',
+      collectionDate: '2026-09-20',
+    };
+
+    it('registers the collection with licensing and collect permissions', async () => {
+      permissions = [
+        'ventas.consultar',
+        'ventas.patentamiento.gestionar',
+        'ingresos.cobrar',
+      ];
+      await request(app.getHttpServer()).post(path).send(body).expect(201);
+      expect(service.collectLicensing).toHaveBeenCalledWith(
+        operationId,
+        body,
+        expect.objectContaining({ id: actor().id }),
+      );
+    });
+
+    it('requires ingresos.cobrar besides the licensing permission', async () => {
+      await request(app.getHttpServer()).post(path).send(body).expect(403);
+      expect(service.collectLicensing).not.toHaveBeenCalled();
+    });
+
+    it('validates amount, date and idempotency key', async () => {
+      permissions = [
+        'ventas.consultar',
+        'ventas.patentamiento.gestionar',
+        'ingresos.cobrar',
+      ];
+      const server = app.getHttpServer();
+      await request(server)
+        .post(path)
+        .send({ ...body, amount: 85000 })
+        .expect(400);
+      await request(server)
+        .post(path)
+        .send({ ...body, collectionDate: '20/09/2026' })
+        .expect(400);
+      await request(server)
+        .post(path)
+        .send({ ...body, idempotencyKey: 'repetido' })
+        .expect(400);
+      expect(service.collectLicensing).not.toHaveBeenCalled();
+    });
   });
 
   it('parses licensing filters on the operations list', async () => {

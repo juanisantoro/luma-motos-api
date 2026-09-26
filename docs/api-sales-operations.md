@@ -137,10 +137,33 @@ la calcula desde su fecha. No se puede pasar a `BONIFICADA` si ya hay un cobro
 de patente al cliente (`409 LICENSING_COLLECTION_REGISTERED`, con
 `details.incomeIds`).
 
-El cobro al cliente (PAGA_CLIENTE) es un ingreso `POST /api/incomes` con
-`type: "Patente"` y `operationId`; el pago de la patente (BONIFICADA) es un
-`POST /api/vehicle-payments` con el concepto `Patente`, la unidad y
-`operationId`. La respuesta de la operación los resume en `licensing`:
+`POST /api/sales/operations/:id/licensing/collections`
+(`ventas.patentamiento.gestionar` + `ingresos.cobrar`) registra el cobro de
+patente al cliente en un solo paso desde la grilla:
+
+```json
+{
+  "idempotencyKey": "uuid",
+  "accountId": "uuid cuenta de caja",
+  "amount": "85000.00",
+  "collectionDate": "2026-09-20",
+  "reference": "optional; por defecto el número de boleto",
+  "notes": "optional"
+}
+```
+
+En la misma transacción crea el ingreso `type: "Patente"` vinculado a la
+operación (sucursal y unidad de la operación) y su movimiento de caja INGRESO
+en la cuenta elegida, así que el ingreso queda cobrado (`PAGADO`). Sólo aplica
+con `PAGA_CLIENTE` (`409 LICENSING_COLLECTION_NOT_ALLOWED`), no en CANCELADA,
+valida cuenta activa, sucursal y moneda como cualquier cobro de caja y es
+idempotente: reintentar con la misma `idempotencyKey` devuelve la operación sin
+duplicar el ingreso. `collectionDate` es opcional (hoy en Argentina); una fecha
+anterior se contabiliza a las 12:00 de ese día.
+
+El pago de la patente (BONIFICADA) es un `POST /api/vehicle-payments` con el
+concepto `Patente`, la unidad y `operationId`. La respuesta de la operación los
+resume en `licensing`:
 
 ```json
 {
@@ -159,8 +182,9 @@ El cobro al cliente (PAGA_CLIENTE) es un ingreso `POST /api/incomes` con
 }
 ```
 
-`status`: `SIN_DEFINIR`, `COBRO_PENDIENTE`/`COBRADO` (PAGA_CLIENTE, según los
-ingresos de patente estén totalmente cobrados) o `PAGO_PENDIENTE`/`PAGADO`
+`status`: `SIN_DEFINIR`, `COBRO_PENDIENTE`/`COBRADO` (PAGA_CLIENTE: COBRADO
+cuando los ingresos de patente están cobrados y, si hay `amount`, su total lo
+cubre) o `PAGO_PENDIENTE`/`PAGADO`
 (BONIFICADA, según exista un pago de patente PAGADO). `collection.status`:
 `SIN_REGISTRAR|PENDIENTE|PAGO_PARCIAL|PAGADO`; `payment.status`:
 `SIN_REGISTRAR|PENDIENTE|PAGADO`.

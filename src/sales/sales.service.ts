@@ -7,6 +7,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import {
+  direccion_caja_luma,
   estado_reserva_luma,
   luma_estado_inventario,
   luma_estado_operacion,
@@ -14,6 +15,7 @@ import {
   plataforma_pago_luma,
   Prisma,
   tipo_componente_pago_luma,
+  tipo_movimiento_caja_luma,
   tipo_vehiculo_luma,
   tipo_movimiento_inventario_luma,
 } from '@prisma/client';
@@ -29,7 +31,9 @@ import {
   commissionOperationEligibility,
   commissionPeriod,
 } from '../commissions/commissions.calculation';
+import { CashService } from '../cash/cash.service';
 import { apiError } from '../common/api-error';
+import { businessDate, paymentStatus } from '../finance/finance.utils';
 import { assertValidUnitColor } from '../common/unit-colors';
 import {
   normalizeClientDocument,
@@ -60,6 +64,7 @@ import {
   SalesOperationQueryDto,
   SalesPricePolicyQueryDto,
   SalesSellerQueryDto,
+  RegisterSalesLicensingCollectionDto,
   UpdateSalesLicensingDto,
   UpdateSalesOperationDto,
   VersionedSalesActionDto,
@@ -180,6 +185,7 @@ export class SalesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
+    private readonly cash: CashService,
   ) {}
 
   async findAll(query: SalesOperationQueryDto, actor: AuthenticatedUser) {
@@ -945,13 +951,6 @@ export class SalesService {
           throw new BadRequestException(
             'Exactly one of unitId or supplierAvailabilityId is required',
           );
-        if (
-          this.isSellerLikeRole(actor.role.code) &&
-          input.sellerId !== undefined
-        )
-          throw new ForbiddenException(
-            'Sellers cannot assign operations to another seller',
-          );
         // Resolved once and reused below for creado_por_personal_id: this used
         // to be looked up twice (once here as the seller fallback, once again
         // for the creator field), doubling a DB round trip on every create.
@@ -959,6 +958,13 @@ export class SalesService {
           tx,
           actor,
           organizationId,
+        );
+        // Sellers may only assign themselves: their own personnel id is
+        // accepted (the form pre-selects it), any other one is forbidden.
+        this.assertSellerSelfAssignment(
+          actor,
+          input.sellerId,
+          creatorPersonnelId,
         );
         const sellerId =
           (this.isSellerLikeRole(actor.role.code)
@@ -1075,13 +1081,6 @@ export class SalesService {
   ) {
     if (Object.keys(input).length === 1)
       throw new BadRequestException('At least one editable field is required');
-    if (
-      this.isSellerLikeRole(actor.role.code) &&
-      input.sellerId !== undefined
-    )
-      throw new ForbiddenException(
-        'Sellers cannot assign operations to another seller',
-      );
     if (input.branchId) BranchScope.forActor(actor).assert(input.branchId);
     return this.mutate(
       actor,
@@ -1090,6 +1089,15 @@ export class SalesService {
         const current = await this.operationOr404(tx, id, actor, true);
         this.setTargetOrganization(event, actor, current.organizacion_id);
         this.assertVersion(current.version_fila, input.expectedVersion);
+        if (
+          this.isSellerLikeRole(actor.role.code) &&
+          input.sellerId !== undefined
+        )
+          this.assertSellerSelfAssignment(
+            actor,
+            input.sellerId,
+            await this.actorPersonnelId(tx, actor, current.organizacion_id),
+          );
         const approvedUpdate =
           current.estado_operacion === luma_estado_operacion.APROBADA;
         if (
@@ -1351,6 +1359,141 @@ export class SalesService {
             patente_estimada_hasta: estimate?.to,
             version_fila: { increment: 1 },
           },
+        });
+        return this.present(tx, await this.operationOr404(tx, id, actor));
+      },
+      id,
+    );
+  }
+
+  // Patent collection from the client (PAGA_CLIENTE) in one step: creates the
+  // "Patente" income linked to the operation and registers its cash movement
+  // in the chosen account, so the income is born collected. Retrying with
+  // the same idempotencyKey returns the operation without duplicating it.
+  async collectLicensing(
+    id: string,
+    input: RegisterSalesLicensingCollectionDto,
+    actor: AuthenticatedUser,
+  ) {
+    const amount = new Prisma.Decimal(input.amount);
+    // Decimal#isPositive() is true for zero, so compare explicitly.
+    if (amount.lessThanOrEqualTo(0))
+      throw apiError(
+        HttpStatus.BAD_REQUEST,
+        'INVALID_AMOUNT',
+        'Amount must be greater than zero',
+      );
+    const today = argentinaToday().toISOString().slice(0, 10);
+    const collectionDate = input.collectionDate ?? today;
+    return this.mutate(
+      actor,
+      'SALES_OPERATION_LICENSING_COLLECTED',
+      async (tx, event) => {
+        const current = await this.operationOr404(tx, id, actor, true);
+        this.setTargetOrganization(event, actor, current.organizacion_id);
+        if (current.estado_operacion === luma_estado_operacion.CANCELADA)
+          throw apiError(
+            HttpStatus.CONFLICT,
+            'LICENSING_OPERATION_CANCELLED',
+            'Licensing cannot be managed on a cancelled operation',
+          );
+        if (
+          current.modalidad_patentamiento !==
+          modalidad_patentamiento_luma.PAGA_CLIENTE
+        )
+          throw apiError(
+            HttpStatus.CONFLICT,
+            'LICENSING_COLLECTION_NOT_ALLOWED',
+            'Only operations where the client pays the patent can register a collection',
+          );
+        const repeated = await tx.movimientos_caja.findFirst({
+          where: {
+            organizacion_id: current.organizacion_id,
+            clave_idempotencia: input.idempotencyKey,
+          },
+          select: { ingreso_id: true },
+        });
+        if (repeated) {
+          if (
+            repeated.ingreso_id &&
+            current.ingresos_financieros.some(
+              (income) => income.id === repeated.ingreso_id,
+            )
+          )
+            return this.present(tx, current);
+          throw apiError(
+            HttpStatus.CONFLICT,
+            'IDEMPOTENCY_CONFLICT',
+            'Idempotency key was already used with a different payload',
+          );
+        }
+        const incomeType = await tx.tipos_ingreso.findFirst({
+          where: { nombre_normalizado: LICENSING_INCOME_TYPE, activo: true },
+          select: { nombre: true },
+        });
+        if (!incomeType)
+          throw apiError(
+            HttpStatus.CONFLICT,
+            'LICENSING_INCOME_TYPE_MISSING',
+            'The "Patente" income type is not active',
+          );
+        const income = await tx.ingresos.create({
+          data: {
+            organizacion_id: current.organizacion_id,
+            sucursal_id: current.sucursal_id,
+            fecha_ingreso: businessDate(collectionDate),
+            tipo_original: incomeType.nombre,
+            descripcion: `Cobro de patente · operación #${current.numero_operacion.toString()}`,
+            importe: amount,
+            moneda: current.moneda,
+            estado_registro: 'PENDIENTE',
+            referencia:
+              input.reference?.trim() || current.numero_boleto || undefined,
+            unidad_vehiculo_id: current.unidad_vehiculo_id ?? undefined,
+            operacion_id: id,
+            observaciones: input.notes?.trim(),
+            es_transferencia: false,
+          },
+          select: { id: true },
+        });
+        await this.cash.registerEntityMovement(
+          tx,
+          actor,
+          current.organizacion_id,
+          current.moneda,
+          {
+            idempotencyKey: input.idempotencyKey,
+            accountId: input.accountId,
+            amount: amount.toFixed(2),
+            // Back-dated collections keep their business date; today's use
+            // the current time.
+            ...(collectionDate === today
+              ? {}
+              : { occurredAt: `${collectionDate}T12:00:00.000-03:00` }),
+            ...(input.reference?.trim() || current.numero_boleto
+              ? {
+                  reference: input.reference?.trim() || current.numero_boleto!,
+                }
+              : {}),
+            ...(input.notes?.trim() ? { notes: input.notes.trim() } : {}),
+          },
+          { ingreso_id: income.id },
+          tipo_movimiento_caja_luma.INGRESO,
+          direccion_caja_luma.CREDITO,
+        );
+        const collected = await this.cash.settledAmount(
+          tx,
+          { ingreso_id: income.id },
+          tipo_movimiento_caja_luma.INGRESO,
+        );
+        await tx.ingresos.update({
+          where: {
+            id_organizacion_id: {
+              id: income.id,
+              organizacion_id: current.organizacion_id,
+            },
+          },
+          data: { estado_registro: paymentStatus(collected, amount) },
         });
         return this.present(tx, await this.operationOr404(tx, id, actor));
       },
@@ -2929,6 +3072,21 @@ export class SalesService {
   // like a VENDEDOR: same self-scoping on lists/detail, same restriction
   // on reassigning to someone else. Centralized here so every VENDEDOR-only
   // check in this service extends to CALLCENTER in one place.
+  private assertSellerSelfAssignment(
+    actor: AuthenticatedUser,
+    sellerId: string | undefined,
+    actorPersonnelId: string,
+  ) {
+    if (
+      this.isSellerLikeRole(actor.role.code) &&
+      sellerId !== undefined &&
+      sellerId !== actorPersonnelId
+    )
+      throw new ForbiddenException(
+        'Sellers cannot assign operations to another seller',
+      );
+  }
+
   private isSellerLikeRole(code: string) {
     return code === ROLE_CODES.VENDEDOR || code === ROLE_CODES.CALLCENTER;
   }

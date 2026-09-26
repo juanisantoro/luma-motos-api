@@ -14,6 +14,7 @@ import {
   IsOptional,
   IsString,
   IsUUID,
+  Matches,
   Max,
   MaxLength,
   Min,
@@ -213,6 +214,23 @@ export class UpdateSalesOperationDto {
   @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0.01)
   licensingAmount?: number | null;
+}
+
+const MONEY_PATTERN = /^(0|[1-9]\d{0,15})(\.\d{1,2})?$/;
+const BUSINESS_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
+// Patent collection from the client registered from the operations grid:
+// creates the "Patente" income and its cash movement in one transaction.
+export class RegisterSalesLicensingCollectionDto {
+  @IsUUID() idempotencyKey!: string;
+  @IsUUID() accountId!: string;
+  @IsString() @Matches(MONEY_PATTERN) amount!: string;
+  @IsOptional()
+  @IsDateString()
+  @Matches(BUSINESS_DATE_PATTERN)
+  collectionDate?: string;
+  @IsOptional() @IsString() @MaxLength(160) reference?: string;
+  @IsOptional() @IsString() @MaxLength(2000) notes?: string;
 }
 
 // Administrative management of the licensing mode from the operations grid.

@@ -143,9 +143,20 @@ export function licensingSummary(input: {
 }) {
   const collection = collectionStatus(input.incomes);
   const payment = paymentStatus(input.payments);
+  // With a known patent amount, the client collection is complete only when
+  // the fully collected incomes cover it.
+  const collectedTotal = input.incomes
+    .filter((income) => income.estado_registro === 'PAGADO')
+    .reduce(
+      (total, income) => total.plus(income.importe),
+      new Prisma.Decimal(0),
+    );
+  const collectionCovered =
+    collection === 'PAGADO' &&
+    (!input.amount || collectedTotal.greaterThanOrEqualTo(input.amount));
   const status: LicensingStatus =
     input.mode === 'PAGA_CLIENTE'
-      ? collection === 'PAGADO'
+      ? collectionCovered
         ? 'COBRADO'
         : 'COBRO_PENDIENTE'
       : input.mode === 'BONIFICADA'
