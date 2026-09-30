@@ -324,7 +324,7 @@ describe('SalesService', () => {
     });
   });
 
-  it('requires exactly one reservable inventory source', async () => {
+  it('rejects combining a stock unit and a supplier availability', async () => {
     const transaction = {
       sucursales: { findFirst: jest.fn().mockResolvedValue({ id: 'branch' }) },
       clientes: {
@@ -350,6 +350,8 @@ describe('SalesService', () => {
           clientId: '904e2a34-8285-48fa-b64c-24a80d94f9cb',
           versionId: operation('BORRADOR').version_id,
           condition: 'NUEVO',
+          unitId,
+          supplierAvailabilityId: availabilityId,
           agreedPrice: 100,
           paymentPlatform: 'EFECTIVO',
           licensingMode: 'BONIFICADA',
@@ -359,7 +361,7 @@ describe('SalesService', () => {
       ),
     ).rejects.toThrow(
       new BadRequestException(
-        'Exactly one of unitId or supplierAvailabilityId is required',
+        'unitId and supplierAvailabilityId cannot be combined',
       ),
     );
   });

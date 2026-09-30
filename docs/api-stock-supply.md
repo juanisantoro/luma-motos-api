@@ -153,13 +153,22 @@ new.
 
 `GET /supply-requests` accepts `status,supplierId,versionId,vehicleType,
 condition,arrivalBranchId,organizationId` and pagination. Create body:
-`{supplierId,supplierAvailabilityId,operationId?,versionId,condition,
+`{supplierId,supplierAvailabilityId?,operationId?,versionId,condition,
 arrivalBranchId,supplierReference?,estimatedCost?,notes?,organizationId?}`.
 `operationId`, when present, must belong to the selected organization (400
-`Operation does not belong to the selected organization`). The linked availability
-is mandatory and must be active, unexpired, positive, and match supplier, version,
-condition, and organization. Sales resolves the supplier from
-`supplierAvailabilityId`; a free supplier selection cannot bypass availability.
+`Operation does not belong to the selected organization`).
+
+**Fase 3 (motorcycles): the supplier belongs to the request, not to the
+model.** A version can be ordered from different suppliers. For cars nothing
+changes: `supplierAvailabilityId` is still required (`400 Supplier availability
+is required for car supply requests`). For motorcycles it is optional and
+informative: when sent it must still be active, unexpired, positive and match
+supplier, version, condition and organization, and reception decrements it.
+Supplier availability (`GET /supplier-availability`) is shown as a suggestion
+when ordering; the `(supplierId, versionId, condition)` uniqueness only means
+one availability row per supplier. For a sale, the administrativa orders with
+`POST /sales/operations/:id/supply-request` (see api-sales-operations.md),
+which creates the request directly in `PEDIDO` at the operation branch.
 
 Supply response includes `supplierAvailabilityId`, `operationId`, `chassis`,
 `organizationId`, all IDs/status/notes, `estimatedCost`, `requestedAt`,
@@ -181,22 +190,34 @@ Only `ADMINISTRATIVA` and `ADMINISTRADOR` receive
 `abastecimiento.gestionar`/`abastecimiento.recibir`; `VENDEDOR` can read requests
 but receives 403 for workflow mutations.
 
-`POST /supply-requests/:id/receive` requires `{vin,branchId}` and optionally
-`engineNumber,licensePlate,manufactureYear,mileageKm,color,purchaseCost,
-receivedAt,idempotencyKey,notes`. The branch must equal the request arrival
+`POST /supply-requests/:id/receive` requires `{vin,branchId}`; `engineNumber`
+is mandatory for motorcycles since fase 3 (`400 Engine number is required to
+receive a motorcycle`) and optional for cars. Optional fields:
+`licensePlate,manufactureYear,mileageKm,color,purchaseCost,receivedAt,
+idempotencyKey,notes`. The unit takes the request supplier and
+`purchaseCost ?? estimatedCost`. The branch must equal the request arrival
 branch, otherwise it returns `400 Reception branch must match the supply
 request arrival branch`. `PEDIDO` and `EN_TRANSITO` can be received (409
 otherwise).
-The locked atomic reception decrements the linked supplier availability and
-creates one unit and reception movement. When the request is linked to an
-operation it also consumes the provider reservation, creates the physical-unit
-reservation, links the unit to the operation and finishes as `ASIGNADO`, all in
-the same transaction. Without an operation it finishes as `RECIBIDO`. It returns
+The locked atomic reception decrements the linked supplier availability (only
+when the request has one) and creates one unit and reception movement. When the
+request is linked to an operation it also consumes the legacy provider
+reservation if any, creates the physical-unit reservation (30 days), links the
+unit to the operation and finishes as `ASIGNADO`, all in the same transaction.
+The operation must be in its arrival branch, same version/condition, not
+CERRADA/CANCELADA/RECHAZADA and without a unit. Without an operation it finishes as `RECIBIDO`. It returns
 `{supplyRequest,unit,inventoryMovement,replayed}`. Repeating it returns the
 same serialized shapes with `replayed:true`; a different normalized VIN returns
 409 `VIN conflicts with the completed supply reception`. Supply list/detail
 responses also expose `receivedUnit:null|{id,vin,chassis,inventoryStatus,
 branchId}`.
+
+### Estados visibles (fase 3)
+
+Motos: grilla de operaciones y stock usan los mismos textos: "Pendiente de asignar
+unidad" (operación sin unidad ni pedido), "Pedida a proveedor X (fecha)"
+(`PENDIENTE_*`, `CONFIRMADO`, `PEDIDO`), "Pendiente de ingreso del proveedor"
+(`EN_TRANSITO`) y "Recibida / asignada" (`RECIBIDO`/`ASIGNADO`).
 
 ## Alcance por sucursal
 

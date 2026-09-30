@@ -15,6 +15,7 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Permissions } from '../auth/decorators/permissions.decorator';
 import {
   ApproveSalesOperationDto,
+  AssignSalesUnitDto,
   CreateSalesOperationDto,
   CreateSalesTradeInDto,
   ReasonedSalesActionDto,
@@ -26,6 +27,7 @@ import {
   SalesPricePolicyQueryDto,
   SalesSellerQueryDto,
   RegisterSalesLicensingCollectionDto,
+  RequestSalesSupplyDto,
   UpdateSalesLicensingDto,
   UpdateSalesOperationDto,
   VersionedSalesActionDto,
@@ -138,6 +140,31 @@ export class SalesController {
     @CurrentUser() actor: AuthenticatedUser,
   ) {
     return this.service.collectLicensing(id, input, actor);
+  }
+
+  @Post(':id/assign-unit')
+  @Permissions(PERMISSION_CODES.SALES_ASSIGN_UNIT)
+  @AuditedMutation()
+  assignUnit(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() input: AssignSalesUnitDto,
+    @CurrentUser() actor: AuthenticatedUser,
+  ) {
+    return this.service.assignUnit(id, input, actor);
+  }
+
+  @Post(':id/supply-request')
+  @Permissions(
+    PERMISSION_CODES.SALES_ASSIGN_UNIT,
+    PERMISSION_CODES.SUPPLY_MANAGE,
+  )
+  @AuditedMutation()
+  requestSupply(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() input: RequestSalesSupplyDto,
+    @CurrentUser() actor: AuthenticatedUser,
+  ) {
+    return this.service.requestSupply(id, input, actor);
   }
 
   @Post(':id/reservation')

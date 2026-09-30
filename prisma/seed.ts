@@ -248,6 +248,13 @@ const managedPermissions = [
     roles: ['ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
   },
   {
+    codigo: 'ventas.asignar_unidad',
+    modulo: 'ventas',
+    descripcion:
+      'Asigna una unidad en stock o pide la moto a un proveedor para las operaciones de su sucursal.',
+    roles: ['ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+  },
+  {
     codigo: 'ventas.patentamiento.gestionar',
     modulo: 'ventas',
     descripcion:

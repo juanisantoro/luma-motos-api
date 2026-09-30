@@ -12,6 +12,7 @@ Todas las rutas usan el prefijo `/api`, requieren JWT y quedan acotadas por RLS 
 | `ventas.cancelar`          | ADMINISTRATIVA, GERENTE, ADMINISTRADOR           |
 | `ventas.cerrar`            | ADMINISTRATIVA, GERENTE, ADMINISTRADOR           |
 | `ventas.patentamiento.gestionar` | ADMINISTRATIVA, GERENTE, ADMINISTRADOR     |
+| `ventas.asignar_unidad`    | ADMINISTRATIVA, GERENTE, ADMINISTRADOR           |
 | `reservas_stock.gestionar` | VENDEDOR, ADMINISTRATIVA, GERENTE, ADMINISTRADOR |
 
 El seed es idempotente: crea o actualiza el catálogo y agrega asignaciones faltantes sin retirar permisos personalizados.
@@ -46,8 +47,9 @@ inventario, disponibilidad de proveedor y abastecimiento ya filtran por
   },
   "versionId": "uuid",
   "condition": "NUEVO",
-  "unitId": "uuid optional",
-  "supplierAvailabilityId": "uuid optional",
+  "color": "color deseado optional (catálogo de colores)",
+  "unitId": "uuid optional (compatibilidad)",
+  "supplierAvailabilityId": "uuid optional (compatibilidad)",
   "sellerId": "uuid optional para no VENDEDOR",
   "contactId": "uuid optional",
   "agreedPrice": 2500000,
@@ -76,12 +78,19 @@ activo o lo crea y luego crea la operación. No requiere `clientes.gestionar`.
 Una coincidencia existente sólo actualiza nombre, teléfono y presentación del
 documento; una coincidencia inactiva devuelve `409`.
 
-Se exige exactamente uno entre `unitId` y `supplierAvailabilityId`. La unidad
-física debe estar `EN_STOCK`. La disponibilidad debe pertenecer al mismo tenant,
-versión y condición, estar vigente y conservar cantidad informada no reservada
-mayor a cero. La operación, reserva y solicitud de abastecimiento se crean en la
-misma transacción; `supplierId` se resuelve desde la disponibilidad y no se acepta
-como atajo independiente. La cantidad informada se descuenta al recibir.
+**Fase 3 (sólo motos) — de dónde sale la unidad:**
+
+| Tipo | Condición | Origen en el alta |
+| --- | --- | --- |
+| MOTO | NUEVO (0 km) | versión del catálogo, sin unidad ni proveedor; `color` deseado opcional (`requestedColor`). La administrativa asigna stock o pide al proveedor después (ver "Asignación de unidad"). `unitId` se sigue aceptando por compatibilidad. |
+| MOTO | USADO | unidad física `EN_STOCK` (`unitId` obligatorio: `400 USED_MOTO_REQUIRES_STOCK_UNIT`). |
+| AUTO | ambas | sin cambios: exactamente uno entre `unitId` y `supplierAvailabilityId` (`400 Exactly one of unitId or supplierAvailabilityId is required`). |
+
+Una moto 0 km sin unidad nace con `fulfillment.status = PENDIENTE_ASIGNACION`
+y puede enviarse y aprobarse así; cerrar sigue exigiendo unidad física. Los
+autos mantienen la regla anterior para enviar/aprobar (reserva activa o pedido
+de abastecimiento con su reserva de disponibilidad). `unitId` y
+`supplierAvailabilityId` nunca van juntos.
 
 La reserva física bloquea la unidad y la operación se crea en la misma
 transacción. Si otro request ganó la unidad, responde HTTP 409 con
@@ -197,6 +206,73 @@ Plataformas: `EFECTIVO`, `CREDITO`, `EFECTIVO_CREDITO`, `MOTO_EFECTIVO`,
 positivo exactamente cuando la plataforma contiene crédito, y no puede superar
 el cierre. `debt`: `NO|RESERVA|CUOTA_INICIAL|PAPELES|ACCESORIOS|OTRO`.
 
+## Asignación de unidad (fase 3)
+
+Sólo para motos: `assign-unit` y `supply-request` sobre un auto responden
+`400 ASSIGNMENT_ONLY_FOR_MOTOS`.
+
+Se gestiona desde la grilla de operaciones de motos (no hay pantalla aparte):
+la columna "Unidad" muestra la situación y, con `ventas.asignar_unidad`, las
+acciones "Asignar de stock", "Pedir a proveedor" (además
+`abastecimiento.gestionar`) y "Registrar llegada" (`abastecimiento.recibir`).
+El atajo "A asignar" del menú abre esa grilla con `?unidad=SIN_ASIGNAR`, que
+el front traduce a `GET /api/sales/operations?vehicleType=MOTO&
+fulfillmentStatus=SIN_ASIGNAR` (acotada por sucursal como todo el listado).
+`fulfillmentStatus` acepta `PENDIENTE_ASIGNACION|PEDIDA|PENDIENTE_INGRESO|
+RECIBIDA|ASIGNADA|SIN_ASIGNAR`. `SIN_ASIGNAR` es la bandeja: operaciones sin
+unidad ya enviadas por el vendedor (PENDIENTE_APROBACION o APROBADA).
+
+Lista y detalle devuelven:
+
+```json
+{
+  "requestedColor": "Rojo",
+  "fulfillment": {
+    "status": "PEDIDA",
+    "supplyRequestId": "uuid",
+    "supplyStatus": "PEDIDO",
+    "supplier": { "id": "uuid", "legalName": "Proveedor A" },
+    "requestedAt": "…", "orderedAt": "…", "dispatchedAt": null, "receivedAt": null
+  }
+}
+```
+
+| `status` | Texto en pantalla | Cuándo |
+| --- | --- | --- |
+| `PENDIENTE_ASIGNACION` | Pendiente de asignar unidad | sin unidad y sin pedido vigente |
+| `PEDIDA` | Pedida a proveedor X (fecha) | pedido en PENDIENTE_*, CONFIRMADO o PEDIDO |
+| `PENDIENTE_INGRESO` | Pendiente de ingreso del proveedor | pedido EN_TRANSITO |
+| `RECIBIDA` | Recibida, falta asignar | pedido recibido sin unidad en la operación (flujo anterior) |
+| `ASIGNADA` | Recibida / asignada | la operación tiene unidad física |
+
+Se toma el último pedido no cancelado.
+
+`POST /api/sales/operations/:id/assign-unit` (`ventas.asignar_unidad`):
+`{expectedVersion, unitId, vin?, engineNumber?}`. La unidad debe estar
+`EN_STOCK` en la sucursal de la operación, con la misma versión y condición.
+Reserva la unidad por 30 días, la marca RESERVADO y la vincula; no cambia el
+estado de la operación. `vin`/`engineNumber` confirman o corrigen chasis y motor
+y requieren además `inventario.gestionar` (403). Errores: `409
+OPERATION_NOT_ASSIGNABLE` (sólo BORRADOR, PENDIENTE_APROBACION o APROBADA),
+`409 OPERATION_ALREADY_HAS_UNIT`, `409 SUPPLY_REQUEST_IN_PROGRESS` (hay un
+pedido sin recibir: recibirlo o cancelarlo), `409
+INVENTORY_UNIT_ALREADY_RESERVED`, `400 VIN is invalid`.
+
+`POST /api/sales/operations/:id/supply-request` (`ventas.asignar_unidad` +
+`abastecimiento.gestionar`): `{expectedVersion, supplierId, color?,
+supplierReference?, estimatedCost?, notes?}`. Crea el pedido al proveedor
+elegido en ese momento, en estado `PEDIDO`, con llegada a la sucursal de la
+operación y el color deseado por defecto. La misma versión puede pedirse a
+proveedores distintos; la disponibilidad de proveedores es sólo una sugerencia.
+Un pedido vigente por operación (`409 SUPPLY_REQUEST_IN_PROGRESS`). La
+recepción (`POST /supply-requests/:id/receive`, ver api-stock-supply.md) da de
+alta la unidad con chasis y motor, la reserva y la asigna a la operación.
+
+Operaciones anteriores con reserva sobre disponibilidad: siguen funcionando.
+Su pedido se recibe igual que antes; asignar desde stock o pedir a otro
+proveedor libera esa reserva ("Reemplazada por…"). Una reserva de
+disponibilidad vencida ya no bloquea enviar ni aprobar.
+
 ## Componentes, toma y aprobación
 
 `POST /api/sales/operations/:id/trade-ins` crea la moto tomada con
@@ -248,8 +324,10 @@ Rutas adicionales: `GET /sellers`, `GET /price-policy`, `GET /:id`,
 `POST /:id/reservation`, `POST /:id/reservation/release`,
 `POST /:id/cancel`, `POST /:id/close`. Los DTO rechazan campos desconocidos y
 `expectedVersion` debe coincidir con `rowVersion` o responde `409`. Cerrar exige
-APROBADA, unidad física/reserva válida y plan total exacto; consume la reserva y
-marca la unidad VENDIDO.
+APROBADA, unidad física asignada (`409 OPERATION_UNIT_REQUIRED` si todavía está
+pendiente de asignar o pedida al proveedor), reserva vigente y plan total
+exacto; consume la reserva y marca la unidad VENDIDO. Cancelar cancela los
+pedidos al proveedor no recibidos.
 
 Lookups de formulario:
 

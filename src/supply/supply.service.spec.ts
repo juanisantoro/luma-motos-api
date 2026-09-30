@@ -171,6 +171,7 @@ describe('SupplyService', () => {
       requestId,
       {
         vin: 'ABC123456',
+        engineNumber: 'MOT-001',
         branchId: current.sucursal_llegada_id,
         idempotencyKey: 'receive-once',
       },
@@ -217,6 +218,7 @@ describe('SupplyService', () => {
         requestId,
         {
           vin: 'ABC123456',
+          engineNumber: 'MOT-001',
           branchId: 'edc9ce1d-dbf3-4691-a2d2-79e4e9563dd2',
         },
         actor,
@@ -384,7 +386,7 @@ describe('SupplyService', () => {
 
     const result = await service.receive(
       requestId,
-      { vin: 'ABC123456', branchId },
+      { vin: 'ABC123456', engineNumber: 'MOT-001', branchId },
       actor,
     );
 
@@ -439,12 +441,104 @@ describe('SupplyService', () => {
     );
 
     await expect(
-      service.receive(requestId, { vin: 'ABC123456', branchId }, actor),
+      service.receive(
+        requestId,
+        { vin: 'ABC123456', engineNumber: 'MOT-001', branchId },
+        actor,
+      ),
     ).rejects.toThrow(
       new ConflictException(
         'Only PEDIDO or EN_TRANSITO supply requests can be received',
       ),
     );
+  });
+
+  describe('fase 3 rules by vehicle type', () => {
+    const requestId = '7d5cc401-544e-4651-9bd6-52495887fecd';
+    const branchId = '84e778cc-7616-4792-b6db-d89f100bb6f1';
+
+    function serviceFor(transaction: Record<string, unknown>) {
+      return new SupplyService(
+        {} as PrismaService,
+        {
+          execute: jest
+            .fn<
+              Promise<unknown>,
+              [
+                AuthenticatedAuditEvent,
+                (client: Prisma.TransactionClient) => Promise<unknown>,
+              ]
+            >()
+            .mockImplementation((_event, work) =>
+              work(transaction as unknown as Prisma.TransactionClient),
+            ),
+        } as unknown as AuditService,
+      );
+    }
+
+    it('requires the engine number to receive a motorcycle', async () => {
+      const service = serviceFor({
+        $queryRaw: jest.fn().mockResolvedValue([{ id: requestId }]),
+        solicitudes_abastecimiento: {
+          findFirst: jest.fn().mockResolvedValue({
+            organizacion_id: actor.organization.id,
+            sucursal_llegada_id: branchId,
+            unidad_vehiculo_recibida_id: null,
+            estado: 'PEDIDO',
+            versiones_vehiculos: {
+              modelos_vehiculos: { tipo_vehiculo: 'MOTO' },
+            },
+          }),
+        },
+      });
+      await expect(
+        service.receive(requestId, { vin: 'ABC123456', branchId }, actor),
+      ).rejects.toThrow(
+        new BadRequestException(
+          'Engine number is required to receive a motorcycle',
+        ),
+      );
+    });
+
+    it('keeps supplier availability required for car supply requests', async () => {
+      const create = jest.fn();
+      const service = serviceFor({
+        personal: {
+          findFirst: jest.fn().mockResolvedValue({ id: 'personnel' }),
+        },
+        proveedores: {
+          findFirst: jest.fn().mockResolvedValue({ id: 'supplier' }),
+        },
+        sucursales: {
+          findFirst: jest.fn().mockResolvedValue({ id: branchId }),
+        },
+        versiones_vehiculos: {
+          findUnique: jest.fn().mockResolvedValue({
+            alcance: 'GLOBAL',
+            organizacion_propietaria_id: null,
+            catalogo_organizaciones: [],
+            modelos_vehiculos: { tipo_vehiculo: 'AUTO' },
+          }),
+        },
+        solicitudes_abastecimiento: { create },
+      });
+      await expect(
+        service.create(
+          {
+            supplierId: '0a44e64e-351e-4d9b-9150-5f20e34e4d61',
+            versionId: '4de88c4c-3382-4f9b-ae60-98147159c977',
+            condition: 'NUEVO',
+            arrivalBranchId: branchId,
+          },
+          { ...actor, globalAccess: true },
+        ),
+      ).rejects.toThrow(
+        new BadRequestException(
+          'Supplier availability is required for car supply requests',
+        ),
+      );
+      expect(create).not.toHaveBeenCalled();
+    });
   });
 
   it('rejects a replay with a different VIN', async () => {
@@ -484,7 +578,11 @@ describe('SupplyService', () => {
     );
 
     await expect(
-      service.receive(requestId, { vin: 'XYZ123456', branchId }, actor),
+      service.receive(
+        requestId,
+        { vin: 'XYZ123456', engineNumber: 'MOT-001', branchId },
+        actor,
+      ),
     ).rejects.toThrow(
       new ConflictException(
         'VIN conflicts with the completed supply reception',

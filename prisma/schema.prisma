@@ -745,6 +745,7 @@ model operaciones {
   importe_patentamiento                                                                                       Decimal?                           @db.Decimal(18, 2)
   patente_estimada_desde                                                                                      DateTime?                          @db.Date
   patente_estimada_hasta                                                                                      DateTime?                          @db.Date
+  color_deseado                                                                                               String?                            @db.VarChar(80)
   debe                                                                                                        deuda_operacion_luma               @default(NO)
   estado_entrega                                                                                              luma_estado_entrega                @default(NO_PROGRAMADA)
   entrega_programada_en                                                                                       DateTime?                          @db.Timestamptz(6)

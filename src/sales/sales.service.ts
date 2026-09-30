@@ -21,7 +21,7 @@ import {
 } from '@prisma/client';
 import { AuditService, AuthenticatedAuditEvent } from '../audit/audit.service';
 import { BranchScope } from '../branch-scope/branch-scope';
-import { ROLE_CODES } from '../auth/auth.constants';
+import { PERMISSION_CODES, ROLE_CODES } from '../auth/auth.constants';
 import type { AuthenticatedUser } from '../auth/auth.types';
 import {
   activePricePolicyRequired,
@@ -39,7 +39,7 @@ import {
   normalizeClientDocument,
   normalizeClientName,
 } from '../clients/client-normalization';
-import { normalizeVin } from '../inventory/vin';
+import { normalizeVin, validateVin } from '../inventory/vin';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   argentinaToday,
@@ -52,6 +52,7 @@ import {
 } from './licensing';
 import {
   ApproveSalesOperationDto,
+  AssignSalesUnitDto,
   CreateSalesOperationDto,
   CreateSalesTradeInDto,
   ReasonedSalesActionDto,
@@ -65,6 +66,8 @@ import {
   SalesPricePolicyQueryDto,
   SalesSellerQueryDto,
   RegisterSalesLicensingCollectionDto,
+  RequestSalesSupplyDto,
+  SalesFulfillmentStatus,
   UpdateSalesLicensingDto,
   UpdateSalesOperationDto,
   VersionedSalesActionDto,
@@ -74,6 +77,30 @@ const SELLER_ASSIGNMENT_ROLES: SalesAssignmentRole[] = [
   SalesAssignmentRole.VENDEDOR,
   SalesAssignmentRole.CALLCENTER,
 ];
+
+// Supply requests that are still on their way to becoming a physical unit.
+const SUPPLY_IN_PROGRESS_STATES = [
+  'PENDIENTE_APROBACION',
+  'PENDIENTE_CONFIRMACION',
+  'CONFIRMADO',
+  'PEDIDO',
+  'EN_TRANSITO',
+] as const;
+const SUPPLY_ORDERED_STATES = [
+  'PENDIENTE_APROBACION',
+  'PENDIENTE_CONFIRMACION',
+  'CONFIRMADO',
+  'PEDIDO',
+] as const;
+// Operations where the administrativa can still assign or order a unit.
+const ASSIGNABLE_OPERATION_STATES: luma_estado_operacion[] = [
+  luma_estado_operacion.BORRADOR,
+  luma_estado_operacion.PENDIENTE_APROBACION,
+  luma_estado_operacion.APROBADA,
+];
+// Stock assignments and receptions hold the unit for the sale; seller-side
+// reservations keep their 48h default.
+const ASSIGNED_RESERVATION_DAYS = 30;
 
 const operationInclude = {
   clientes: {
@@ -231,6 +258,7 @@ export class SalesService {
           : query.licensingOverdue
             ? overdueWhere
             : { NOT: overdueWhere },
+        this.fulfillmentWhere(query.fulfillmentStatus),
       ],
       modalidad_patentamiento:
         query.licensingMode === 'SIN_DEFINIR' ? null : query.licensingMode,
@@ -306,6 +334,47 @@ export class SalesService {
     };
   }
 
+  // Mirrors fulfillment(): unit assigned, or the state of the latest
+  // non-cancelled supply request. With more than one live request the
+  // filter matches if any of them is in the state (the response shows the
+  // latest).
+  private fulfillmentWhere(
+    filter: SalesOperationQueryDto['fulfillmentStatus'],
+  ): Prisma.operacionesWhereInput {
+    if (!filter) return {};
+    if (filter === 'ASIGNADA') return { unidad_vehiculo_id: { not: null } };
+    const unassigned: Prisma.operacionesWhereInput = {
+      unidad_vehiculo_id: null,
+    };
+    // The tray lists operations already sent by the seller that still need
+    // a unit; drafts and closed/cancelled/rejected ones stay out.
+    if (filter === 'SIN_ASIGNAR')
+      return {
+        ...unassigned,
+        estado_operacion: {
+          in: [
+            luma_estado_operacion.PENDIENTE_APROBACION,
+            luma_estado_operacion.APROBADA,
+          ],
+        },
+      };
+    if (filter === 'PENDIENTE_ASIGNACION')
+      return {
+        ...unassigned,
+        solicitudes_abastecimiento: { none: { estado: { not: 'CANCELADA' } } },
+      };
+    const states =
+      filter === 'PENDIENTE_INGRESO'
+        ? (['EN_TRANSITO'] as const)
+        : filter === 'RECIBIDA'
+          ? (['RECIBIDO', 'ASIGNADO'] as const)
+          : SUPPLY_ORDERED_STATES;
+    return {
+      ...unassigned,
+      solicitudes_abastecimiento: { some: { estado: { in: [...states] } } },
+    };
+  }
+
   pendingApprovals(query: SalesOperationQueryDto, actor: AuthenticatedUser) {
     return this.findAll(
       {
@@ -357,7 +426,8 @@ export class SalesService {
         select: { estado_operacion: true, precio_acordado: true },
       });
       const eligible = rows.filter(
-        (row) => commissionOperationEligibility(row.estado_operacion).computable,
+        (row) =>
+          commissionOperationEligibility(row.estado_operacion).computable,
       );
       return {
         units: eligible.length,
@@ -603,7 +673,8 @@ export class SalesService {
         const reason: AttentionReason =
           row.estado_operacion === luma_estado_operacion.RECHAZADA
             ? 'RECHAZADA'
-            : row.estado_operacion === luma_estado_operacion.PENDIENTE_APROBACION
+            : row.estado_operacion ===
+                luma_estado_operacion.PENDIENTE_APROBACION
               ? 'PENDIENTE_APROBACION'
               : 'LISTA_PARA_FIRMAR';
         items.set(row.id, {
@@ -927,6 +998,7 @@ export class SalesService {
       input.agreedPrice,
     );
     this.assertLicensingContract(input.licensingMode, input.licensingAmount);
+    this.assertSaleSource(input);
     const operationDate = input.operationDate
       ? new Date(input.operationDate)
       : new Date();
@@ -947,10 +1019,7 @@ export class SalesService {
           organizationId,
           input.vehicleType,
         );
-        if (Boolean(input.unitId) === Boolean(input.supplierAvailabilityId))
-          throw new BadRequestException(
-            'Exactly one of unitId or supplierAvailabilityId is required',
-          );
+        if (input.color) await assertValidUnitColor(tx, input.color);
         // Resolved once and reused below for creado_por_personal_id: this used
         // to be looked up twice (once here as the seller fallback, once again
         // for the creator field), doubling a DB round trip on every create.
@@ -996,6 +1065,7 @@ export class SalesService {
             version_id: input.versionId,
             condicion: input.condition,
             fecha_operacion: operationDate,
+            color_deseado: input.color?.trim() || undefined,
             precio_lista: policy.precio_lista,
             precio_minimo: policy.precio_minimo,
             precio_acordado: input.agreedPrice,
@@ -1169,6 +1239,15 @@ export class SalesService {
           if (activeReservation)
             throw new ConflictException(
               'Release the active reservation before changing the branch',
+            );
+          if (
+            input.branchId !== current.sucursal_id &&
+            this.supplyInProgress(current)
+          )
+            throw apiError(
+              HttpStatus.CONFLICT,
+              'SUPPLY_REQUEST_IN_PROGRESS',
+              'Cancel the supplier order before changing the branch',
             );
         }
         if (input.clientId)
@@ -1498,6 +1577,259 @@ export class SalesService {
         return this.present(tx, await this.operationOr404(tx, id, actor));
       },
       id,
+    );
+  }
+
+  // Fase 3 - administrativa: assigns an EN_STOCK unit of the operation
+  // branch (same version and condition), optionally confirming/correcting
+  // its VIN and engine number. The operation status does not change.
+  async assignUnit(
+    id: string,
+    input: AssignSalesUnitDto,
+    actor: AuthenticatedUser,
+  ) {
+    const editsUnit =
+      input.vin !== undefined || input.engineNumber !== undefined;
+    if (
+      editsUnit &&
+      !actor.role.permissions.includes(PERMISSION_CODES.INVENTORY_MANAGE)
+    )
+      throw new ForbiddenException(
+        'Editing the VIN or engine number requires inventario.gestionar',
+      );
+    return this.mutate(
+      actor,
+      'SALES_OPERATION_UNIT_ASSIGNED',
+      async (tx, event) => {
+        const operation = await this.operationOr404(tx, id, actor, true);
+        this.setTargetOrganization(event, actor, operation.organizacion_id);
+        this.assertVersion(operation.version_fila, input.expectedVersion);
+        this.assertAssignable(operation);
+        if (this.supplyInProgress(operation))
+          throw apiError(
+            HttpStatus.CONFLICT,
+            'SUPPLY_REQUEST_IN_PROGRESS',
+            'The operation already has a supplier order in progress: receive it or cancel it before assigning a stock unit',
+          );
+        const legacyReservation = await this.activeReservation(tx, id, true);
+        if (legacyReservation?.disponibilidad_proveedor_id) {
+          const receivedLegacySupply =
+            operation.solicitudes_abastecimiento.some(
+              (supply) =>
+                supply.estado === 'RECIBIDO' &&
+                supply.unidad_vehiculo_recibida_id === input.unitId,
+            );
+          if (receivedLegacySupply)
+            await this.materializeProviderReservation(
+              tx,
+              operation,
+              input.unitId,
+            );
+          else
+            await tx.reservas_stock.update({
+              where: { id: legacyReservation.id },
+              data: {
+                estado: estado_reserva_luma.LIBERADA,
+                liberado_en: new Date(),
+                motivo_liberacion:
+                  'Reemplazada por asignación de unidad en stock',
+              },
+            });
+        }
+        if (editsUnit) {
+          await this.lockUnitOr404(tx, input.unitId, operation.organizacion_id);
+          const vin =
+            input.vin === undefined ? undefined : validateVin(input.vin);
+          const engine = input.engineNumber?.trim();
+          await tx.unidades_vehiculos.update({
+            where: {
+              id_organizacion_id: {
+                id: input.unitId,
+                organizacion_id: operation.organizacion_id,
+              },
+            },
+            data: {
+              vin_mostrado: vin?.vin,
+              vin_normalizado: vin?.normalizedVin,
+              numero_motor:
+                input.engineNumber === undefined ? undefined : engine || null,
+              motor_normalizado:
+                input.engineNumber === undefined
+                  ? undefined
+                  : engine
+                    ? normalizeVin(engine)
+                    : null,
+            },
+          });
+        }
+        await this.reserveUnit(
+          tx,
+          operation,
+          input.unitId,
+          new Date(
+            Date.now() +
+              ASSIGNED_RESERVATION_DAYS * 24 * 60 * 60 * 1000 -
+              60_000,
+          ).toISOString(),
+          actor,
+        );
+        await tx.operaciones.update({
+          where: {
+            id_organizacion_id: {
+              id,
+              organizacion_id: operation.organizacion_id,
+            },
+          },
+          data: { version_fila: { increment: 1 } },
+        });
+        return this.present(tx, await this.operationOr404(tx, id, actor));
+      },
+      id,
+    );
+  }
+
+  // Fase 3 - administrativa: no stock, so the unit is ordered from the
+  // supplier chosen now. The request starts as PEDIDO (the administrativa is
+  // placing the order) and arrives at the operation branch; reception
+  // creates the unit and assigns it to the operation.
+  async requestSupply(
+    id: string,
+    input: RequestSalesSupplyDto,
+    actor: AuthenticatedUser,
+  ) {
+    return this.mutate(
+      actor,
+      'SALES_OPERATION_SUPPLY_REQUESTED',
+      async (tx, event) => {
+        const operation = await this.operationOr404(tx, id, actor, true);
+        this.setTargetOrganization(event, actor, operation.organizacion_id);
+        this.assertVersion(operation.version_fila, input.expectedVersion);
+        this.assertAssignable(operation);
+        if (this.supplyInProgress(operation))
+          throw apiError(
+            HttpStatus.CONFLICT,
+            'SUPPLY_REQUEST_IN_PROGRESS',
+            'The operation already has a supplier order in progress',
+          );
+        const supplier = await tx.proveedores.findFirst({
+          where: {
+            id: input.supplierId,
+            organizacion_id: operation.organizacion_id,
+            activo: true,
+          },
+          select: { id: true },
+        });
+        if (!supplier)
+          throw new BadRequestException('Supplier is invalid or inactive');
+        if (input.color) await assertValidUnitColor(tx, input.color);
+        // A legacy provider-availability reservation no longer applies once
+        // the order goes to a freely chosen supplier.
+        const legacyReservation = await this.activeReservation(tx, id, true);
+        if (legacyReservation?.disponibilidad_proveedor_id)
+          await tx.reservas_stock.update({
+            where: { id: legacyReservation.id },
+            data: {
+              estado: estado_reserva_luma.LIBERADA,
+              liberado_en: new Date(),
+              motivo_liberacion: 'Reemplazada por pedido a proveedor',
+            },
+          });
+        const personnelId = await this.actorPersonnelId(
+          tx,
+          actor,
+          operation.organizacion_id,
+        );
+        const now = new Date();
+        await tx.solicitudes_abastecimiento.create({
+          data: {
+            operacion_id: id,
+            proveedor_id: supplier.id,
+            version_id: operation.version_id,
+            condicion: operation.condicion,
+            sucursal_llegada_id: operation.sucursal_id,
+            estado: 'PEDIDO',
+            confirmado_en: now,
+            pedido_en: now,
+            color: input.color?.trim() || operation.color_deseado || undefined,
+            referencia_proveedor: input.supplierReference?.trim(),
+            costo_estimado: input.estimatedCost,
+            notas: input.notes?.trim(),
+            creado_por_personal_id: personnelId,
+            organizacion_id: operation.organizacion_id,
+          },
+        });
+        await tx.operaciones.update({
+          where: {
+            id_organizacion_id: {
+              id,
+              organizacion_id: operation.organizacion_id,
+            },
+          },
+          data: { version_fila: { increment: 1 } },
+        });
+        return this.present(tx, await this.operationOr404(tx, id, actor));
+      },
+      id,
+    );
+  }
+
+  // Fase 3 applies to motorcycles only:
+  // - MOTO 0km: version + condition from the catalog, no unit or supplier;
+  //   the administrativa assigns a stock unit or orders it afterwards
+  //   (unitId stays accepted for compatibility).
+  // - MOTO usada: must be a physical unit in stock (unitId).
+  // - AUTO: unchanged, exactly one of unitId or supplierAvailabilityId.
+  private assertSaleSource(input: CreateSalesOperationDto) {
+    if (input.vehicleType === tipo_vehiculo_luma.AUTO) {
+      if (Boolean(input.unitId) === Boolean(input.supplierAvailabilityId))
+        throw new BadRequestException(
+          'Exactly one of unitId or supplierAvailabilityId is required',
+        );
+      return;
+    }
+    if (input.unitId && input.supplierAvailabilityId)
+      throw new BadRequestException(
+        'unitId and supplierAvailabilityId cannot be combined',
+      );
+    if (input.condition === 'USADO' && !input.unitId)
+      throw apiError(
+        HttpStatus.BAD_REQUEST,
+        'USED_MOTO_REQUIRES_STOCK_UNIT',
+        'Used motorcycles must be sold from a unit in stock (unitId)',
+      );
+  }
+
+  private isMoto(operation: OperationRecord) {
+    return (
+      operation.versiones_vehiculos.modelos_vehiculos.tipo_vehiculo ===
+      tipo_vehiculo_luma.MOTO
+    );
+  }
+
+  private assertAssignable(operation: OperationRecord) {
+    if (!this.isMoto(operation))
+      throw apiError(
+        HttpStatus.BAD_REQUEST,
+        'ASSIGNMENT_ONLY_FOR_MOTOS',
+        'Unit assignment and supplier orders from the tray are only for motorcycles',
+      );
+    if (!ASSIGNABLE_OPERATION_STATES.includes(operation.estado_operacion))
+      throw apiError(
+        HttpStatus.CONFLICT,
+        'OPERATION_NOT_ASSIGNABLE',
+        'Units can only be assigned to draft, pending or approved operations',
+      );
+    if (operation.unidad_vehiculo_id)
+      throw apiError(
+        HttpStatus.CONFLICT,
+        'OPERATION_ALREADY_HAS_UNIT',
+        'The operation already has a physical unit assigned',
+      );
+  }
+
+  private supplyInProgress(operation: OperationRecord) {
+    return (operation.solicitudes_abastecimiento ?? []).some((supply) =>
+      (SUPPLY_IN_PROGRESS_STATES as readonly string[]).includes(supply.estado),
     );
   }
 
@@ -2352,6 +2684,12 @@ export class SalesService {
     }
   }
 
+  // Fase 3 (motos): an operation no longer needs a unit or a supply request
+  // to be submitted or approved - the administrativa assigns one afterwards
+  // and closing still requires the physical unit. Legacy provider-
+  // availability reservations are informative and no longer block.
+  // Autos keep the previous rule: an active stock reservation or a supply
+  // request (with a live availability reservation when it has one).
   private async assertFulfillableOperation(
     tx: Prisma.TransactionClient,
     operation: OperationRecord,
@@ -2359,6 +2697,7 @@ export class SalesService {
     if (operation.unidad_vehiculo_id)
       return this.assertUsableReservation(tx, operation);
     const reservation = await this.activeReservation(tx, operation.id, true);
+    if (this.isMoto(operation)) return reservation;
     const supply = await tx.solicitudes_abastecimiento.findFirst({
       where: {
         operacion_id: operation.id,
@@ -2716,8 +3055,10 @@ export class SalesService {
     operation: OperationRecord,
   ) {
     if (!operation.unidad_vehiculo_id)
-      throw new ConflictException(
-        'The operation requires an assigned inventory unit',
+      throw apiError(
+        HttpStatus.CONFLICT,
+        'OPERATION_UNIT_REQUIRED',
+        'The operation requires an assigned physical unit: assign one from stock or receive the supplier order first',
       );
     const unit = await this.lockUnitOr404(
       tx,
@@ -3189,6 +3530,51 @@ export class SalesService {
       });
   }
 
+  // Where the operation stands on getting a physical unit. The latest
+  // non-cancelled supply request decides while no unit is assigned.
+  private fulfillment(
+    item: OperationRecord,
+    currentUnit: { id: string } | null,
+  ): {
+    status: SalesFulfillmentStatus;
+    supplyRequestId: string | null;
+    supplyStatus: string | null;
+    supplier: { id: string; legalName: string } | null;
+    requestedAt: Date | null;
+    orderedAt: Date | null;
+    dispatchedAt: Date | null;
+    receivedAt: Date | null;
+  } {
+    const supply = (item.solicitudes_abastecimiento ?? []).find(
+      (request) => request.estado !== 'CANCELADA',
+    );
+    const status: SalesFulfillmentStatus =
+      item.unidad_vehiculo_id && currentUnit
+        ? 'ASIGNADA'
+        : !supply
+          ? 'PENDIENTE_ASIGNACION'
+          : supply.estado === 'EN_TRANSITO'
+            ? 'PENDIENTE_INGRESO'
+            : supply.estado === 'RECIBIDO' || supply.estado === 'ASIGNADO'
+              ? 'RECIBIDA'
+              : 'PEDIDA';
+    return {
+      status,
+      supplyRequestId: supply?.id ?? null,
+      supplyStatus: supply?.estado ?? null,
+      supplier: supply
+        ? {
+            id: supply.proveedores.id,
+            legalName: supply.proveedores.razon_social,
+          }
+        : null,
+      requestedAt: supply?.solicitado_en ?? null,
+      orderedAt: supply?.pedido_en ?? null,
+      dispatchedAt: supply?.despachado_en ?? null,
+      receivedAt: supply?.recibido_en ?? null,
+    };
+  }
+
   private async present(tx: Prisma.TransactionClient, item: OperationRecord) {
     return (await this.presentMany(tx, [item]))[0];
   }
@@ -3276,6 +3662,8 @@ export class SalesService {
       creditAmount: item.monto_credito?.toString() ?? null,
       guarantor: item.respaldo_garante,
       ticketNumber: item.numero_boleto,
+      requestedColor: item.color_deseado,
+      fulfillment: this.fulfillment(item, currentUnit),
       includesHelmet: item.incluye_casco,
       licensing: licensingSummary({
         mode: item.modalidad_patentamiento,

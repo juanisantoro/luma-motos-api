@@ -3,6 +3,7 @@ import {
   IsDateString,
   IsEnum,
   IsInt,
+  IsNotEmpty,
   IsNumber,
   IsOptional,
   IsString,
@@ -34,7 +35,10 @@ export class SupplyRequestQueryDto {
 }
 export class CreateSupplyRequestDto {
   @IsUUID() supplierId!: string;
-  @IsUUID() supplierAvailabilityId!: string;
+  // Motos (fase 3): informative, the supplier belongs to the request. Autos:
+  // still required. When sent it must match supplier, version, condition
+  // and be current.
+  @IsOptional() @IsUUID() supplierAvailabilityId?: string;
   @IsOptional() @IsUUID() operationId?: string;
   @IsUUID() versionId!: string;
   @IsEnum(condicion_vehiculo_luma) condition!: condicion_vehiculo_luma;
@@ -57,7 +61,8 @@ export class SupplyTransitionDto {
 export class ReceiveSupplyRequestDto {
   @IsString() @MaxLength(80) vin!: string;
   @IsUUID() branchId!: string;
-  @IsOptional() @IsString() @MaxLength(60) engineNumber?: string;
+  // Required for motorcycles (fase 3: chassis + engine); optional for autos.
+  @IsOptional() @IsString() @IsNotEmpty() @MaxLength(60) engineNumber?: string;
   @IsOptional() @IsString() @MaxLength(20) licensePlate?: string;
   @IsOptional()
   @Type(() => Number)

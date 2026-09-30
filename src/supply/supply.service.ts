@@ -118,7 +118,20 @@ export class SupplyService {
         const personalId = await this.personalId(tx, actor, organizationId);
         await this.supplierOr400(tx, input.supplierId, organizationId);
         await this.branchOr400(tx, arrivalBranchId, organizationId);
-        await this.versionOr400(tx, input.versionId, organizationId);
+        const version = await this.versionOr400(
+          tx,
+          input.versionId,
+          organizationId,
+        );
+        // Autos keep the availability-backed request; for motos it is only
+        // an informative link (fase 3).
+        if (
+          !input.supplierAvailabilityId &&
+          version.modelos_vehiculos?.tipo_vehiculo === 'AUTO'
+        )
+          throw new BadRequestException(
+            'Supplier availability is required for car supply requests',
+          );
         if (input.operationId) {
           const operation = await tx.operaciones.findFirst({
             where: {
@@ -133,22 +146,24 @@ export class SupplyService {
               'Operation does not belong to the selected organization',
             );
         }
-        const availability = await tx.disponibilidad_proveedor.findFirst({
-          where: {
-            id: input.supplierAvailabilityId,
-            proveedor_id: input.supplierId,
-            version_id: input.versionId,
-            condicion: input.condition,
-            organizacion_id: organizationId,
-            cantidad_informada: { gt: 0 },
-            OR: [{ vence_en: null }, { vence_en: { gt: new Date() } }],
-          },
-          select: { id: true },
-        });
-        if (!availability)
-          throw new BadRequestException(
-            'Supplier availability is invalid, expired, or unavailable',
-          );
+        if (input.supplierAvailabilityId) {
+          const availability = await tx.disponibilidad_proveedor.findFirst({
+            where: {
+              id: input.supplierAvailabilityId,
+              proveedor_id: input.supplierId,
+              version_id: input.versionId,
+              condicion: input.condition,
+              organizacion_id: organizationId,
+              cantidad_informada: { gt: 0 },
+              OR: [{ vence_en: null }, { vence_en: { gt: new Date() } }],
+            },
+            select: { id: true },
+          });
+          if (!availability)
+            throw new BadRequestException(
+              'Supplier availability is invalid, expired, or unavailable',
+            );
+        }
         if (input.color) await assertValidUnitColor(tx, input.color);
         const item = await tx.solicitudes_abastecimiento.create({
           data: {
@@ -292,6 +307,14 @@ export class SupplyService {
             'Only PEDIDO or EN_TRANSITO supply requests can be received',
           );
         const vin = validateVin(input.vin);
+        const engineNumber = input.engineNumber?.trim();
+        if (
+          !engineNumber &&
+          current.versiones_vehiculos.modelos_vehiculos.tipo_vehiculo === 'MOTO'
+        )
+          throw new BadRequestException(
+            'Engine number is required to receive a motorcycle',
+          );
         if (input.color) await assertValidUnitColor(tx, input.color);
         // Fall back to the color requested on the supply request itself
         // when reception doesn't explicitly override it - it was already
@@ -375,10 +398,8 @@ export class SupplyService {
             condicion: current.condicion,
             vin_mostrado: vin.vin,
             vin_normalizado: vin.normalizedVin,
-            numero_motor: input.engineNumber?.trim(),
-            motor_normalizado: input.engineNumber
-              ? this.normal(input.engineNumber)
-              : null,
+            numero_motor: engineNumber || undefined,
+            motor_normalizado: engineNumber ? this.normal(engineNumber) : null,
             patente: input.licensePlate?.trim(),
             patente_normalizada: input.licensePlate
               ? this.normal(input.licensePlate)
@@ -556,7 +577,10 @@ export class SupplyService {
   ) {
     const item = await tx.versiones_vehiculos.findUnique({
       where: { id },
-      include: { catalogo_organizaciones: true },
+      include: {
+        catalogo_organizaciones: true,
+        modelos_vehiculos: { select: { tipo_vehiculo: true } },
+      },
     });
     if (
       !item ||
@@ -569,6 +593,7 @@ export class SupplyService {
       throw new BadRequestException(
         'Version is not available to the organization',
       );
+    return item;
   }
   private normal(value: string) {
     return normalizeVin(value);

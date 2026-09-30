@@ -50,6 +50,24 @@ export const SALES_LICENSING_MODE_FILTERS = [
 export type SalesLicensingModeFilter =
   (typeof SALES_LICENSING_MODE_FILTERS)[number];
 
+// Where the operation stands on getting a physical unit (fase 3). Derived
+// from the assigned unit and the latest non-cancelled supply request.
+export const SALES_FULFILLMENT_STATUSES = [
+  'PENDIENTE_ASIGNACION',
+  'PEDIDA',
+  'PENDIENTE_INGRESO',
+  'RECIBIDA',
+  'ASIGNADA',
+] as const;
+export type SalesFulfillmentStatus =
+  (typeof SALES_FULFILLMENT_STATUSES)[number];
+// "SIN_ASIGNAR" = every status except ASIGNADA (the assignment tray).
+export const SALES_FULFILLMENT_FILTERS = [
+  ...SALES_FULFILLMENT_STATUSES,
+  'SIN_ASIGNAR',
+] as const;
+export type SalesFulfillmentFilter = (typeof SALES_FULFILLMENT_FILTERS)[number];
+
 const toBoolean = ({ value }: { value: unknown }) =>
   value === 'true' ? true : value === 'false' ? false : value;
 
@@ -71,6 +89,9 @@ export class SalesOperationQueryDto {
   @IsIn(SALES_LICENSING_MODE_FILTERS)
   licensingMode?: SalesLicensingModeFilter;
   @IsOptional() @Transform(toBoolean) @IsBoolean() licensingOverdue?: boolean;
+  @IsOptional()
+  @IsIn(SALES_FULFILLMENT_FILTERS)
+  fulfillmentStatus?: SalesFulfillmentFilter;
   @IsOptional() @IsDateString() from?: string;
   @IsOptional() @IsDateString() to?: string;
   @Type(() => Number) @IsInt() @Min(1) page = 1;
@@ -230,6 +251,32 @@ export class RegisterSalesLicensingCollectionDto {
   @Matches(BUSINESS_DATE_PATTERN)
   collectionDate?: string;
   @IsOptional() @IsString() @MaxLength(160) reference?: string;
+  @IsOptional() @IsString() @MaxLength(2000) notes?: string;
+}
+
+// Administrative assignment of an EN_STOCK unit of the operation branch.
+// vin/engineNumber let the administrativa confirm or correct the chassis
+// and engine number of the unit in the same step (needs inventario.gestionar).
+export class AssignSalesUnitDto {
+  @Type(() => Number) @IsInt() @Min(0) expectedVersion!: number;
+  @IsUUID() unitId!: string;
+  @IsOptional() @IsString() @MaxLength(80) vin?: string;
+  @IsOptional() @IsString() @MaxLength(60) engineNumber?: string;
+}
+
+// Administrative order to a supplier chosen at request time. The supplier
+// belongs to the request, not to the model: supplier availability is only a
+// suggestion and is not required.
+export class RequestSalesSupplyDto {
+  @Type(() => Number) @IsInt() @Min(0) expectedVersion!: number;
+  @IsUUID() supplierId!: string;
+  @IsOptional() @IsString() @MaxLength(80) color?: string;
+  @IsOptional() @IsString() @MaxLength(120) supplierReference?: string;
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
+  estimatedCost?: number;
   @IsOptional() @IsString() @MaxLength(2000) notes?: string;
 }
 
