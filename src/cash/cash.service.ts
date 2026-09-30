@@ -853,7 +853,12 @@ export class CashService {
   ) {
     const operation = await tx.operaciones.findFirst({
       where: { id, organizacion_id: organizationId },
-      select: { id: true, unidad_vehiculo_id: true, sucursal_id: true },
+      select: {
+        id: true,
+        unidad_vehiculo_id: true,
+        sucursal_id: true,
+        cliente_id: true,
+      },
     });
     if (!operation)
       financialBadRequest('INVALID_OPERATION', 'Sales operation is invalid');

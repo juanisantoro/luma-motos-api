@@ -26,8 +26,12 @@ import {
   SalesFinancialInstitutionQueryDto,
   SalesPricePolicyQueryDto,
   SalesSellerQueryDto,
+  MarkFinancingPaymentDto,
+  RegisterSalesComponentCollectionDto,
+  RevertFinancingPaymentDto,
   RegisterSalesLicensingCollectionDto,
   RequestSalesSupplyDto,
+  SalesOperationTrackingQueryDto,
   UpdateSalesLicensingDto,
   UpdateSalesOperationDto,
   VersionedSalesActionDto,
@@ -45,6 +49,17 @@ export class SalesController {
     @CurrentUser() actor: AuthenticatedUser,
   ) {
     return this.service.findAll(query, actor);
+  }
+
+  // Fase 4: grilla de seguimiento (acordado, cobrado, saldo, efectivo sin
+  // rendir, unidad y patentamiento) con el detalle de ingresos.
+  @Get('tracking')
+  @Permissions(PERMISSION_CODES.SALES_READ, PERMISSION_CODES.INCOMES_READ)
+  tracking(
+    @Query() query: SalesOperationTrackingQueryDto,
+    @CurrentUser() actor: AuthenticatedUser,
+  ) {
+    return this.service.tracking(query, actor);
   }
 
   @Get('sellers')
@@ -140,6 +155,42 @@ export class SalesController {
     @CurrentUser() actor: AuthenticatedUser,
   ) {
     return this.service.collectLicensing(id, input, actor);
+  }
+
+  @Post(':id/payment-components/:componentId/collections')
+  @Permissions(PERMISSION_CODES.SALES_READ, PERMISSION_CODES.INCOMES_COLLECT)
+  @AuditedMutation()
+  collectPaymentComponent(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('componentId', ParseUUIDPipe) componentId: string,
+    @Body() input: RegisterSalesComponentCollectionDto,
+    @CurrentUser() actor: AuthenticatedUser,
+  ) {
+    return this.service.collectPaymentComponent(id, componentId, input, actor);
+  }
+
+  @Post(':id/payment-components/:componentId/financing-payment')
+  @Permissions(PERMISSION_CODES.SALES_READ, PERMISSION_CODES.INCOMES_COLLECT)
+  @AuditedMutation()
+  markFinancingPayment(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('componentId', ParseUUIDPipe) componentId: string,
+    @Body() input: MarkFinancingPaymentDto,
+    @CurrentUser() actor: AuthenticatedUser,
+  ) {
+    return this.service.markFinancingPayment(id, componentId, input, actor);
+  }
+
+  @Post(':id/payment-components/:componentId/financing-payment/revert')
+  @Permissions(PERMISSION_CODES.SALES_READ, PERMISSION_CODES.INCOMES_COLLECT)
+  @AuditedMutation()
+  revertFinancingPayment(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('componentId', ParseUUIDPipe) componentId: string,
+    @Body() input: RevertFinancingPaymentDto,
+    @CurrentUser() actor: AuthenticatedUser,
+  ) {
+    return this.service.revertFinancingPayment(id, componentId, input, actor);
   }
 
   @Post(':id/assign-unit')

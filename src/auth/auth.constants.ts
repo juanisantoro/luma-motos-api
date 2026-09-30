@@ -62,6 +62,7 @@ export const PERMISSION_CODES = {
   CASH_MANAGE: 'caja.gestionar',
   CASH_TRANSFER: 'caja.transferir',
   CASH_REVERSE: 'caja.reversar',
+  CASH_RECEIVE_HANDOVER: 'caja.recibir_rendicion',
   COMMISSIONS_READ: 'comisiones.consultar',
   COMMISSIONS_CONFIGURE: 'comisiones.configurar',
   COMMISSIONS_AGREE: 'comisiones.acordar',

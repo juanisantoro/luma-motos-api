@@ -25,6 +25,7 @@ import {
 import {
   condicion_vehiculo_luma,
   deuda_operacion_luma,
+  metodo_cobranza_luma,
   luma_estado_entrega,
   luma_estado_operacion,
   modalidad_patentamiento_luma,
@@ -252,6 +253,35 @@ export class RegisterSalesLicensingCollectionDto {
   collectionDate?: string;
   @IsOptional() @IsString() @MaxLength(160) reference?: string;
   @IsOptional() @IsString() @MaxLength(2000) notes?: string;
+  // Fase 4: medio del cobro y circuito de rendición de efectivo.
+  @IsOptional()
+  @IsEnum(metodo_cobranza_luma)
+  paymentMethod?: metodo_cobranza_luma;
+  @IsOptional() @IsUUID() collectedById?: string;
+  @IsOptional() @IsUUID() handoverToId?: string;
+}
+
+// Fase 4: cobro de un componente del plan de pago. Crea el ingreso ya
+// vinculado a operación, cliente y número de boleto, más su movimiento de caja.
+export class RegisterSalesComponentCollectionDto extends RegisterSalesLicensingCollectionDto {}
+
+// Fase 4: grilla de seguimiento de operaciones.
+export class SalesOperationTrackingQueryDto extends SalesOperationQueryDto {
+  @IsOptional() @Transform(toBoolean) @IsBoolean() withBalance?: boolean;
+  @IsOptional() @Transform(toBoolean) @IsBoolean() withPendingCash?: boolean;
+  @IsOptional()
+  @Transform(toBoolean)
+  @IsBoolean()
+  withFinancingPending?: boolean;
+}
+
+// Fase 4: la financiera informó que pagó, sin monto.
+export class MarkFinancingPaymentDto {
+  @IsOptional() @IsString() @MaxLength(2000) notes?: string;
+}
+
+export class RevertFinancingPaymentDto {
+  @IsString() @IsNotEmpty() @MaxLength(1000) reason!: string;
 }
 
 // Administrative assignment of an EN_STOCK unit of the operation branch.

@@ -300,7 +300,15 @@ Tipos: `EFECTIVO|TRANSFERENCIA_BANCARIA|TARJETA|FINANCIACION|TOMA_PARTE_PAGO|OTR
 El total debe igualar `agreedPrice`, la suma FINANCIACION debe igualar
 `creditAmount`, la combinación debe coincidir con `paymentPlatform` y
 TOMA_PARTE_PAGO requiere `tradeInVehicleId`. No se reemplaza un plan con
-cobranzas existentes.
+cobranzas existentes (cobranzas legacy o ingresos generados por un componente).
+
+Cobro de un componente (fase 4):
+`POST /api/sales/operations/:id/payment-components/:componentId/collections`
+crea el ingreso ya vinculado a operación, cliente, número de boleto y
+componente, con su movimiento de caja y el circuito de rendición si es
+efectivo. La grilla de seguimiento es `GET /api/sales/operations/tracking`.
+Contrato completo en
+[`financial-administration-api.md`](financial-administration-api.md).
 
 La bandeja es
 `GET /api/sales/operations/approvals?vehicleType=MOTO|AUTO` y fuerza estado

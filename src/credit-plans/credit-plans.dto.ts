@@ -15,7 +15,10 @@ import {
   MaxLength,
   Min,
 } from 'class-validator';
-import { metodo_calculo_credito_luma } from '@prisma/client';
+import {
+  metodo_calculo_credito_luma,
+  metodo_cobranza_luma,
+} from '@prisma/client';
 
 const BUSINESS_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -110,6 +113,14 @@ export class PayCreditInstallmentDto {
   @IsPositive()
   amount!: number;
   @IsDateString() @Matches(BUSINESS_DATE_PATTERN) paymentDate!: string;
+  // Fase 4: the installment enters cash like any other collection.
+  @IsUUID() idempotencyKey!: string;
+  @IsUUID() accountId!: string;
+  @IsEnum(metodo_cobranza_luma) paymentMethod!: metodo_cobranza_luma;
+  @IsOptional() @IsUUID() collectedById?: string;
+  @IsOptional() @IsUUID() handoverToId?: string;
+  @IsOptional() @IsString() @MaxLength(160) reference?: string;
+  @IsOptional() @IsString() @MaxLength(2000) notes?: string;
 }
 
 export class CreditInstallmentQueryDto {

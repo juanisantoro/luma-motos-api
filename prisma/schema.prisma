@@ -115,6 +115,7 @@ model clientes {
   operaciones_operaciones_cliente_id_organizacion_idToclientes                     operaciones[]           @relation("operaciones_cliente_id_organizacion_idToclientes")
   operaciones                                                                      operaciones[]
   polizas_seguros                                                                  polizas_seguros[]
+  ingresos                                                                         ingresos[]              @relation("ingreso_cliente")
 
   @@unique([id, organizacion_id], map: "clientes_id_organizacion_unico")
   @@index([nombre_normalizado(ops: raw("gin_trgm_ops"))], map: "clientes_nombre_trgm_indice", type: Gin)
@@ -181,6 +182,12 @@ model componentes_pago_operacion {
   operaciones                                                                                                    operaciones                   @relation(fields: [operacion_id], references: [id], onUpdate: NoAction)
   organizaciones                                                                                                 organizaciones                @relation(fields: [organizacion_id], references: [id], onUpdate: NoAction, map: "componentes_pago_operacion_organizacion_fk")
   vehiculos_tomados_parte_pago                                                                                   vehiculos_tomados_parte_pago? @relation(fields: [vehiculo_tomado_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  ingresos                                                                                                       ingresos[]                    @relation("ingreso_componente_pago")
+  /// Fase 4: la financiera informó que pagó (sin monto).
+  financiera_pago_informado_en                                                                                   DateTime?                     @db.Timestamptz(6)
+  financiera_pago_informado_por_personal_id                                                                      String?                       @db.Uuid
+  financiera_pago_notas                                                                                          String?
+  financiera_pago_informado_por                                                                                  personal?                     @relation("componente_financiera_pago_informante", fields: [financiera_pago_informado_por_personal_id, organizacion_id], references: [id, organizacion_id], onDelete: Restrict, onUpdate: NoAction, map: "componente_financiera_pago_informante_organizacion_fk")
 
   @@unique([id, organizacion_id], map: "componentes_pago_operacion_id_organizacion_unico")
   @@index([operacion_id, estado_pago], map: "componentes_pago_operacion_operacion_indice")
@@ -365,6 +372,8 @@ model financieras {
   creado_en                                                                                        DateTime                     @default(now()) @db.Timestamptz(6)
   actualizado_en                                                                                   DateTime                     @default(now()) @db.Timestamptz(6)
   organizacion_id                                                                                  String                       @db.Uuid
+  /// Fase 4: la financiación es crédito propio de Luma (se cobra por cuotas).
+  es_credito_propio                                                                                Boolean                      @default(false)
   componentes_pago_operacion_componentes_pago_operacion_financiera_id_organizacion_idTofinancieras componentes_pago_operacion[] @relation("componentes_pago_operacion_financiera_id_organizacion_idTofinancieras")
   consultas_crediticias_consultas_crediticias_financiera_id_organizacion_idTofinancieras           consultas_crediticias[]      @relation("consultas_crediticias_financiera_id_organizacion_idTofinancieras")
   organizaciones                                                                                   organizaciones               @relation(fields: [organizacion_id], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "financieras_organizacion_fk")
@@ -903,6 +912,9 @@ model personal {
   transferencias_caja_transferencias_caja_creado_por_personal_id_organizacion_idTopersonal                 transferencias_caja[]             @relation("transferencias_caja_creado_por_personal_id_organizacion_idTopersonal")
   transferencias_caja                                                                                      transferencias_caja[]
   ingresos                                                                                                 ingresos[]
+  ingresos_rendidos_a                                                                                      ingresos[]                        @relation("ingreso_rendido_a")
+  componentes_financiera_pago_informados                                                                   componentes_pago_operacion[]      @relation("componente_financiera_pago_informante")
+  ingresos_rendiciones_confirmadas                                                                         ingresos[]                        @relation("ingreso_rendicion_confirmada_por")
   politicas_comisiones_creadas                                                                             politicas_comisiones[]            @relation("politicas_comisiones_creador_organizacion")
 
   @@unique([id, organizacion_id], map: "personal_id_organizacion_unico")
@@ -1398,6 +1410,21 @@ model ingresos {
   datos_inferidos         Json                @default("{}")
   creado_en               DateTime            @default(now()) @db.Timestamptz(6)
   actualizado_en          DateTime            @default(now()) @db.Timestamptz(6)
+  /// Fase 4: un trigger lo completa desde operaciones.cliente_id cuando hay operacion_id.
+  cliente_id              String?             @db.Uuid
+  componente_pago_id      String?             @db.Uuid
+  medio_pago              metodo_cobranza_luma?
+  rendido_a_personal_id   String?             @db.Uuid
+  estado_rendicion        estado_rendicion_luma?
+  rendicion_confirmada_en DateTime?           @db.Timestamptz(6)
+  rendicion_confirmada_por_personal_id String? @db.Uuid
+  version_fila            Int                 @default(0)
+  cuota_credito_id        String?             @db.Uuid
+  cuotas_credito          cuotas_credito?     @relation("ingreso_cuota_credito", fields: [cuota_credito_id, organizacion_id], references: [id, organizacion_id], onDelete: Restrict, onUpdate: NoAction, map: "ingreso_cuota_credito_organizacion_fk")
+  clientes                clientes?           @relation("ingreso_cliente", fields: [cliente_id, organizacion_id], references: [id, organizacion_id], onDelete: Restrict, onUpdate: NoAction, map: "ingreso_cliente_organizacion_fk")
+  componentes_pago_operacion componentes_pago_operacion? @relation("ingreso_componente_pago", fields: [componente_pago_id, organizacion_id], references: [id, organizacion_id], onDelete: Restrict, onUpdate: NoAction, map: "ingreso_componente_pago_organizacion_fk")
+  rendido_a               personal?           @relation("ingreso_rendido_a", fields: [rendido_a_personal_id, organizacion_id], references: [id, organizacion_id], onDelete: Restrict, onUpdate: NoAction, map: "ingreso_rendido_a_organizacion_fk")
+  rendicion_confirmada_por personal?          @relation("ingreso_rendicion_confirmada_por", fields: [rendicion_confirmada_por_personal_id, organizacion_id], references: [id, organizacion_id], onDelete: Restrict, onUpdate: NoAction, map: "ingreso_rendicion_confirmador_organizacion_fk")
   organizaciones          organizaciones      @relation(fields: [organizacion_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
   sucursales              sucursales          @relation(fields: [sucursal_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
   filas_importacion       filas_importacion?  @relation(fields: [fila_importacion_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
@@ -1730,6 +1757,11 @@ enum tipo_obligacion_luma {
   OTRO
 }
 
+enum estado_rendicion_luma {
+  PENDIENTE_RENDICION
+  RENDIDO
+}
+
 enum modalidad_patentamiento_luma {
   BONIFICADA
   PAGA_CLIENTE
@@ -1830,6 +1862,7 @@ model cuotas_credito {
   registrado_por_personal_id  String?                    @db.Uuid
   creado_en                   DateTime                   @default(now()) @db.Timestamptz(6)
   actualizado_en              DateTime                   @default(now()) @db.Timestamptz(6)
+  ingresos                    ingresos[]                 @relation("ingreso_cuota_credito")
 
   @@unique([id, organizacion_id], map: "cuotas_credito_id_organizacion_unico")
   @@unique([operacion_credito_id, numero_cuota], map: "cuotas_credito_operacion_credito_numero_unico")

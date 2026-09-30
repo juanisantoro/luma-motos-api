@@ -33,13 +33,26 @@ import {
 } from '../commissions/commissions.calculation';
 import { CashService } from '../cash/cash.service';
 import { apiError } from '../common/api-error';
-import { businessDate, paymentStatus } from '../finance/finance.utils';
+import {
+  assertComputedFilterScanLimit,
+  businessDate,
+  COMPUTED_FILTER_SCAN_LIMIT,
+  paymentStatus,
+} from '../finance/finance.utils';
 import { assertValidUnitColor } from '../common/unit-colors';
 import {
   normalizeClientDocument,
   normalizeClientName,
 } from '../clients/client-normalization';
 import { normalizeVin, validateVin } from '../inventory/vin';
+import {
+  componentPaymentMethod,
+  resolveCashCollection,
+} from '../incomes/cash-handover';
+import {
+  componentCollectedAmount,
+  syncComponentPaymentStatus,
+} from '../incomes/component-collections';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   argentinaToday,
@@ -65,8 +78,12 @@ import {
   SalesOperationQueryDto,
   SalesPricePolicyQueryDto,
   SalesSellerQueryDto,
+  MarkFinancingPaymentDto,
+  RegisterSalesComponentCollectionDto,
+  RevertFinancingPaymentDto,
   RegisterSalesLicensingCollectionDto,
   RequestSalesSupplyDto,
+  SalesOperationTrackingQueryDto,
   SalesFulfillmentStatus,
   UpdateSalesLicensingDto,
   UpdateSalesOperationDto,
@@ -101,6 +118,8 @@ const ASSIGNABLE_OPERATION_STATES: luma_estado_operacion[] = [
 // Stock assignments and receptions hold the unit for the sale; seller-side
 // reservations keep their 48h default.
 const ASSIGNED_RESERVATION_DAYS = 30;
+// tipos_ingreso used by payment-plan collections (seeded by migration).
+const OPERATION_COLLECTION_INCOME_TYPE = 'cobro de operación';
 
 const operationInclude = {
   clientes: {
@@ -161,6 +180,15 @@ const operationInclude = {
       vehiculo_tomado_id: true,
       estado_pago: true,
       notas: true,
+      financiera_pago_informado_en: true,
+      financiera_pago_notas: true,
+      financiera_pago_informado_por: {
+        select: { id: true, nombre_completo: true },
+      },
+      financieras_componentes_pago_operacion_financiera_id_organizacion_idTofinancieras:
+        {
+          select: { id: true, razon_social: true, es_credito_propio: true },
+        },
     },
   },
   obligaciones_operacion: {
@@ -203,6 +231,248 @@ type OperationRecord = Prisma.operacionesGetPayload<{
   include: typeof operationInclude;
 }>;
 
+const trackingPersonnel = {
+  select: { id: true, nombre_completo: true },
+} as const;
+
+const trackingIncomeInclude = {
+  personal: trackingPersonnel,
+  rendido_a: trackingPersonnel,
+  rendicion_confirmada_por: trackingPersonnel,
+  movimientos_caja: {
+    where: {
+      revierte_a_id: null,
+      other_movimientos_caja: null,
+      tipo_movimiento: tipo_movimiento_caja_luma.INGRESO,
+    },
+    select: {
+      importe: true,
+      cuentas_caja: {
+        select: { id: true, codigo: true, nombre: true, tipo_cuenta: true },
+      },
+      personal: trackingPersonnel,
+    },
+    orderBy: [{ contabilizado_en: 'desc' as const }, { id: 'desc' as const }],
+  },
+} satisfies Prisma.ingresosInclude;
+
+type TrackingIncomeRecord = Prisma.ingresosGetPayload<{
+  include: typeof trackingIncomeInclude;
+}>;
+
+function incomeCollected(income: TrackingIncomeRecord): Prisma.Decimal {
+  return income.movimientos_caja.reduce(
+    (total, movement) => total.plus(movement.importe),
+    new Prisma.Decimal(0),
+  );
+}
+
+function isLicensingIncome(income: { tipo_original: string }): boolean {
+  return (
+    income.tipo_original.trim().toLocaleLowerCase('es-AR') ===
+    LICENSING_INCOME_TYPE
+  );
+}
+
+/**
+ * Totals of the tracking grid. Patent incomes are excluded from "cobrado"
+ * because they are charged on top of the agreed price. Pending handover is
+ * the collected cash still waiting for the recipient's confirmation.
+ */
+// Minimal component shape the tracking totals need.
+export type TrackingComponent = {
+  id: string;
+  tipo_componente: tipo_componente_pago_luma;
+  importe_esperado: Prisma.Decimal;
+  estado_pago: string;
+  financiera_pago_informado_en: Date | null;
+  financieras_componentes_pago_operacion_financiera_id_organizacion_idTofinancieras: {
+    es_credito_propio: boolean;
+  } | null;
+};
+
+export const trackingComponentSelect = {
+  id: true,
+  tipo_componente: true,
+  importe_esperado: true,
+  estado_pago: true,
+  financiera_pago_informado_en: true,
+  financieras_componentes_pago_operacion_financiera_id_organizacion_idTofinancieras:
+    { select: { es_credito_propio: true } },
+} satisfies Prisma.componentes_pago_operacionSelect;
+
+export function isOwnCreditComponent(component: TrackingComponent): boolean {
+  return (
+    component.tipo_componente === tipo_componente_pago_luma.FINANCIACION &&
+    component
+      .financieras_componentes_pago_operacion_financiera_id_organizacion_idTofinancieras
+      ?.es_credito_propio === true
+  );
+}
+
+/**
+ * Totals of the tracking grid.
+ * - collected: active cash of the operation incomes, except patent incomes
+ *   (charged on top of the agreed price) and own-credit installments (they
+ *   carry interest and are summarized apart).
+ * - waived: what the balance no longer expects from financing components.
+ *   An external financing marked as paid by the financiera closes with the
+ *   net that came in ("se registra el neto y listo"); an own-credit
+ *   financing is collected through installments.
+ * - balance = agreedPrice - collected - waived.
+ */
+export function trackingTotals(
+  agreedPrice: Prisma.Decimal,
+  incomes: TrackingIncomeRecord[],
+  components: TrackingComponent[] = [],
+) {
+  let collected = new Prisma.Decimal(0);
+  let pendingHandover = new Prisma.Decimal(0);
+  let pendingHandoverCount = 0;
+  const byComponent = new Map<string, Prisma.Decimal>();
+  for (const income of incomes) {
+    const amount = incomeCollected(income);
+    if (!isLicensingIncome(income) && !income.cuota_credito_id)
+      collected = collected.plus(amount);
+    if (income.componente_pago_id)
+      byComponent.set(
+        income.componente_pago_id,
+        (
+          byComponent.get(income.componente_pago_id) ?? new Prisma.Decimal(0)
+        ).plus(amount),
+      );
+    if (
+      income.estado_rendicion === 'PENDIENTE_RENDICION' &&
+      amount.greaterThan(0)
+    ) {
+      pendingHandover = pendingHandover.plus(amount);
+      pendingHandoverCount += 1;
+    }
+  }
+  let waived = new Prisma.Decimal(0);
+  for (const component of components) {
+    if (component.estado_pago === 'CANCELADA') continue;
+    const componentCollected =
+      byComponent.get(component.id) ?? new Prisma.Decimal(0);
+    const remaining = Prisma.Decimal.max(
+      0,
+      component.importe_esperado.minus(componentCollected),
+    );
+    if (
+      isOwnCreditComponent(component) ||
+      component.financiera_pago_informado_en
+    )
+      waived = waived.plus(remaining);
+  }
+  return {
+    collected,
+    waived,
+    balance: agreedPrice.minus(collected).minus(waived),
+    pendingHandover,
+    pendingHandoverCount,
+    collectedByComponent: byComponent,
+  };
+}
+
+// External financing the financiera has not reported as paid yet.
+export const financingPendingWhere: Prisma.componentes_pago_operacionWhereInput =
+  {
+    tipo_componente: tipo_componente_pago_luma.FINANCIACION,
+    financiera_pago_informado_en: null,
+    estado_pago: { not: 'CANCELADA' },
+    financieras_componentes_pago_operacion_financiera_id_organizacion_idTofinancieras:
+      { is: { es_credito_propio: false } },
+  };
+
+type OperationComponentRecord =
+  OperationRecord['componentes_pago_operacion'][number];
+
+function componentFinancing(component: OperationComponentRecord) {
+  const institution =
+    component.financieras_componentes_pago_operacion_financiera_id_organizacion_idTofinancieras;
+  return {
+    financialInstitution: institution
+      ? { id: institution.id, legalName: institution.razon_social }
+      : null,
+    ownCredit:
+      component.tipo_componente === tipo_componente_pago_luma.FINANCIACION &&
+      institution?.es_credito_propio === true,
+    financingPayment: component.financiera_pago_informado_en
+      ? {
+          informedAt: component.financiera_pago_informado_en,
+          informedBy: component.financiera_pago_informado_por
+            ? {
+                id: component.financiera_pago_informado_por.id,
+                fullName:
+                  component.financiera_pago_informado_por.nombre_completo,
+              }
+            : null,
+          notes: component.financiera_pago_notas,
+        }
+      : null,
+  };
+}
+
+export type OwnCreditSummary = {
+  status: string;
+  financedAmount: string;
+  totalAmount: string;
+  collectedAmount: string;
+  paidInstallments: number;
+  installments: number;
+  nextDueDate: Date | null;
+};
+
+// Own-credit column of the grid: installments collected so far (including
+// the ones paid before phase 4, which have no linked income).
+export async function ownCreditSummaries(
+  tx: Prisma.TransactionClient,
+  operationIds: string[],
+): Promise<Map<string, OwnCreditSummary>> {
+  const result = new Map<string, OwnCreditSummary>();
+  if (!operationIds.length) return result;
+  const credits = await tx.operacion_creditos.findMany({
+    where: { operacion_id: { in: operationIds }, estado: { not: 'CANCELADO' } },
+    orderBy: [{ creado_en: 'desc' }],
+  });
+  if (!credits.length) return result;
+  const installments = await tx.cuotas_credito.findMany({
+    where: { operacion_credito_id: { in: credits.map((credit) => credit.id) } },
+    select: {
+      operacion_credito_id: true,
+      estado: true,
+      monto_pagado: true,
+      vencimiento: true,
+    },
+    orderBy: [{ vencimiento: 'asc' }],
+  });
+  for (const credit of credits) {
+    if (result.has(credit.operacion_id)) continue;
+    const own = installments.filter(
+      (installment) => installment.operacion_credito_id === credit.id,
+    );
+    result.set(credit.operacion_id, {
+      status: credit.estado,
+      financedAmount: credit.monto_financiado.toString(),
+      totalAmount: credit.monto_total.toString(),
+      collectedAmount: own
+        .reduce(
+          (total, installment) => total.plus(installment.monto_pagado),
+          new Prisma.Decimal(0),
+        )
+        .toString(),
+      paidInstallments: own.filter(
+        (installment) => installment.estado === 'PAGADA',
+      ).length,
+      installments: own.length,
+      nextDueDate:
+        own.find((installment) => installment.estado !== 'PAGADA')
+          ?.vencimiento ?? null,
+    });
+  }
+  return result;
+}
+
 interface LockedReservation {
   id: string;
 }
@@ -215,7 +485,12 @@ export class SalesService {
     private readonly cash: CashService,
   ) {}
 
-  async findAll(query: SalesOperationQueryDto, actor: AuthenticatedUser) {
+  // Shared filters of the operations list and the tracking grid (branch
+  // scope, seller restriction, licensing and fulfillment filters).
+  private async listWhere(
+    query: SalesOperationQueryDto,
+    actor: AuthenticatedUser,
+  ): Promise<Prisma.operacionesWhereInput> {
     this.assertOrganizationSelection(actor, query.organizationId);
     if (query.mine && query.sellerId)
       throw new BadRequestException(
@@ -309,6 +584,11 @@ export class SalesService {
           ]
         : undefined,
     };
+    return where;
+  }
+
+  async findAll(query: SalesOperationQueryDto, actor: AuthenticatedUser) {
+    const where = await this.listWhere(query, actor);
     const [total, items] = await this.prisma.withTenant(
       this.scope(actor),
       async (tx) => {
@@ -331,6 +611,269 @@ export class SalesService {
       total,
       page: query.page,
       limit: query.limit,
+    };
+  }
+
+  // Fase 4 - grilla de seguimiento: una fila por operación con lo acordado,
+  // lo cobrado, el saldo y el efectivo pendiente de rendición, más el
+  // detalle de sus ingresos. "Cobrado" suma los movimientos de caja activos de
+  // los ingresos de la operación, excepto los de patente (que se cobran aparte
+  // del precio acordado y se resumen en `licensing`).
+  async tracking(
+    query: SalesOperationTrackingQueryDto,
+    actor: AuthenticatedUser,
+  ) {
+    const listWhere = await this.listWhere(query, actor);
+    const where: Prisma.operacionesWhereInput =
+      query.withFinancingPending === undefined
+        ? listWhere
+        : {
+            AND: [
+              listWhere,
+              query.withFinancingPending
+                ? {
+                    componentes_pago_operacion: { some: financingPendingWhere },
+                  }
+                : {
+                    componentes_pago_operacion: {
+                      none: financingPendingWhere,
+                    },
+                  },
+            ],
+          };
+    const orderBy = [
+      { fecha_operacion: 'desc' as const },
+      { id: 'desc' as const },
+    ];
+    return this.prisma.withTenant(this.scope(actor), async (tx) => {
+      let total: number;
+      let rows: OperationRecord[];
+      let incomes: TrackingIncomeRecord[];
+      const computed =
+        query.withBalance !== undefined || query.withPendingCash !== undefined;
+      if (computed) {
+        const candidates = await tx.operaciones.findMany({
+          where,
+          select: {
+            id: true,
+            precio_acordado: true,
+            componentes_pago_operacion: { select: trackingComponentSelect },
+          },
+          orderBy,
+          take: COMPUTED_FILTER_SCAN_LIMIT + 1,
+        });
+        assertComputedFilterScanLimit(candidates.length);
+        const candidateIncomes = await this.trackingIncomes(
+          tx,
+          candidates.map((item) => item.id),
+        );
+        const filtered = candidates.filter((candidate) => {
+          const totals = trackingTotals(
+            candidate.precio_acordado,
+            candidateIncomes.filter(
+              (income) => income.operacion_id === candidate.id,
+            ),
+            candidate.componentes_pago_operacion,
+          );
+          if (
+            query.withBalance !== undefined &&
+            totals.balance.greaterThan(0) !== query.withBalance
+          )
+            return false;
+          if (
+            query.withPendingCash !== undefined &&
+            totals.pendingHandover.greaterThan(0) !== query.withPendingCash
+          )
+            return false;
+          return true;
+        });
+        total = filtered.length;
+        const start = (query.page - 1) * query.limit;
+        const pageIds = filtered
+          .slice(start, start + query.limit)
+          .map((item) => item.id);
+        rows = pageIds.length
+          ? await tx.operaciones.findMany({
+              relationLoadStrategy: 'join',
+              where: { id: { in: pageIds } },
+              include: operationInclude,
+              orderBy,
+            })
+          : [];
+        incomes = candidateIncomes.filter((income) =>
+          pageIds.includes(income.operacion_id!),
+        );
+      } else {
+        const [count, page] = await Promise.all([
+          tx.operaciones.count({ where }),
+          tx.operaciones.findMany({
+            relationLoadStrategy: 'join',
+            where,
+            include: operationInclude,
+            orderBy,
+            skip: (query.page - 1) * query.limit,
+            take: query.limit,
+          }),
+        ]);
+        total = count;
+        rows = page;
+        incomes = await this.trackingIncomes(
+          tx,
+          rows.map((row) => row.id),
+        );
+      }
+      const presented = await this.presentMany(tx, rows);
+      const ownCredits = await ownCreditSummaries(
+        tx,
+        rows.map((row) => row.id),
+      );
+      const items = rows.map((row, index) =>
+        this.trackingRow(
+          row,
+          presented[index],
+          incomes.filter((income) => income.operacion_id === row.id),
+          ownCredits.get(row.id) ?? null,
+        ),
+      );
+      return { items, total, page: query.page, limit: query.limit };
+    });
+  }
+
+  private trackingIncomes(
+    tx: Prisma.TransactionClient,
+    operationIds: string[],
+  ): Promise<TrackingIncomeRecord[]> {
+    if (!operationIds.length) return Promise.resolve([]);
+    return tx.ingresos.findMany({
+      where: { operacion_id: { in: operationIds }, es_transferencia: false },
+      include: trackingIncomeInclude,
+      orderBy: [{ fecha_ingreso: 'asc' }, { creado_en: 'asc' }, { id: 'asc' }],
+    });
+  }
+
+  private trackingRow(
+    row: OperationRecord,
+    operation: ReturnType<SalesService['operation']>,
+    incomes: TrackingIncomeRecord[],
+    ownCredit: OwnCreditSummary | null,
+  ) {
+    const components = row.componentes_pago_operacion ?? [];
+    const totals = trackingTotals(row.precio_acordado, incomes, components);
+    const collectedByComponent = totals.collectedByComponent;
+    return {
+      id: operation.id,
+      number: operation.number,
+      ticketNumber: operation.ticketNumber,
+      operationDate: operation.operationDate,
+      status: operation.status,
+      rowVersion: operation.rowVersion,
+      organizationId: operation.organizationId,
+      client: {
+        id: operation.client.id,
+        fullName: operation.client.fullName,
+        documentType: operation.client.documentType,
+        documentNumber: operation.client.documentNumber,
+      },
+      seller: operation.seller,
+      branch: operation.branch,
+      vehicle: {
+        versionName: operation.vehicle.versionName,
+        condition: operation.vehicle.condition,
+        chassis: operation.vehicle.chassis,
+      },
+      currency: operation.currency,
+      agreedPrice: operation.agreedPrice,
+      collectedAmount: totals.collected.toString(),
+      balanceAmount: totals.balance.toString(),
+      pendingHandoverAmount: totals.pendingHandover.toString(),
+      pendingHandoverCount: totals.pendingHandoverCount,
+      waivedAmount: totals.waived.toString(),
+      ownCredit,
+      fulfillment: operation.fulfillment,
+      licensing: operation.licensing,
+      paymentComponents: operation.paymentComponents.map((component) => {
+        const collected =
+          collectedByComponent.get(component.id) ?? new Prisma.Decimal(0);
+        const remaining = Prisma.Decimal.max(
+          0,
+          new Prisma.Decimal(component.expectedAmount).minus(collected),
+        );
+        const closed =
+          component.ownCredit || component.financingPayment !== null;
+        return {
+          id: component.id,
+          type: component.type,
+          expectedAmount: component.expectedAmount,
+          collectedAmount: collected.toString(),
+          // What can still be collected in cash from this component.
+          collectableAmount: remaining.toString(),
+          // What the operation balance still expects from it.
+          balanceAmount: closed ? '0' : remaining.toString(),
+          paymentStatus: component.paymentStatus,
+          financialInstitution: component.financialInstitution,
+          ownCredit: component.ownCredit,
+          financingPayment: component.financingPayment,
+          collectible:
+            !component.ownCredit &&
+            componentPaymentMethod(component.type) !== null &&
+            component.paymentStatus !== 'CANCELADA',
+        };
+      }),
+      incomes: incomes.map((income) => {
+        const collected = incomeCollected(income);
+        const latest = income.movimientos_caja[0];
+        return {
+          id: income.id,
+          incomeDate: income.fecha_ingreso,
+          type: income.tipo_original,
+          isLicensing: isLicensingIncome(income),
+          isOwnCreditInstallment: Boolean(income.cuota_credito_id),
+          paymentComponentId: income.componente_pago_id,
+          paymentMethod: income.medio_pago,
+          totalAmount: income.importe.toString(),
+          collectedAmount: collected.toString(),
+          paymentStatus: paymentStatus(collected, income.importe),
+          reference: income.referencia,
+          account: latest
+            ? {
+                id: latest.cuentas_caja.id,
+                code: latest.cuentas_caja.codigo,
+                name: latest.cuentas_caja.nombre,
+                type: latest.cuentas_caja.tipo_cuenta,
+              }
+            : null,
+          collectedBy: income.personal
+            ? {
+                id: income.personal.id,
+                fullName: income.personal.nombre_completo,
+              }
+            : latest
+              ? {
+                  id: latest.personal.id,
+                  fullName: latest.personal.nombre_completo,
+                }
+              : null,
+          handover: income.estado_rendicion
+            ? {
+                status: income.estado_rendicion,
+                recipient: income.rendido_a
+                  ? {
+                      id: income.rendido_a.id,
+                      fullName: income.rendido_a.nombre_completo,
+                    }
+                  : null,
+                confirmedAt: income.rendicion_confirmada_en,
+                confirmedBy: income.rendicion_confirmada_por
+                  ? {
+                      id: income.rendicion_confirmada_por.id,
+                      fullName: income.rendicion_confirmada_por.nombre_completo,
+                    }
+                  : null,
+              }
+            : null,
+          rowVersion: income.version_fila,
+        };
+      }),
     };
   }
 
@@ -723,14 +1266,11 @@ export class SalesService {
             'Trade-ins can only be added to draft or rejected operations',
           );
         if (preserveApproval) {
-          const collections = await tx.cobranzas.count({
-            where: {
-              componentes_pago_operacion: {
-                operacion_id: id,
-                organizacion_id: operation.organizacion_id,
-              },
-            },
-          });
+          const collections = await this.componentCollectionsCount(
+            tx,
+            id,
+            operation.organizacion_id,
+          );
           if (collections)
             throw new ConflictException(
               'Trade-ins cannot be added after collections exist',
@@ -1516,10 +2056,22 @@ export class SalesService {
             'LICENSING_INCOME_TYPE_MISSING',
             'The "Patente" income type is not active',
           );
+        const cashColumns = await resolveCashCollection(
+          tx,
+          current.organizacion_id,
+          () => this.cash.actorPersonnelId(tx, actor, current.organizacion_id),
+          {
+            paymentMethod: input.paymentMethod,
+            collectedById: input.collectedById,
+            handoverToId: input.handoverToId,
+          },
+        );
         const income = await tx.ingresos.create({
           data: {
             organizacion_id: current.organizacion_id,
             sucursal_id: current.sucursal_id,
+            cliente_id: current.cliente_id,
+            ...cashColumns,
             fecha_ingreso: businessDate(collectionDate),
             tipo_original: incomeType.nombre,
             descripcion: `Cobro de patente · operación #${current.numero_operacion.toString()}`,
@@ -1578,6 +2130,336 @@ export class SalesService {
       },
       id,
     );
+  }
+
+  // Fase 4: collection of a payment-plan component. In one transaction it
+  // creates the income already linked to operation, client, ticket number and
+  // component, registers its cash movement and syncs the component status, so
+  // nothing is loaded twice. Retrying with the same idempotencyKey returns the
+  // operation without duplicating it.
+  async collectPaymentComponent(
+    id: string,
+    componentId: string,
+    input: RegisterSalesComponentCollectionDto,
+    actor: AuthenticatedUser,
+  ) {
+    const amount = new Prisma.Decimal(input.amount);
+    if (amount.lessThanOrEqualTo(0))
+      throw apiError(
+        HttpStatus.BAD_REQUEST,
+        'INVALID_AMOUNT',
+        'Amount must be greater than zero',
+      );
+    const today = argentinaToday().toISOString().slice(0, 10);
+    const collectionDate = input.collectionDate ?? today;
+    return this.mutate(
+      actor,
+      'SALES_PAYMENT_COMPONENT_COLLECTED',
+      async (tx, event) => {
+        const current = await this.operationOr404(tx, id, actor, true);
+        this.setTargetOrganization(event, actor, current.organizacion_id);
+        if (current.estado_operacion === luma_estado_operacion.CANCELADA)
+          throw apiError(
+            HttpStatus.CONFLICT,
+            'OPERATION_CANCELLED',
+            'Collections cannot be registered on a cancelled operation',
+          );
+        const component = current.componentes_pago_operacion.find(
+          (item) => item.id === componentId,
+        );
+        if (!component)
+          throw apiError(
+            HttpStatus.NOT_FOUND,
+            'PAYMENT_COMPONENT_NOT_FOUND',
+            'Payment component not found in the operation',
+          );
+        if (componentFinancing(component).ownCredit)
+          throw apiError(
+            HttpStatus.CONFLICT,
+            'OWN_CREDIT_COLLECTED_BY_INSTALLMENTS',
+            'Own-credit financing is collected through its installments',
+          );
+        const defaultMethod = componentPaymentMethod(component.tipo_componente);
+        if (!defaultMethod || component.estado_pago === 'CANCELADA')
+          throw apiError(
+            HttpStatus.CONFLICT,
+            'COMPONENT_NOT_COLLECTIBLE',
+            'This payment component does not receive cash collections',
+          );
+        const repeated = await tx.movimientos_caja.findFirst({
+          where: {
+            organizacion_id: current.organizacion_id,
+            clave_idempotencia: input.idempotencyKey,
+          },
+          select: {
+            ingresos_movimientos_caja_ingreso: {
+              select: { componente_pago_id: true },
+            },
+          },
+        });
+        if (repeated) {
+          if (
+            repeated.ingresos_movimientos_caja_ingreso?.componente_pago_id ===
+            componentId
+          )
+            return this.present(tx, current);
+          throw apiError(
+            HttpStatus.CONFLICT,
+            'IDEMPOTENCY_CONFLICT',
+            'Idempotency key was already used with a different payload',
+          );
+        }
+        const alreadyCollected = await componentCollectedAmount(
+          tx,
+          componentId,
+          current.organizacion_id,
+        );
+        if (
+          alreadyCollected.plus(amount).greaterThan(component.importe_esperado)
+        )
+          throw apiError(
+            HttpStatus.CONFLICT,
+            'OVERPAYMENT',
+            'Collection exceeds the component balance',
+            {
+              expectedAmount: component.importe_esperado.toString(),
+              collectedAmount: alreadyCollected.toString(),
+            },
+          );
+        const incomeType = await tx.tipos_ingreso.findFirst({
+          where: {
+            nombre_normalizado: OPERATION_COLLECTION_INCOME_TYPE,
+            activo: true,
+          },
+          select: { nombre: true },
+        });
+        if (!incomeType)
+          throw apiError(
+            HttpStatus.CONFLICT,
+            'OPERATION_COLLECTION_INCOME_TYPE_MISSING',
+            'The "Cobro de operación" income type is not active',
+          );
+        const cashColumns = await resolveCashCollection(
+          tx,
+          current.organizacion_id,
+          () => this.cash.actorPersonnelId(tx, actor, current.organizacion_id),
+          {
+            paymentMethod: input.paymentMethod ?? defaultMethod,
+            collectedById: input.collectedById,
+            handoverToId: input.handoverToId,
+          },
+        );
+        const reference =
+          input.reference?.trim() || current.numero_boleto || undefined;
+        const income = await tx.ingresos.create({
+          data: {
+            organizacion_id: current.organizacion_id,
+            sucursal_id: current.sucursal_id,
+            cliente_id: current.cliente_id,
+            operacion_id: id,
+            componente_pago_id: componentId,
+            unidad_vehiculo_id: current.unidad_vehiculo_id ?? undefined,
+            ...cashColumns,
+            fecha_ingreso: businessDate(collectionDate),
+            tipo_original: incomeType.nombre,
+            descripcion: `Cobro ${component.tipo_componente.toLowerCase().replace(/_/g, ' ')} · operación #${current.numero_operacion.toString()}`,
+            importe: amount,
+            moneda: current.moneda,
+            estado_registro: 'PENDIENTE',
+            referencia: reference,
+            observaciones: input.notes?.trim(),
+            es_transferencia: false,
+          },
+          select: { id: true },
+        });
+        await this.cash.registerEntityMovement(
+          tx,
+          actor,
+          current.organizacion_id,
+          current.moneda,
+          {
+            idempotencyKey: input.idempotencyKey,
+            accountId: input.accountId,
+            amount: amount.toFixed(2),
+            ...(collectionDate === today
+              ? {}
+              : { occurredAt: `${collectionDate}T12:00:00.000-03:00` }),
+            ...(reference ? { reference } : {}),
+            ...(input.notes?.trim() ? { notes: input.notes.trim() } : {}),
+          },
+          { ingreso_id: income.id },
+          tipo_movimiento_caja_luma.INGRESO,
+          direccion_caja_luma.CREDITO,
+        );
+        await tx.ingresos.update({
+          where: {
+            id_organizacion_id: {
+              id: income.id,
+              organizacion_id: current.organizacion_id,
+            },
+          },
+          data: {
+            estado_registro: paymentStatus(
+              await this.cash.settledAmount(
+                tx,
+                { ingreso_id: income.id },
+                tipo_movimiento_caja_luma.INGRESO,
+              ),
+              amount,
+            ),
+          },
+        });
+        await syncComponentPaymentStatus(
+          tx,
+          componentId,
+          current.organizacion_id,
+        );
+        event.metadata = {
+          incomeId: income.id,
+          componentId,
+          amount: amount.toFixed(2),
+          paymentMethod: cashColumns.medio_pago,
+        };
+        return this.present(tx, await this.operationOr404(tx, id, actor));
+      },
+      id,
+    );
+  }
+
+  // Fase 4: the financiera reported it paid an external financing. No amount
+  // is recorded: the component closes (PAGADO) and the operation balance
+  // stops expecting it, whatever net came in.
+  async markFinancingPayment(
+    id: string,
+    componentId: string,
+    input: MarkFinancingPaymentDto,
+    actor: AuthenticatedUser,
+  ) {
+    return this.mutate(
+      actor,
+      'SALES_FINANCING_PAYMENT_MARKED',
+      async (tx, event) => {
+        const operation = await this.operationOr404(tx, id, actor, true);
+        this.setTargetOrganization(event, actor, operation.organizacion_id);
+        const component = this.externalFinancingOr409(operation, componentId);
+        if (component.financiera_pago_informado_en)
+          throw apiError(
+            HttpStatus.CONFLICT,
+            'FINANCING_ALREADY_MARKED',
+            'The financiera was already reported as paid',
+          );
+        const personnelId = await this.cash.actorPersonnelId(
+          tx,
+          actor,
+          operation.organizacion_id,
+        );
+        await tx.componentes_pago_operacion.update({
+          where: {
+            id_organizacion_id: {
+              id: componentId,
+              organizacion_id: operation.organizacion_id,
+            },
+          },
+          data: {
+            financiera_pago_informado_en: new Date(),
+            financiera_pago_informado_por_personal_id: personnelId,
+            financiera_pago_notas: input.notes?.trim() || null,
+          },
+        });
+        await syncComponentPaymentStatus(
+          tx,
+          componentId,
+          operation.organizacion_id,
+        );
+        event.metadata = { componentId };
+        return this.present(tx, await this.operationOr404(tx, id, actor));
+      },
+      id,
+    );
+  }
+
+  async revertFinancingPayment(
+    id: string,
+    componentId: string,
+    input: RevertFinancingPaymentDto,
+    actor: AuthenticatedUser,
+  ) {
+    return this.mutate(
+      actor,
+      'SALES_FINANCING_PAYMENT_REVERTED',
+      async (tx, event) => {
+        const operation = await this.operationOr404(tx, id, actor, true);
+        this.setTargetOrganization(event, actor, operation.organizacion_id);
+        const component = this.externalFinancingOr409(operation, componentId);
+        if (!component.financiera_pago_informado_en)
+          throw apiError(
+            HttpStatus.CONFLICT,
+            'FINANCING_NOT_MARKED',
+            'The financiera was not reported as paid',
+          );
+        await tx.componentes_pago_operacion.update({
+          where: {
+            id_organizacion_id: {
+              id: componentId,
+              organizacion_id: operation.organizacion_id,
+            },
+          },
+          data: {
+            financiera_pago_informado_en: null,
+            financiera_pago_informado_por_personal_id: null,
+            financiera_pago_notas: null,
+          },
+        });
+        // Back to what the registered collections say.
+        await syncComponentPaymentStatus(
+          tx,
+          componentId,
+          operation.organizacion_id,
+        );
+        event.metadata = {
+          componentId,
+          reason: input.reason.trim(),
+          previouslyInformedAt:
+            component.financiera_pago_informado_en.toISOString(),
+        };
+        return this.present(tx, await this.operationOr404(tx, id, actor));
+      },
+      id,
+    );
+  }
+
+  private externalFinancingOr409(
+    operation: OperationRecord,
+    componentId: string,
+  ) {
+    if (operation.estado_operacion === luma_estado_operacion.CANCELADA)
+      throw apiError(
+        HttpStatus.CONFLICT,
+        'OPERATION_CANCELLED',
+        'The operation is cancelled',
+      );
+    const component = operation.componentes_pago_operacion.find(
+      (item) => item.id === componentId,
+    );
+    if (!component)
+      throw apiError(
+        HttpStatus.NOT_FOUND,
+        'PAYMENT_COMPONENT_NOT_FOUND',
+        'Payment component not found in the operation',
+      );
+    if (component.tipo_componente !== tipo_componente_pago_luma.FINANCIACION)
+      throw apiError(
+        HttpStatus.CONFLICT,
+        'NOT_A_FINANCING_COMPONENT',
+        'Only financing components are paid by a financiera',
+      );
+    if (componentFinancing(component).ownCredit)
+      throw apiError(
+        HttpStatus.CONFLICT,
+        'OWN_CREDIT_COLLECTED_BY_INSTALLMENTS',
+        'Own-credit financing is collected through its installments',
+      );
+    return component;
   }
 
   // Fase 3 - administrativa: assigns an EN_STOCK unit of the operation
@@ -1984,14 +2866,11 @@ export class SalesService {
             'Payment plan total must equal the agreed price',
           );
         this.validatePaymentPlanContract(operation, input.components);
-        const collections = await tx.cobranzas.count({
-          where: {
-            componentes_pago_operacion: {
-              operacion_id: id,
-              organizacion_id: operation.organizacion_id,
-            },
-          },
-        });
+        const collections = await this.componentCollectionsCount(
+          tx,
+          id,
+          operation.organizacion_id,
+        );
         if (collections)
           throw new ConflictException(
             'Payment plan with collections cannot be replaced',
@@ -3452,6 +4331,34 @@ export class SalesService {
     return personnel.id;
   }
 
+  // Legacy cobranzas plus fase 4 incomes generated from a component. Any
+  // linked income (even reversed) blocks replacing the plan: the component row
+  // is referenced by the income.
+  private async componentCollectionsCount(
+    tx: Prisma.TransactionClient,
+    operationId: string,
+    organizationId: string,
+  ) {
+    const [legacy, incomes] = await Promise.all([
+      tx.cobranzas.count({
+        where: {
+          componentes_pago_operacion: {
+            operacion_id: operationId,
+            organizacion_id: organizationId,
+          },
+        },
+      }),
+      tx.ingresos.count({
+        where: {
+          operacion_id: operationId,
+          organizacion_id: organizationId,
+          componente_pago_id: { not: null },
+        },
+      }),
+    ]);
+    return legacy + incomes;
+  }
+
   private assertVersion(actual: number, expected: number) {
     if (actual !== expected)
       throw new ConflictException(
@@ -3777,6 +4684,7 @@ export class SalesService {
           tradeInVehicleId: component.vehiculo_tomado_id,
           paymentStatus: component.estado_pago,
           notes: component.notas,
+          ...componentFinancing(component),
         }),
       ),
       tradeIns: (item.vehiculos_tomados_parte_pago ?? []).map((tradeIn) => ({

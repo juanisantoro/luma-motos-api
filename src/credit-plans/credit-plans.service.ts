@@ -1,14 +1,29 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import {
+  direccion_caja_luma,
+  Prisma,
+  tipo_movimiento_caja_luma,
+} from '@prisma/client';
 import { AuditService, AuthenticatedAuditEvent } from '../audit/audit.service';
 import type { AuthenticatedUser } from '../auth/auth.types';
 import { BranchScope } from '../branch-scope/branch-scope';
 import { CashService } from '../cash/cash.service';
+import { resolveCashCollection } from '../incomes/cash-handover';
+import { mapIncomeLinkError } from '../incomes/incomes.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { argentinaToday } from '../sales/licensing';
+
+// tipos_ingreso used by own-credit installments (seeded by migration).
+const INSTALLMENT_INCOME_TYPE = 'cuota crédito';
+
+function argentinaTodayIso() {
+  return argentinaToday().toISOString().slice(0, 10);
+}
 import { buildInstallmentSchedule, simulateCredit } from './credit-calculator';
 import {
   ConfirmOperationCreditDto,
@@ -689,6 +704,11 @@ export class CreditPlansService {
     };
   }
 
+  // Fase 4: collecting an installment of the own credit also enters the money
+  // in cash. In the same transaction it creates the "Cuota crédito" income
+  // linked to operation, client, ticket number and installment, registers its
+  // cash movement (with the cash handover circuit when it is EFECTIVO) and
+  // updates the installment as before.
   async payInstallment(id: string, input: PayCreditInstallmentDto, actor: AuthenticatedUser) {
     const event: AuthenticatedAuditEvent = {
       action: 'CREDIT_INSTALLMENT_PAID',
@@ -699,70 +719,193 @@ export class CreditPlansService {
       globalAccess: actor.globalAccess,
       targetOrganizationId: actor.organization.id,
     };
-    return this.audit.execute(event, async (tx) => {
-      const organizationId = actor.organization.id;
-      const current = await tx.$queryRaw<
-        Array<{
-          organizacion_id: string;
-          operacion_credito_id: string;
-          monto: Prisma.Decimal;
-          monto_pagado: Prisma.Decimal;
-          estado: CreditInstallmentStatus;
-        }>
-      >(Prisma.sql`
-        SELECT c.organizacion_id, c.operacion_credito_id, c.monto, c.monto_pagado, c.estado
-        FROM cuotas_credito c
-        JOIN operacion_creditos oc ON oc.id = c.operacion_credito_id
-        JOIN operaciones o ON o.id = oc.operacion_id
-        WHERE c.id = ${id}::uuid AND c.organizacion_id = ${organizationId}::uuid
-          AND ${BranchScope.forActor(actor).sql(Prisma.sql`o.sucursal_id`)}
-      `);
-      if (!current[0]) throw new NotFoundException('Installment not found');
-      if (current[0].estado === 'PAGADA') {
-        throw new BadRequestException('Installment is already fully paid');
-      }
-      const amount = Number(current[0].monto);
-      const paidSoFar = Number(current[0].monto_pagado);
-      const nextPaid = Math.round((paidSoFar + input.amount) * 100) / 100;
-      if (nextPaid > amount) {
-        throw new BadRequestException(
-          'The payment amount exceeds the installment balance',
-        );
-      }
-      const nextStatus: CreditInstallmentStatus =
-        nextPaid === amount ? 'PAGADA' : 'PARCIAL';
-      const personnelId = await this.cash.actorPersonnelId(tx, actor, organizationId);
-
-      await tx.$executeRaw(Prisma.sql`
-        UPDATE cuotas_credito SET
-          monto_pagado = ${nextPaid}::numeric,
-          estado = ${nextStatus}::"estado_cuota_credito_luma",
-          fecha_pago = CASE WHEN ${nextStatus} = 'PAGADA' THEN ${parseBusinessDate(input.paymentDate)} ELSE fecha_pago END,
-          registrado_por_personal_id = ${personnelId}::uuid
-        WHERE id = ${id}::uuid
-      `);
-
-      if (nextStatus === 'PAGADA') {
-        const pending = await tx.$queryRaw<Array<{ exists: boolean }>>(Prisma.sql`
-          SELECT EXISTS(
-            SELECT 1 FROM cuotas_credito
-            WHERE operacion_credito_id = ${current[0].operacion_credito_id}::uuid
-            AND estado <> 'PAGADA'
-          ) AS "exists"
+    return this.audit
+      .execute(event, async (tx) => {
+        const organizationId = actor.organization.id;
+        await tx.$queryRaw`
+          SELECT id FROM cuotas_credito
+          WHERE id = ${id}::uuid AND organizacion_id = ${organizationId}::uuid
+          FOR UPDATE
+        `;
+        const current = await tx.$queryRaw<
+          Array<{
+            organizacion_id: string;
+            operacion_credito_id: string;
+            numero_cuota: number;
+            monto: Prisma.Decimal;
+            monto_pagado: Prisma.Decimal;
+            estado: CreditInstallmentStatus;
+            operacion_id: string;
+            numero_operacion: bigint;
+            numero_boleto: string | null;
+            sucursal_id: string;
+            moneda: string;
+            unidad_vehiculo_id: string | null;
+          }>
+        >(Prisma.sql`
+          SELECT c.organizacion_id, c.operacion_credito_id, c.numero_cuota, c.monto,
+                 c.monto_pagado, c.estado, o.id AS operacion_id, o.numero_operacion,
+                 o.numero_boleto, o.sucursal_id, o.moneda, o.unidad_vehiculo_id
+          FROM cuotas_credito c
+          JOIN operacion_creditos oc ON oc.id = c.operacion_credito_id
+          JOIN operaciones o ON o.id = oc.operacion_id
+          WHERE c.id = ${id}::uuid AND c.organizacion_id = ${organizationId}::uuid
+            AND ${BranchScope.forActor(actor).sql(Prisma.sql`o.sucursal_id`)}
         `);
-        if (!pending[0]?.exists) {
-          await tx.$executeRaw(Prisma.sql`
-            UPDATE operacion_creditos SET estado = 'FINALIZADO'
-            WHERE id = ${current[0].operacion_credito_id}::uuid
-          `);
-        }
-      }
+        const installment = current[0];
+        if (!installment) throw new NotFoundException('Installment not found');
 
-      const rows = await tx.$queryRaw<InstallmentRow[]>(Prisma.sql`
-        ${this.installmentJoinedSelect()}
-        WHERE c.id = ${id}::uuid
-      `);
-      return this.mapInstallment(rows[0]);
-    });
+        // Retrying the same request returns the installment without paying
+        // twice.
+        const repeated = await tx.movimientos_caja.findFirst({
+          where: {
+            organizacion_id: organizationId,
+            clave_idempotencia: input.idempotencyKey,
+          },
+          select: {
+            ingresos_movimientos_caja_ingreso: {
+              select: { cuota_credito_id: true },
+            },
+          },
+        });
+        if (repeated) {
+          if (repeated.ingresos_movimientos_caja_ingreso?.cuota_credito_id === id)
+            return this.installmentById(tx, id);
+          throw new ConflictException({
+            statusCode: 409,
+            code: 'IDEMPOTENCY_CONFLICT',
+            message: 'Idempotency key was already used with a different payload',
+          });
+        }
+
+        if (installment.estado === 'PAGADA') {
+          throw new BadRequestException('Installment is already fully paid');
+        }
+        const amount = new Prisma.Decimal(input.amount);
+        const nextPaid = installment.monto_pagado.plus(amount);
+        if (nextPaid.greaterThan(installment.monto)) {
+          throw new BadRequestException(
+            'The payment amount exceeds the installment balance',
+          );
+        }
+        const nextStatus: CreditInstallmentStatus = nextPaid.equals(
+          installment.monto,
+        )
+          ? 'PAGADA'
+          : 'PARCIAL';
+        const personnelId = await this.cash.actorPersonnelId(tx, actor, organizationId);
+
+        const incomeType = await tx.tipos_ingreso.findFirst({
+          where: { nombre_normalizado: INSTALLMENT_INCOME_TYPE, activo: true },
+          select: { nombre: true },
+        });
+        if (!incomeType)
+          throw new ConflictException({
+            statusCode: 409,
+            code: 'INSTALLMENT_INCOME_TYPE_MISSING',
+            message: 'The "Cuota crédito" income type is not active',
+          });
+        const cashColumns = await resolveCashCollection(
+          tx,
+          organizationId,
+          () => Promise.resolve(personnelId),
+          {
+            paymentMethod: input.paymentMethod,
+            collectedById: input.collectedById,
+            handoverToId: input.handoverToId,
+          },
+        );
+        const reference =
+          input.reference?.trim() || installment.numero_boleto || undefined;
+        const income = await tx.ingresos.create({
+          data: {
+            organizacion_id: organizationId,
+            sucursal_id: installment.sucursal_id,
+            operacion_id: installment.operacion_id,
+            cuota_credito_id: id,
+            unidad_vehiculo_id: installment.unidad_vehiculo_id ?? undefined,
+            ...cashColumns,
+            fecha_ingreso: parseBusinessDate(input.paymentDate),
+            tipo_original: incomeType.nombre,
+            descripcion: `Cuota ${installment.numero_cuota} · operación #${installment.numero_operacion.toString()}`,
+            importe: amount,
+            moneda: installment.moneda,
+            estado_registro: 'PENDIENTE',
+            referencia: reference,
+            observaciones: input.notes?.trim(),
+            es_transferencia: false,
+          },
+          select: { id: true },
+        });
+        const today = argentinaTodayIso();
+        await this.cash.registerEntityMovement(
+          tx,
+          actor,
+          organizationId,
+          installment.moneda,
+          {
+            idempotencyKey: input.idempotencyKey,
+            accountId: input.accountId,
+            amount: amount.toFixed(2),
+            ...(input.paymentDate === today
+              ? {}
+              : { occurredAt: `${input.paymentDate}T12:00:00.000-03:00` }),
+            ...(reference ? { reference } : {}),
+            ...(input.notes?.trim() ? { notes: input.notes.trim() } : {}),
+          },
+          { ingreso_id: income.id },
+          tipo_movimiento_caja_luma.INGRESO,
+          direccion_caja_luma.CREDITO,
+        );
+        await tx.ingresos.update({
+          where: {
+            id_organizacion_id: { id: income.id, organizacion_id: organizationId },
+          },
+          data: { estado_registro: 'PAGADO' },
+        });
+
+        await tx.$executeRaw(Prisma.sql`
+          UPDATE cuotas_credito SET
+            monto_pagado = ${nextPaid.toFixed(2)}::numeric,
+            estado = ${nextStatus}::"estado_cuota_credito_luma",
+            fecha_pago = CASE WHEN ${nextStatus} = 'PAGADA' THEN ${parseBusinessDate(input.paymentDate)} ELSE fecha_pago END,
+            registrado_por_personal_id = ${personnelId}::uuid
+          WHERE id = ${id}::uuid
+        `);
+
+        if (nextStatus === 'PAGADA') {
+          const pending = await tx.$queryRaw<Array<{ exists: boolean }>>(Prisma.sql`
+            SELECT EXISTS(
+              SELECT 1 FROM cuotas_credito
+              WHERE operacion_credito_id = ${installment.operacion_credito_id}::uuid
+              AND estado <> 'PAGADA'
+            ) AS "exists"
+          `);
+          if (!pending[0]?.exists) {
+            await tx.$executeRaw(Prisma.sql`
+              UPDATE operacion_creditos SET estado = 'FINALIZADO'
+              WHERE id = ${installment.operacion_credito_id}::uuid
+            `);
+          }
+        }
+        event.metadata = {
+          incomeId: income.id,
+          amount: amount.toFixed(2),
+          paymentMethod: cashColumns.medio_pago,
+        };
+        return this.installmentById(tx, id);
+      })
+      .catch((error) => {
+        mapIncomeLinkError(error);
+        throw error;
+      });
+  }
+
+  private async installmentById(tx: Prisma.TransactionClient, id: string) {
+    const rows = await tx.$queryRaw<InstallmentRow[]>(Prisma.sql`
+      ${this.installmentJoinedSelect()}
+      WHERE c.id = ${id}::uuid
+    `);
+    return this.mapInstallment(rows[0]);
   }
 }

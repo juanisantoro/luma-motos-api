@@ -27,6 +27,11 @@ const financialInstitutions = [
   'Uala',
 ] as const;
 
+const ownCreditInstitution = {
+  legalName: 'Crédito personal',
+  normalizedName: 'crédito personal',
+} as const;
+
 const catalogProducts = [
   {
     vehicleType: 'AUTO' as const,
@@ -394,6 +399,13 @@ const managedPermissions = [
     roles: ['GERENTE', 'ADMINISTRADOR'],
   },
   {
+    codigo: 'caja.recibir_rendicion',
+    modulo: 'caja',
+    descripcion:
+      'Recibe la rendición del efectivo cobrado y confirma su recepción.',
+    roles: ['ADMINISTRADOR'],
+  },
+  {
     codigo: 'comisiones.consultar',
     modulo: 'comisiones',
     descripcion: 'Consulta sugeridos, reuniones y liquidaciones de comisiones.',
@@ -502,6 +514,24 @@ async function main(): Promise<void> {
           },
         });
       }
+
+      // Fase 4: crédito propio de Luma. Se elige como financiera del
+      // componente FINANCIACION y se cobra por cuotas, no por desembolso.
+      await transaction.financieras.upsert({
+        where: {
+          organizacion_id_nombre_normalizado: {
+            organizacion_id: organization.id,
+            nombre_normalizado: ownCreditInstitution.normalizedName,
+          },
+        },
+        create: {
+          razon_social: ownCreditInstitution.legalName,
+          nombre_normalizado: ownCreditInstitution.normalizedName,
+          organizacion_id: organization.id,
+          es_credito_propio: true,
+        },
+        update: { es_credito_propio: true, activo: true },
+      });
 
       for (const role of roles) {
         const existingRole = await transaction.role.findFirst({

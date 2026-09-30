@@ -16,6 +16,8 @@ import {
 } from 'class-validator';
 import {
   direccion_caja_luma,
+  estado_rendicion_luma,
+  metodo_cobranza_luma,
   tipo_cuenta_caja_luma,
   tipo_movimiento_caja_luma,
   tipo_vehiculo_luma,
@@ -59,6 +61,16 @@ export class IncomeQueryDto extends FinancialQueryDto {
   @IsOptional() @IsUUID() operationId?: string;
   @IsOptional() @IsUUID() accountId?: string;
   @IsOptional() @IsUUID() collectorId?: string;
+  // Fase 4: doble asociación y rendición de efectivo.
+  @IsOptional() @IsUUID() clientId?: string;
+  @IsOptional() @IsString() @MaxLength(40) ticketNumber?: string;
+  @IsOptional()
+  @IsEnum(metodo_cobranza_luma)
+  paymentMethod?: metodo_cobranza_luma;
+  @IsOptional()
+  @IsEnum(estado_rendicion_luma)
+  handoverStatus?: estado_rendicion_luma;
+  @IsOptional() @IsUUID() handoverToId?: string;
 }
 
 export class ExpenseQueryDto extends FinancialQueryDto {
@@ -119,6 +131,14 @@ export class CreateIncomeDto {
   @IsString() @Matches(MONEY_PATTERN) totalAmount!: string;
   @IsOptional() @IsString() @Matches(CURRENCY_PATTERN) currency?: string;
   @IsOptional() @IsString() @MaxLength(2000) notes?: string;
+  // Fase 4. Con operationId, clientId se completa desde la operación y, si se
+  // envía, debe coincidir.
+  @IsOptional() @IsUUID() clientId?: string;
+  @IsOptional()
+  @IsEnum(metodo_cobranza_luma)
+  paymentMethod?: metodo_cobranza_luma;
+  @IsOptional() @IsUUID() collectedById?: string;
+  @IsOptional() @IsUUID() handoverToId?: string;
 }
 
 export class UpdateIncomeDto {
@@ -134,6 +154,16 @@ export class UpdateIncomeDto {
   @IsOptional() @IsString() @IsNotEmpty() @MaxLength(2000) description?: string;
   @IsOptional() @IsString() @Matches(MONEY_PATTERN) totalAmount?: string;
   @IsOptional() @IsString() @MaxLength(2000) notes?: string | null;
+  @IsOptional() @IsUUID() clientId?: string | null;
+  @IsOptional()
+  @IsEnum(metodo_cobranza_luma)
+  paymentMethod?: metodo_cobranza_luma | null;
+  @IsOptional() @IsUUID() collectedById?: string | null;
+  @IsOptional() @IsUUID() handoverToId?: string | null;
+}
+
+export class ConfirmCashHandoverDto {
+  @Type(() => Number) @IsInt() @Min(0) expectedVersion!: number;
 }
 
 export class CreateExpenseDto {

@@ -1,10 +1,13 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
 } from '@nestjs/common';
 import {
   direccion_caja_luma,
+  estado_rendicion_luma,
+  metodo_cobranza_luma,
   Prisma,
   tipo_movimiento_caja_luma,
 } from '@prisma/client';
@@ -13,6 +16,7 @@ import type { AuthenticatedUser } from '../auth/auth.types';
 import { BranchScope } from '../branch-scope/branch-scope';
 import { CashService } from '../cash/cash.service';
 import {
+  ConfirmCashHandoverDto,
   CreateIncomeDto,
   IncomeQueryDto,
   RegisterFinancialMovementDto,
@@ -35,6 +39,17 @@ import {
   targetOrganization,
 } from '../finance/finance.utils';
 import { PrismaService } from '../prisma/prisma.service';
+import {
+  assertHandoverEditable,
+  CashCollectionInput,
+  handoverRecipientWhere,
+  resolveCashCollection,
+} from './cash-handover';
+import { syncComponentPaymentStatus } from './component-collections';
+
+const personnelSelect = {
+  select: { id: true, nombre_completo: true },
+} as const;
 
 const incomeInclude = {
   sucursales: { select: { id: true, codigo: true, nombre: true } },
@@ -42,6 +57,8 @@ const incomeInclude = {
     select: {
       id: true,
       numero_operacion: true,
+      numero_boleto: true,
+      cliente_id: true,
       versiones_vehiculos: {
         select: {
           modelos_vehiculos: { select: { tipo_vehiculo: true } },
@@ -61,7 +78,20 @@ const incomeInclude = {
       },
     },
   },
-  personal: { select: { id: true, nombre_completo: true } },
+  personal: personnelSelect,
+  clientes: {
+    select: {
+      id: true,
+      nombre_completo: true,
+      tipo_documento: true,
+      numero_documento: true,
+    },
+  },
+  componentes_pago_operacion: {
+    select: { id: true, tipo_componente: true, importe_esperado: true },
+  },
+  rendido_a: personnelSelect,
+  rendicion_confirmada_por: personnelSelect,
   cuentas_caja: {
     select: { id: true, codigo: true, nombre: true, tipo_cuenta: true },
   },
@@ -84,6 +114,76 @@ const incomeInclude = {
 type IncomeRecord = Prisma.ingresosGetPayload<{
   include: typeof incomeInclude;
 }>;
+
+/**
+ * Backstop for the database invariants of the income links (trigger
+ * luma_validar_vinculos_ingreso and the cash CHECKs). The service validates
+ * first; this only keeps a racing request from surfacing as a 500.
+ */
+export function mapIncomeLinkError(error: unknown): void {
+  const message = error instanceof Error ? error.message : '';
+  if (message.includes('ingresos_cliente_operacion_consistente'))
+    financialBadRequest(
+      'CLIENT_OPERATION_MISMATCH',
+      'The income client must be the client of the sales operation',
+    );
+  if (message.includes('ingresos_cuota_operacion_consistente'))
+    financialBadRequest(
+      'INSTALLMENT_OPERATION_MISMATCH',
+      'The installment does not belong to the income operation',
+    );
+  if (message.includes('ingresos_componente_operacion_consistente'))
+    financialBadRequest(
+      'COMPONENT_OPERATION_MISMATCH',
+      'The payment component does not belong to the income operation',
+    );
+  if (
+    message.includes('ingresos_efectivo_requiere_cobrador') ||
+    message.includes('ingresos_rendicion_contrato') ||
+    message.includes('ingresos_efectivo_requiere_rendicion')
+  )
+    financialBadRequest(
+      'INVALID_CASH_HANDOVER',
+      'Cash collections require collector and handover recipient',
+    );
+}
+
+/**
+ * Reversing the cash movement of an own-credit installment gives the amount
+ * back to the installment: it goes PARCIAL/PENDIENTE again and a finished
+ * credit becomes ACTIVO.
+ */
+export async function reopenInstallment(
+  tx: Prisma.TransactionClient,
+  installmentId: string,
+  organizationId: string,
+  amount: Prisma.Decimal,
+): Promise<void> {
+  const rows = await tx.$queryRaw<
+    Array<{ monto_pagado: Prisma.Decimal; operacion_credito_id: string }>
+  >(Prisma.sql`
+    SELECT monto_pagado, operacion_credito_id FROM cuotas_credito
+    WHERE id = ${installmentId}::uuid AND organizacion_id = ${organizationId}::uuid
+    FOR UPDATE
+  `);
+  const installment = rows[0];
+  if (!installment) return;
+  const paid = Prisma.Decimal.max(0, installment.monto_pagado.minus(amount));
+  const status = paid.isZero() ? 'PENDIENTE' : 'PARCIAL';
+  await tx.$executeRaw(Prisma.sql`
+    UPDATE cuotas_credito SET
+      monto_pagado = ${paid.toFixed(2)}::numeric,
+      estado = ${status}::"estado_cuota_credito_luma",
+      fecha_pago = NULL
+    WHERE id = ${installmentId}::uuid AND organizacion_id = ${organizationId}::uuid
+  `);
+  await tx.$executeRaw(Prisma.sql`
+    UPDATE operacion_creditos SET estado = 'ACTIVO'
+    WHERE id = ${installment.operacion_credito_id}::uuid
+      AND organizacion_id = ${organizationId}::uuid
+      AND estado = 'FINALIZADO'
+  `);
+}
 
 @Injectable()
 export class IncomesService {
@@ -127,13 +227,25 @@ export class IncomesService {
       query.organizationId ??
       (actor.globalAccess ? undefined : actor.organization.id);
     const search = query.search?.trim();
+    const ticketNumber = query.ticketNumber?.trim();
     const where: Prisma.ingresosWhereInput = {
       organizacion_id: organizationId,
       sucursal_id: BranchScope.forActor(actor).where(query.branchId),
       tipo_original: query.type?.trim(),
       unidad_vehiculo_id: query.unitId,
       operacion_id: query.operationId,
+      cliente_id: query.clientId,
+      medio_pago: query.paymentMethod,
+      estado_rendicion: query.handoverStatus,
+      rendido_a_personal_id: query.handoverToId,
       es_transferencia: false,
+      operaciones: ticketNumber
+        ? {
+            is: {
+              numero_boleto: { contains: ticketNumber, mode: 'insensitive' },
+            },
+          }
+        : undefined,
       AND: query.vehicleType
         ? [
             {
@@ -201,6 +313,27 @@ export class IncomesService {
                 vin_mostrado: { contains: search, mode: 'insensitive' },
               },
             },
+            {
+              operaciones: {
+                is: {
+                  numero_boleto: { contains: search, mode: 'insensitive' },
+                },
+              },
+            },
+            {
+              clientes: {
+                is: {
+                  nombre_completo: { contains: search, mode: 'insensitive' },
+                },
+              },
+            },
+            {
+              clientes: {
+                is: {
+                  numero_documento: { contains: search, mode: 'insensitive' },
+                },
+              },
+            },
           ]
         : undefined,
     };
@@ -262,12 +395,28 @@ export class IncomesService {
       async (tx, event) => {
         await this.cash.branchOr400(tx, branchId, organizationId);
         await this.assertValidType(tx, input.type);
-        await this.validateReferences(
+        const operation = await this.validateReferences(
           tx,
           input.unitId,
           input.operationId,
           branchId,
           organizationId,
+        );
+        const clientId = await this.resolveClient(
+          tx,
+          input.clientId,
+          operation,
+          organizationId,
+        );
+        const cashColumns = await resolveCashCollection(
+          tx,
+          organizationId,
+          () => this.cash.actorPersonnelId(tx, actor, organizationId),
+          {
+            paymentMethod: input.paymentMethod,
+            collectedById: input.collectedById,
+            handoverToId: input.handoverToId,
+          },
         );
         const income = await tx.ingresos.create({
           data: {
@@ -282,6 +431,8 @@ export class IncomesService {
             referencia: input.reference?.trim(),
             unidad_vehiculo_id: input.unitId,
             operacion_id: input.operationId,
+            cliente_id: clientId,
+            ...cashColumns,
             observaciones: input.notes?.trim(),
             es_transferencia: false,
           },
@@ -308,20 +459,73 @@ export class IncomesService {
           actor,
           current.organizacion_id,
         );
+        if (
+          (current.componente_pago_id || current.cuota_credito_id) &&
+          ((input.operationId !== undefined &&
+            input.operationId !== current.operacion_id) ||
+            (input.branchId !== undefined &&
+              input.branchId !== current.sucursal_id) ||
+            input.totalAmount !== undefined)
+        )
+          financialConflict(
+            'INCOME_LINKED_TO_COMPONENT',
+            'An income generated by a payment-plan or installment collection keeps its operation, branch and amount',
+          );
         const branchId = input.branchId ?? current.sucursal_id;
         await this.cash.branchOr400(tx, branchId, current.organizacion_id);
         if (input.type !== undefined) await this.assertValidType(tx, input.type);
-        await this.validateReferences(
+        const operationId =
+          input.operationId === undefined
+            ? (current.operacion_id ?? undefined)
+            : (input.operationId ?? undefined);
+        const operation = await this.validateReferences(
           tx,
           input.unitId === undefined
             ? (current.unidad_vehiculo_id ?? undefined)
             : (input.unitId ?? undefined),
-          input.operationId === undefined
-            ? (current.operacion_id ?? undefined)
-            : (input.operationId ?? undefined),
+          operationId,
           branchId,
           current.organizacion_id,
         );
+        const clientId = await this.resolveClient(
+          tx,
+          input.clientId === undefined
+            ? operation
+              ? undefined
+              : (current.cliente_id ?? undefined)
+            : (input.clientId ?? undefined),
+          operation,
+          current.organizacion_id,
+        );
+        const cashChanged =
+          input.paymentMethod !== undefined ||
+          input.collectedById !== undefined ||
+          input.handoverToId !== undefined;
+        let cashColumns = {};
+        if (cashChanged) {
+          assertHandoverEditable(current);
+          const cashInput: CashCollectionInput = {
+            paymentMethod:
+              input.paymentMethod === undefined
+                ? (current.medio_pago ?? undefined)
+                : (input.paymentMethod ?? undefined),
+            collectedById:
+              input.collectedById === undefined
+                ? (current.cobrado_por_personal_id ?? undefined)
+                : (input.collectedById ?? undefined),
+            handoverToId:
+              input.handoverToId === undefined
+                ? (current.rendido_a_personal_id ?? undefined)
+                : (input.handoverToId ?? undefined),
+          };
+          cashColumns = await resolveCashCollection(
+            tx,
+            current.organizacion_id,
+            () =>
+              this.cash.actorPersonnelId(tx, actor, current.organizacion_id),
+            cashInput,
+          );
+        }
         const total =
           input.totalAmount === undefined
             ? current.importe
@@ -355,6 +559,9 @@ export class IncomesService {
                 : input.reference?.trim() || null,
             unidad_vehiculo_id: input.unitId,
             operacion_id: input.operationId,
+            cliente_id: clientId ?? null,
+            ...cashColumns,
+            version_fila: { increment: 1 },
             descripcion: input.description?.trim(),
             importe: total,
             estado_registro: current.requiere_conciliacion
@@ -409,6 +616,12 @@ export class IncomesService {
         );
         if (collected.greaterThan(income.importe))
           financialConflict('OVERPAYMENT', 'Collection exceeds income balance');
+        if (income.componente_pago_id)
+          await syncComponentPaymentStatus(
+            tx,
+            income.componente_pago_id,
+            income.organizacion_id,
+          );
         await tx.ingresos.update({
           where: {
             id_organizacion_id: {
@@ -443,7 +656,7 @@ export class IncomesService {
           actor,
           income.organizacion_id,
         );
-        await this.cash.reverseEntityMovement(
+        const reversal = await this.cash.reverseEntityMovement(
           tx,
           actor,
           income.organizacion_id,
@@ -451,6 +664,19 @@ export class IncomesService {
           input,
           { ingreso_id: id },
         );
+        if (income.cuota_credito_id && reversal.revierte_a_id === movementId)
+          await reopenInstallment(
+            tx,
+            income.cuota_credito_id,
+            income.organizacion_id,
+            reversal.importe,
+          );
+        if (income.componente_pago_id)
+          await syncComponentPaymentStatus(
+            tx,
+            income.componente_pago_id,
+            income.organizacion_id,
+          );
         const collected = await this.cash.settledAmount(
           tx,
           { ingreso_id: id },
@@ -467,6 +693,125 @@ export class IncomesService {
             estado_registro: income.requiere_conciliacion
               ? income.estado_registro
               : paymentStatus(collected, income.importe),
+          },
+        });
+        return this.detail(await this.incomeOr404(tx, id, actor), tx, actor);
+      },
+      id,
+    );
+  }
+
+  /**
+   * Lookup of the personnel who can receive cash handovers: active personnel
+   * with an active user whose role has `caja.recibir_rendicion`, with what is
+   * still pending to be handed to each of them.
+   */
+  async handoverRecipients(actor: AuthenticatedUser, organizationId?: string) {
+    assertOrganization(actor, organizationId);
+    const targetOrganizationId = organizationId ?? actor.organization.id;
+    return this.prisma.withTenant(scope(actor), async (tx) => {
+      const recipients = await tx.personal.findMany({
+        where: handoverRecipientWhere(targetOrganizationId),
+        select: { id: true, nombre_completo: true, usuario_id: true },
+        orderBy: [{ nombre_completo: 'asc' }, { id: 'asc' }],
+      });
+      const pending = recipients.length
+        ? await tx.ingresos.groupBy({
+            by: ['rendido_a_personal_id'],
+            where: {
+              organizacion_id: targetOrganizationId,
+              estado_rendicion: estado_rendicion_luma.PENDIENTE_RENDICION,
+              rendido_a_personal_id: {
+                in: recipients.map((recipient) => recipient.id),
+              },
+            },
+            _count: { _all: true },
+            _sum: { importe: true },
+          })
+        : [];
+      const byRecipient = new Map(
+        pending.map((row) => [row.rendido_a_personal_id, row]),
+      );
+      return recipients.map((recipient) => {
+        const row = byRecipient.get(recipient.id);
+        return {
+          id: recipient.id,
+          fullName: recipient.nombre_completo,
+          isCurrentUser: recipient.usuario_id === actor.id,
+          pendingCount: row?._count._all ?? 0,
+          pendingAmount: (
+            row?._sum.importe ?? new Prisma.Decimal(0)
+          ).toString(),
+        };
+      });
+    });
+  }
+
+  /**
+   * Only the recipient confirms that the cash was handed over. Optimistic
+   * concurrency through `expectedVersion`.
+   */
+  async confirmHandover(
+    id: string,
+    input: ConfirmCashHandoverDto,
+    actor: AuthenticatedUser,
+  ) {
+    return this.mutate(
+      actor,
+      'INCOME_CASH_HANDOVER_CONFIRMED',
+      async (tx, event) => {
+        const income = await this.incomeOr404(tx, id, actor, true);
+        event.targetOrganizationId = targetOrganization(
+          actor,
+          income.organizacion_id,
+        );
+        if (income.version_fila !== input.expectedVersion)
+          financialConflict(
+            'VERSION_CONFLICT',
+            'The income changed since it was loaded; reload and retry',
+          );
+        if (
+          income.medio_pago !== metodo_cobranza_luma.EFECTIVO ||
+          income.estado_rendicion !== estado_rendicion_luma.PENDIENTE_RENDICION
+        )
+          financialConflict(
+            'HANDOVER_NOT_PENDING',
+            'The income has no cash handover pending',
+          );
+        const personnelId = await this.cash.actorPersonnelId(
+          tx,
+          actor,
+          income.organizacion_id,
+        );
+        if (personnelId !== income.rendido_a_personal_id)
+          throw new ForbiddenException({
+            statusCode: 403,
+            error: 'Forbidden',
+            code: 'HANDOVER_RECIPIENT_ONLY',
+            message: 'Only the recipient can confirm the cash handover',
+          });
+        const collected = await this.cash.settledAmount(
+          tx,
+          { ingreso_id: id },
+          tipo_movimiento_caja_luma.INGRESO,
+        );
+        if (collected.isZero())
+          financialConflict(
+            'HANDOVER_NOT_COLLECTED',
+            'The income has no active collection to hand over',
+          );
+        await tx.ingresos.update({
+          where: {
+            id_organizacion_id: {
+              id,
+              organizacion_id: income.organizacion_id,
+            },
+          },
+          data: {
+            estado_rendicion: estado_rendicion_luma.RENDIDO,
+            rendicion_confirmada_en: new Date(),
+            rendicion_confirmada_por_personal_id: personnelId,
+            version_fila: { increment: 1 },
           },
         });
         return this.detail(await this.incomeOr404(tx, id, actor), tx, actor);
@@ -536,10 +881,51 @@ export class IncomesService {
             },
           }
         : null,
+      client: item.clientes
+        ? {
+            id: item.clientes.id,
+            fullName: item.clientes.nombre_completo,
+            documentType: item.clientes.tipo_documento,
+            documentNumber: item.clientes.numero_documento,
+          }
+        : null,
+      paymentComponent: item.componentes_pago_operacion
+        ? {
+            id: item.componentes_pago_operacion.id,
+            type: item.componentes_pago_operacion.tipo_componente,
+            expectedAmount:
+              item.componentes_pago_operacion.importe_esperado.toString(),
+          }
+        : null,
+      installmentId: item.cuota_credito_id,
+      paymentMethod: item.medio_pago,
+      collectedBy: item.personal
+        ? { id: item.personal.id, fullName: item.personal.nombre_completo }
+        : null,
+      handover: item.estado_rendicion
+        ? {
+            status: item.estado_rendicion,
+            recipient: item.rendido_a
+              ? {
+                  id: item.rendido_a.id,
+                  fullName: item.rendido_a.nombre_completo,
+                }
+              : null,
+            confirmedAt: item.rendicion_confirmada_en,
+            confirmedBy: item.rendicion_confirmada_por
+              ? {
+                  id: item.rendicion_confirmada_por.id,
+                  fullName: item.rendicion_confirmada_por.nombre_completo,
+                }
+              : null,
+          }
+        : null,
+      rowVersion: item.version_fila,
       operation: item.operaciones
         ? {
             id: item.operaciones.id,
             number: item.operaciones.numero_operacion.toString(),
+            ticketNumber: item.operaciones.numero_boleto,
             vehicleType:
               item.operaciones.versiones_vehiculos.modelos_vehiculos
                 .tipo_vehiculo,
@@ -634,6 +1020,32 @@ export class IncomesService {
         'OPERATION_UNIT_MISMATCH',
         'Sales operation and inventory unit do not match',
       );
+    return operation;
+  }
+
+  // Doble asociación: con operación, el cliente es siempre el de la operación
+  // (la base lo refuerza con un trigger); sin operación puede indicarse uno.
+  private async resolveClient(
+    tx: Prisma.TransactionClient,
+    clientId: string | undefined,
+    operation: { cliente_id: string } | undefined,
+    organizationId: string,
+  ): Promise<string | undefined> {
+    if (operation) {
+      if (clientId && clientId !== operation.cliente_id)
+        financialBadRequest(
+          'CLIENT_OPERATION_MISMATCH',
+          'The income client must be the client of the sales operation',
+        );
+      return operation.cliente_id;
+    }
+    if (!clientId) return undefined;
+    const client = await tx.clientes.findFirst({
+      where: { id: clientId, organizacion_id: organizationId },
+      select: { id: true },
+    });
+    if (!client) financialBadRequest('INVALID_CLIENT', 'Client is invalid');
+    return client.id;
   }
 
   private mutate<T>(
@@ -658,6 +1070,7 @@ export class IncomesService {
     return this.audit
       .execute(event, (tx) => work(tx, event))
       .catch((error) => {
+        mapIncomeLinkError(error);
         if (
           error instanceof Prisma.PrismaClientKnownRequestError &&
           error.code === 'P2003'

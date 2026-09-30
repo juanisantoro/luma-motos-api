@@ -14,6 +14,7 @@ import type { AuthenticatedUser } from '../auth/auth.types';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Permissions } from '../auth/decorators/permissions.decorator';
 import {
+  ConfirmCashHandoverDto,
   CreateIncomeDto,
   IncomeQueryDto,
   RegisterFinancialMovementDto,
@@ -30,6 +31,15 @@ export class IncomesController {
   @Get('types')
   types() {
     return this.service.types();
+  }
+
+  @Get('cash-handover/recipients')
+  handoverRecipients(
+    @CurrentUser() actor: AuthenticatedUser,
+    @Query('organizationId', new ParseUUIDPipe({ optional: true }))
+    organizationId?: string,
+  ) {
+    return this.service.handoverRecipients(actor, organizationId);
   }
 
   @Get()
@@ -78,6 +88,17 @@ export class IncomesController {
     @CurrentUser() actor: AuthenticatedUser,
   ) {
     return this.service.collect(id, input, actor);
+  }
+
+  @Post(':id/cash-handover/confirm')
+  @Permissions(PERMISSION_CODES.CASH_RECEIVE_HANDOVER)
+  @AuditedMutation()
+  confirmHandover(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() input: ConfirmCashHandoverDto,
+    @CurrentUser() actor: AuthenticatedUser,
+  ) {
+    return this.service.confirmHandover(id, input, actor);
   }
 
   @Post(':id/movements/:movementId/reverse')

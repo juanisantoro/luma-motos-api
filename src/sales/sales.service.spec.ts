@@ -9,7 +9,7 @@ import type { AuthenticatedAuditEvent } from '../audit/audit.service';
 import type { AuthenticatedUser } from '../auth/auth.types';
 import { CashService } from '../cash/cash.service';
 import { PrismaService } from '../prisma/prisma.service';
-import { SalesService } from './sales.service';
+import { SalesService, trackingTotals } from './sales.service';
 
 describe('SalesService', () => {
   const operationId = '7d5cc401-544e-4651-9bd6-52495887fecd';
@@ -1690,6 +1690,592 @@ describe('SalesService', () => {
           { unidad_vehiculo_id: null },
           { unidades_vehiculos: { patente: null } },
         ],
+      });
+    });
+  });
+
+  describe('fase 4 - ingresos vinculados y seguimiento', () => {
+    const componentId = 'd0c0a0b0-0000-4000-8000-00000000c001';
+    const tradeInComponentId = 'd0c0a0b0-0000-4000-8000-00000000c002';
+    const accountId = 'b1c2d3e4-0000-4000-8000-000000000001';
+    const idempotencyKey = 'c1c2d3e4-0000-4000-8000-000000000009';
+    const recipientId = 'e0e0e0e0-0000-4000-8000-0000000000e1';
+    const actorPersonnelId = '11b5de9b-9bc2-4777-bb78-9c7267b73aca';
+
+    function planOperation(overrides = {}) {
+      return {
+        ...completeOperation('APROBADA'),
+        numero_boleto: 'B-0042',
+        incluye_casco: false,
+        modalidad_patentamiento: null,
+        importe_patentamiento: null,
+        patente_estimada_desde: null,
+        patente_estimada_hasta: null,
+        ingresos_financieros: [],
+        componentes_pago_operacion: [
+          {
+            id: componentId,
+            tipo_componente: 'EFECTIVO',
+            importe_esperado: new Prisma.Decimal(60),
+            fecha_vencimiento: null,
+            financiera_id: null,
+            consulta_crediticia_id: null,
+            vehiculo_tomado_id: null,
+            estado_pago: 'PENDIENTE',
+            notas: null,
+          },
+          {
+            id: tradeInComponentId,
+            tipo_componente: 'TOMA_PARTE_PAGO',
+            importe_esperado: new Prisma.Decimal(40),
+            fecha_vencimiento: null,
+            financiera_id: null,
+            consulta_crediticia_id: null,
+            vehiculo_tomado_id: 'aaaaaaaa-0000-4000-8000-000000000001',
+            estado_pago: 'PENDIENTE',
+            notas: null,
+          },
+        ],
+        ...overrides,
+      };
+    }
+
+    function collectionSetup(collectedBefore: string[] = []) {
+      const current = planOperation();
+      const incomeCreate = jest
+        .fn<Promise<unknown>, [Prisma.ingresosCreateArgs]>()
+        .mockResolvedValue({ id: 'income-new' });
+      const incomeUpdate = jest.fn().mockResolvedValue({});
+      const componentUpdate = jest.fn().mockResolvedValue({});
+      const registerEntityMovement = jest.fn().mockResolvedValue({});
+      const transaction = {
+        $queryRaw: jest.fn().mockResolvedValue([{ id: operationId }]),
+        operaciones: { findFirst: jest.fn().mockResolvedValue(current) },
+        movimientos_caja: {
+          findFirst: jest.fn().mockResolvedValue(null),
+          findMany: jest.fn().mockResolvedValue(
+            collectedBefore.map((amount) => ({
+              importe: new Prisma.Decimal(amount),
+            })),
+          ),
+        },
+        tipos_ingreso: {
+          findFirst: jest
+            .fn()
+            .mockResolvedValue({ nombre: 'Cobro de operación' }),
+        },
+        personal: {
+          findFirst: jest.fn().mockResolvedValue({ id: recipientId }),
+        },
+        componentes_pago_operacion: {
+          findFirst: jest.fn().mockResolvedValue({
+            importe_esperado: new Prisma.Decimal(60),
+            estado_pago: 'PENDIENTE',
+          }),
+          update: componentUpdate,
+        },
+        ingresos: { create: incomeCreate, update: incomeUpdate },
+      } as unknown as Prisma.TransactionClient;
+      const cash = {
+        registerEntityMovement,
+        settledAmount: jest.fn().mockResolvedValue(new Prisma.Decimal(60)),
+        actorPersonnelId: jest.fn().mockResolvedValue(actorPersonnelId),
+      } as unknown as CashService;
+      return {
+        sales: service(transaction, cash),
+        incomeCreate,
+        registerEntityMovement,
+        componentUpdate,
+      };
+    }
+
+    it('creates the income linked to operation, client, ticket and component', async () => {
+      const setup = collectionSetup();
+
+      await setup.sales.collectPaymentComponent(
+        operationId,
+        componentId,
+        {
+          idempotencyKey,
+          accountId,
+          amount: '60',
+          collectionDate: '2026-09-20',
+          handoverToId: recipientId,
+        },
+        actor,
+      );
+
+      expect(setup.incomeCreate.mock.calls[0]?.[0].data).toMatchObject({
+        operacion_id: operationId,
+        cliente_id: '904e2a34-8285-48fa-b64c-24a80d94f9cb',
+        componente_pago_id: componentId,
+        referencia: 'B-0042',
+        tipo_original: 'Cobro de operación',
+        importe: new Prisma.Decimal(60),
+        medio_pago: 'EFECTIVO',
+        cobrado_por_personal_id: actorPersonnelId,
+        rendido_a_personal_id: recipientId,
+        estado_rendicion: 'PENDIENTE_RENDICION',
+      });
+      expect(setup.registerEntityMovement).toHaveBeenCalledWith(
+        expect.anything(),
+        actor,
+        organizationId,
+        'ARS',
+        expect.objectContaining({ amount: '60.00', reference: 'B-0042' }),
+        { ingreso_id: 'income-new' },
+        'INGRESO',
+        'CREDITO',
+      );
+    });
+
+    it('requires the handover recipient when the component is cash', async () => {
+      const setup = collectionSetup();
+
+      await expect(
+        setup.sales.collectPaymentComponent(
+          operationId,
+          componentId,
+          { idempotencyKey, accountId, amount: '60' },
+          actor,
+        ),
+      ).rejects.toMatchObject({
+        response: { code: 'HANDOVER_RECIPIENT_REQUIRED' },
+      });
+      expect(setup.incomeCreate).not.toHaveBeenCalled();
+    });
+
+    it('does not collect more than the component amount', async () => {
+      const setup = collectionSetup(['50']);
+
+      await expect(
+        setup.sales.collectPaymentComponent(
+          operationId,
+          componentId,
+          {
+            idempotencyKey,
+            accountId,
+            amount: '20',
+            paymentMethod: 'TRANSFERENCIA_BANCARIA',
+          },
+          actor,
+        ),
+      ).rejects.toMatchObject({ response: { code: 'OVERPAYMENT' } });
+      expect(setup.incomeCreate).not.toHaveBeenCalled();
+    });
+
+    it('does not collect trade-in components', async () => {
+      const setup = collectionSetup();
+
+      await expect(
+        setup.sales.collectPaymentComponent(
+          operationId,
+          tradeInComponentId,
+          { idempotencyKey, accountId, amount: '40' },
+          actor,
+        ),
+      ).rejects.toMatchObject({
+        response: { code: 'COMPONENT_NOT_COLLECTIBLE' },
+      });
+    });
+
+    it('blocks replacing a plan with component incomes', async () => {
+      const transaction = {
+        $queryRaw: jest.fn().mockResolvedValue([{ id: operationId }]),
+        operaciones: {
+          findFirst: jest.fn().mockResolvedValue(planOperation()),
+        },
+        cobranzas: { count: jest.fn().mockResolvedValue(0) },
+        ingresos: { count: jest.fn().mockResolvedValue(1) },
+      } as unknown as Prisma.TransactionClient;
+
+      await expect(
+        service(transaction).replacePaymentPlan(
+          operationId,
+          {
+            expectedVersion: 2,
+            components: [{ type: 'EFECTIVO', amount: 100 }],
+          },
+          actor,
+        ),
+      ).rejects.toThrow(
+        new ConflictException(
+          'Payment plan with collections cannot be replaced',
+        ),
+      );
+    });
+
+    it('builds the tracking row with collected, balance and pending cash', async () => {
+      const movement = (amount: string) => ({
+        importe: new Prisma.Decimal(amount),
+        cuentas_caja: {
+          id: accountId,
+          codigo: 'CAJA',
+          nombre: 'Caja',
+          tipo_cuenta: 'CAJA',
+        },
+        personal: { id: actorPersonnelId, nombre_completo: 'Vendedor' },
+      });
+      const income = (overrides: Record<string, unknown>) => ({
+        id: 'income',
+        operacion_id: operationId,
+        fecha_ingreso: new Date('2026-09-20T00:00:00.000Z'),
+        tipo_original: 'Cobro de operación',
+        componente_pago_id: componentId,
+        medio_pago: 'EFECTIVO',
+        importe: new Prisma.Decimal(30),
+        referencia: 'B-0042',
+        estado_rendicion: 'PENDIENTE_RENDICION',
+        rendicion_confirmada_en: null,
+        version_fila: 0,
+        personal: { id: actorPersonnelId, nombre_completo: 'Vendedor' },
+        rendido_a: { id: recipientId, nombre_completo: 'Lucas' },
+        rendicion_confirmada_por: null,
+        movimientos_caja: [movement('30')],
+        ...overrides,
+      });
+      const incomes = [
+        income({ id: 'income-1' }),
+        income({
+          id: 'income-2',
+          estado_rendicion: 'RENDIDO',
+          rendicion_confirmada_en: new Date('2026-09-21T12:00:00.000Z'),
+          rendicion_confirmada_por: {
+            id: recipientId,
+            nombre_completo: 'Lucas',
+          },
+        }),
+        income({
+          id: 'income-patente',
+          tipo_original: 'Patente',
+          componente_pago_id: null,
+          medio_pago: 'TRANSFERENCIA_BANCARIA',
+          estado_rendicion: null,
+          rendido_a: null,
+          importe: new Prisma.Decimal(85),
+          movimientos_caja: [movement('85')],
+        }),
+      ];
+      const findMany = jest.fn().mockResolvedValue([planOperation()]);
+      const transaction = {
+        operaciones: {
+          count: jest.fn().mockResolvedValue(1),
+          findMany,
+        },
+        ingresos: { findMany: jest.fn().mockResolvedValue(incomes) },
+        operacion_creditos: { findMany: jest.fn().mockResolvedValue([]) },
+      } as unknown as Prisma.TransactionClient;
+
+      const result = await queryService(transaction).tracking(
+        { vehicleType: 'MOTO', page: 1, limit: 50 },
+        actor,
+      );
+
+      expect(result.total).toBe(1);
+      expect(result.items[0]).toMatchObject({
+        ticketNumber: 'B-0042',
+        client: { fullName: 'Cliente' },
+        seller: { fullName: 'Vendedor' },
+        agreedPrice: '100',
+        collectedAmount: '60',
+        balanceAmount: '40',
+        pendingHandoverAmount: '30',
+        pendingHandoverCount: 1,
+        fulfillment: { status: 'PENDIENTE_ASIGNACION' },
+      });
+      expect(result.items[0]?.paymentComponents[0]).toMatchObject({
+        id: componentId,
+        collectedAmount: '60',
+        balanceAmount: '0',
+        collectible: true,
+      });
+      expect(result.items[0]?.paymentComponents[1]).toMatchObject({
+        collectible: false,
+      });
+      expect(result.items[0]?.incomes).toHaveLength(3);
+      expect(result.items[0]?.incomes[2]).toMatchObject({
+        isLicensing: true,
+        handover: null,
+      });
+    });
+
+    it('filters the grid by cash still pending handover', async () => {
+      const candidates = [
+        { id: operationId, precio_acordado: new Prisma.Decimal(100) },
+        {
+          id: 'f0000000-0000-4000-8000-000000000002',
+          precio_acordado: new Prisma.Decimal(100),
+        },
+      ];
+      const findMany = jest
+        .fn<Promise<unknown[]>, [Prisma.operacionesFindManyArgs]>()
+        .mockResolvedValueOnce(candidates)
+        .mockResolvedValueOnce([]);
+      const transaction = {
+        operaciones: { findMany },
+        operacion_creditos: { findMany: jest.fn().mockResolvedValue([]) },
+        ingresos: {
+          findMany: jest.fn().mockResolvedValue([
+            {
+              id: 'income-1',
+              operacion_id: 'f0000000-0000-4000-8000-000000000002',
+              tipo_original: 'Cobro de operación',
+              estado_rendicion: 'PENDIENTE_RENDICION',
+              importe: new Prisma.Decimal(10),
+              movimientos_caja: [{ importe: new Prisma.Decimal(10) }],
+            },
+          ]),
+        },
+      } as unknown as Prisma.TransactionClient;
+
+      const result = await queryService(transaction).tracking(
+        { vehicleType: 'MOTO', page: 1, limit: 50, withPendingCash: true },
+        actor,
+      );
+
+      expect(result.total).toBe(1);
+      expect(findMany.mock.calls[1]?.[0]).toMatchObject({
+        where: { id: { in: ['f0000000-0000-4000-8000-000000000002'] } },
+      });
+    });
+  });
+
+  describe('fase 4 - financieras y crédito propio', () => {
+    const financingId = 'd0c0a0b0-0000-4000-8000-00000000f001';
+    const ownCreditId = 'd0c0a0b0-0000-4000-8000-00000000f002';
+    const personnelId = '11b5de9b-9bc2-4777-bb78-9c7267b73aca';
+
+    function financing(overrides: Record<string, unknown> = {}) {
+      return {
+        id: financingId,
+        tipo_componente: 'FINANCIACION',
+        importe_esperado: new Prisma.Decimal(1000),
+        fecha_vencimiento: null,
+        financiera_id: 'fin-1',
+        consulta_crediticia_id: null,
+        vehiculo_tomado_id: null,
+        estado_pago: 'PENDIENTE',
+        notas: null,
+        financiera_pago_informado_en: null,
+        financiera_pago_notas: null,
+        financiera_pago_informado_por: null,
+        financieras_componentes_pago_operacion_financiera_id_organizacion_idTofinancieras:
+          {
+            id: 'fin-1',
+            razon_social: 'Credicuotas',
+            es_credito_propio: false,
+          },
+        ...overrides,
+      };
+    }
+
+    function operationWith(components: unknown[]) {
+      return {
+        ...completeOperation('APROBADA'),
+        precio_acordado: new Prisma.Decimal(1500),
+        numero_boleto: 'B-0077',
+        incluye_casco: false,
+        modalidad_patentamiento: null,
+        importe_patentamiento: null,
+        patente_estimada_desde: null,
+        patente_estimada_hasta: null,
+        ingresos_financieros: [],
+        componentes_pago_operacion: components,
+      };
+    }
+
+    function markSetup(component: ReturnType<typeof financing>) {
+      const componentUpdate = jest.fn().mockResolvedValue({});
+      const transaction = {
+        $queryRaw: jest.fn().mockResolvedValue([{ id: operationId }]),
+        operaciones: {
+          findFirst: jest.fn().mockResolvedValue(operationWith([component])),
+        },
+        componentes_pago_operacion: {
+          update: componentUpdate,
+          findFirst: jest.fn().mockResolvedValue({
+            importe_esperado: new Prisma.Decimal(1000),
+            estado_pago: 'PENDIENTE',
+            financiera_pago_informado_en: new Date(),
+          }),
+        },
+        movimientos_caja: { findMany: jest.fn().mockResolvedValue([]) },
+      } as unknown as Prisma.TransactionClient;
+      const cash = {
+        actorPersonnelId: jest.fn().mockResolvedValue(personnelId),
+      } as unknown as CashService;
+      return { sales: service(transaction, cash), componentUpdate };
+    }
+
+    it('marks that the financiera paid, without an amount, and closes the component', async () => {
+      const setup = markSetup(financing());
+
+      await setup.sales.markFinancingPayment(
+        operationId,
+        financingId,
+        { notes: 'Liquidación semanal 12' },
+        actor,
+      );
+
+      expect(setup.componentUpdate).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({
+          data: {
+            financiera_pago_informado_en: expect.any(Date) as Date,
+            financiera_pago_informado_por_personal_id: personnelId,
+            financiera_pago_notas: 'Liquidación semanal 12',
+          },
+        }),
+      );
+      // syncComponentPaymentStatus keeps it PAGADO whatever net came in.
+      expect(setup.componentUpdate).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({ data: { estado_pago: 'PAGADO' } }),
+      );
+    });
+
+    it('does not mark twice nor own-credit financing', async () => {
+      await expect(
+        markSetup(
+          financing({ financiera_pago_informado_en: new Date() }),
+        ).sales.markFinancingPayment(operationId, financingId, {}, actor),
+      ).rejects.toMatchObject({
+        response: { code: 'FINANCING_ALREADY_MARKED' },
+      });
+
+      await expect(
+        markSetup(
+          financing({
+            financieras_componentes_pago_operacion_financiera_id_organizacion_idTofinancieras:
+              {
+                id: 'own',
+                razon_social: 'Crédito personal',
+                es_credito_propio: true,
+              },
+          }),
+        ).sales.markFinancingPayment(operationId, financingId, {}, actor),
+      ).rejects.toMatchObject({
+        response: { code: 'OWN_CREDIT_COLLECTED_BY_INSTALLMENTS' },
+      });
+    });
+
+    it('reverts the mark and recomputes the status from collections', async () => {
+      const setup = markSetup(
+        financing({ financiera_pago_informado_en: new Date('2026-09-20') }),
+      );
+
+      await setup.sales.revertFinancingPayment(
+        operationId,
+        financingId,
+        { reason: 'Se marcó en la operación equivocada' },
+        actor,
+      );
+
+      expect(setup.componentUpdate).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({
+          data: {
+            financiera_pago_informado_en: null,
+            financiera_pago_informado_por_personal_id: null,
+            financiera_pago_notas: null,
+          },
+        }),
+      );
+    });
+
+    it('closes the balance with the net when the financiera paid, and leaves own credit to installments', () => {
+      const income = {
+        componente_pago_id: financingId,
+        cuota_credito_id: null,
+        tipo_original: 'Cobro de operación',
+        estado_rendicion: null,
+        movimientos_caja: [{ importe: new Prisma.Decimal(920) }],
+      };
+      const installmentIncome = {
+        componente_pago_id: null,
+        cuota_credito_id: 'cuota-1',
+        tipo_original: 'Cuota crédito',
+        estado_rendicion: null,
+        movimientos_caja: [{ importe: new Prisma.Decimal(120) }],
+      };
+      const cash = {
+        componente_pago_id: 'cash',
+        cuota_credito_id: null,
+        tipo_original: 'Cobro de operación',
+        estado_rendicion: null,
+        movimientos_caja: [{ importe: new Prisma.Decimal(300) }],
+      };
+      const components = [
+        { ...financing(), financiera_pago_informado_en: new Date() },
+        {
+          ...financing({ id: ownCreditId }),
+          importe_esperado: new Prisma.Decimal(200),
+          financieras_componentes_pago_operacion_financiera_id_organizacion_idTofinancieras:
+            { es_credito_propio: true },
+        },
+        {
+          id: 'cash',
+          tipo_componente: 'EFECTIVO',
+          importe_esperado: new Prisma.Decimal(300),
+          estado_pago: 'PAGADO',
+          financiera_pago_informado_en: null,
+          financieras_componentes_pago_operacion_financiera_id_organizacion_idTofinancieras:
+            null,
+        },
+      ];
+
+      const totals = trackingTotals(
+        new Prisma.Decimal(1500),
+        [income, installmentIncome, cash] as never,
+        components as never,
+      );
+
+      // 920 net + 300 cash; the installment (with interest) stays apart.
+      expect(totals.collected.toString()).toBe('1220');
+      // 80 the financiera kept + 200 own credit collected by installments.
+      expect(totals.waived.toString()).toBe('280');
+      expect(totals.balance.toString()).toBe('0');
+    });
+
+    it('keeps the financing in the balance while the financiera has not paid', () => {
+      const totals = trackingTotals(new Prisma.Decimal(1000), [], [
+        financing(),
+      ] as never);
+      expect(totals.balance.toString()).toBe('1000');
+    });
+
+    it('rejects collecting own-credit financing directly', async () => {
+      const transaction = {
+        $queryRaw: jest.fn().mockResolvedValue([{ id: operationId }]),
+        operaciones: {
+          findFirst: jest.fn().mockResolvedValue(
+            operationWith([
+              financing({
+                financieras_componentes_pago_operacion_financiera_id_organizacion_idTofinancieras:
+                  {
+                    id: 'own',
+                    razon_social: 'Crédito personal',
+                    es_credito_propio: true,
+                  },
+              }),
+            ]),
+          ),
+        },
+      } as unknown as Prisma.TransactionClient;
+
+      await expect(
+        service(transaction).collectPaymentComponent(
+          operationId,
+          financingId,
+          {
+            idempotencyKey: 'c1c2d3e4-0000-4000-8000-000000000031',
+            accountId: 'b1c2d3e4-0000-4000-8000-000000000001',
+            amount: '100',
+          },
+          actor,
+        ),
+      ).rejects.toMatchObject({
+        response: { code: 'OWN_CREDIT_COLLECTED_BY_INSTALLMENTS' },
       });
     });
   });
