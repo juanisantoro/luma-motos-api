@@ -57,11 +57,13 @@ describe('CatalogService', () => {
     ],
   };
 
+  const findMany = jest.fn();
   function serviceWithVersion() {
+    findMany.mockReset().mockResolvedValue([version]);
     const transaction = {
       versiones_vehiculos: {
         count: jest.fn().mockResolvedValue(1),
-        findMany: jest.fn().mockResolvedValue([version]),
+        findMany,
       },
     } as unknown as Prisma.TransactionClient;
     return new CatalogService(
@@ -133,6 +135,42 @@ describe('CatalogService', () => {
     expect(result.items[0]).toMatchObject({
       ownerOrganizationId,
       sellableOrganizationIds: [actor.organization.id, ownerOrganizationId],
+    });
+  });
+
+  it('searches versions by brand and model name, word by word', async () => {
+    await serviceWithVersion().versions(
+      { page: 1, limit: 50, search: ' Honda  WAVE ', vehicleType: 'MOTO' },
+      actor,
+    );
+    const where = (
+      findMany.mock.calls[0] as [
+        { where: Prisma.versiones_vehiculosWhereInput },
+      ]
+    )[0].where;
+    const matches = (word: string) => [
+      { nombre_normalizado: { contains: word, mode: 'insensitive' } },
+      {
+        modelos_vehiculos: {
+          nombre_normalizado: { contains: word, mode: 'insensitive' },
+        },
+      },
+      {
+        modelos_vehiculos: {
+          marcas_vehiculos: {
+            nombre_normalizado: { contains: word, mode: 'insensitive' },
+          },
+        },
+      },
+    ];
+    expect(where.AND).toEqual([
+      { OR: matches('honda') },
+      { OR: matches('wave') },
+    ]);
+    expect(where).not.toHaveProperty('nombre_normalizado');
+    expect(where.modelos_vehiculos).toEqual({
+      tipo_vehiculo: 'MOTO',
+      marca_id: undefined,
     });
   });
 });

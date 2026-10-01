@@ -457,11 +457,29 @@ export class CatalogService {
     where.modelo_id = query.modelId;
     where.alcance = query.scope;
     where.activo = query.active;
-    if (query.search)
-      where.nombre_normalizado = {
-        contains: this.normalize(query.search),
-        mode: 'insensitive',
-      };
+    // Search by version, model or brand: most versions are the "SIN
+    // ESPECIFICAR" marker, so matching the version name alone finds nothing.
+    // Every word must match one of the three ("honda wave", "wave 110").
+    if (query.search) {
+      const words = this.normalize(query.search).split(' ').filter(Boolean);
+      where.AND = words.map((word): Prisma.versiones_vehiculosWhereInput => ({
+        OR: [
+          { nombre_normalizado: { contains: word, mode: 'insensitive' } },
+          {
+            modelos_vehiculos: {
+              nombre_normalizado: { contains: word, mode: 'insensitive' },
+            },
+          },
+          {
+            modelos_vehiculos: {
+              marcas_vehiculos: {
+                nombre_normalizado: { contains: word, mode: 'insensitive' },
+              },
+            },
+          },
+        ],
+      }));
+    }
     const currentOn = toDateOnly(query.currentOn ?? new Date());
     const [total, items] = await this.prisma.withTenant(
       this.scope(actor),
