@@ -124,11 +124,20 @@ patente.
 - `licensingAmount` sólo se acepta con `PAGA_CLIENTE` (`400
   LICENSING_AMOUNT_NOT_ALLOWED`); la base lo refuerza con un CHECK. Pasar a
   `BONIFICADA` sin importe lo limpia.
-- Ventana estimada de llegada: 10 y 15 días hábiles (lunes a viernes, sin
-  feriados) desde `operationDate`. Es informativa: no bloquea ni genera deuda ni
-  estados. `licensing.overdue=true` resalta operaciones en
-  PENDIENTE_APROBACION, APROBADA o CERRADA que pasaron `estimatedTo` (fecha de
-  Argentina) sin patente cargada en la unidad.
+- Ventana estimada de llegada: 10 y 15 días hábiles desde `operationDate`.
+  Hábil = lunes a viernes que no es feriado nacional argentino (fase 5). Los
+  feriados viven en `src/sales/ar-holidays.ts`, una tabla versionada por año
+  (inamovibles + trasladables en la fecha en que se gozan; sin días no
+  laborables ni feriados provinciales). Un año no cargado se calcula sólo con
+  lunes a viernes; un test avisa si falta el año en curso. Las ventanas ya
+  guardadas no se recalculan: el feriado aplica a altas nuevas y a cambios de
+  fecha. Es informativa: no bloquea ni genera deuda ni estados.
+  `licensing.overdue=true` resalta operaciones en PENDIENTE_APROBACION,
+  APROBADA o CERRADA que pasaron `estimatedTo` (fecha de Argentina) sin
+  patente recibida.
+- `GET /api/sales/operations/licensing-calendar` (`ventas.consultar`) devuelve
+  `{ businessDays: { from: 10, to: 15 }, holidays: ["2026-01-01", ...] }` para
+  que el front previsualice la misma ventana que guarda la API.
 - Operaciones anteriores a esta versión quedan con `licensing.mode=null`
   (`SIN_DEFINIR`) y sin ventana hasta que se les asigne modalidad.
 
@@ -170,9 +179,77 @@ idempotente: reintentar con la misma `idempotencyKey` devuelve la operación sin
 duplicar el ingreso. `collectionDate` es opcional (hoy en Argentina); una fecha
 anterior se contabiliza a las 12:00 de ese día.
 
-El pago de la patente (BONIFICADA) es un `POST /api/vehicle-payments` con el
-concepto `Patente`, la unidad y `operationId`. La respuesta de la operación los
-resume en `licensing`:
+### Llegada de la patente (fase 5)
+
+`POST /api/sales/operations/:id/licensing/plate`
+(`ventas.patentamiento.gestionar`) registra que llegó la patente, desde la
+grilla de operaciones de la administrativa o desde pagos de vehículo:
+
+```json
+{
+  "expectedVersion": 5,
+  "licensePlate": "A123BCD",
+  "receivedAt": "2026-09-24",
+  "collection": {
+    "idempotencyKey": "uuid",
+    "accountId": "uuid",
+    "amount": "85000.00",
+    "collectionDate": "2026-09-24",
+    "paymentMethod": "EFECTIVO",
+    "handoverToId": "uuid"
+  }
+}
+```
+
+- Guarda el número en la unidad de la operación (`unidades_vehiculos.patente`
+  en mayúsculas y `patente_normalizada` sólo letras y dígitos, igual que
+  inventario) y la fecha en `operaciones.patente_recibida_en`. `receivedAt` es
+  opcional (hoy en Argentina); no puede ser futura ni anterior a la operación.
+  Volver a llamarlo corrige número o fecha.
+- **BONIFICADA**: sólo número y fecha, no se cobra nada.
+- **PAGA_CLIENTE**: número y fecha y, opcionalmente en el mismo paso,
+  `collection` con el mismo contrato que `POST /:id/licensing/collections`
+  (cuenta, importe, medio, quién lo recibió y, si es efectivo, a quién se
+  rinde). Crea el ingreso `Patente` vinculado a operación, cliente y boleto
+  en la misma transacción. `collection` exige además `ingresos.cobrar` (403) y
+  sólo se acepta con PAGA_CLIENTE (`409 LICENSING_COLLECTION_NOT_ALLOWED`). El
+  cobro también puede registrarse antes de que llegue la patente o después,
+  con `POST /:id/licensing/collections`; si al llegar la patente no hay cobro
+  que la cubra, queda "recibida, cobro pendiente".
+- El pago de Luma a la gestoría **no** se registra acá: sigue en pagos de
+  vehículo (ver abajo).
+
+Errores: `400 INVALID_LICENSE_PLATE` (menos de 5 o más de 10 letras/dígitos),
+`400 LICENSE_PLATE_RECEIVED_IN_FUTURE`, `400
+LICENSE_PLATE_RECEIVED_BEFORE_OPERATION`, `409 LICENSE_PLATE_NOT_ALLOWED`
+(sólo PENDIENTE_APROBACION, APROBADA o CERRADA), `409 LICENSING_MODE_REQUIRED`
+(operación histórica sin modalidad: definirla primero), `409
+OPERATION_UNIT_REQUIRED` (todavía sin unidad física), `409
+LICENSE_PLATE_IN_USE` (otra unidad de la organización tiene esa patente;
+`details.unitId`, `details.vin`) y `409` por `expectedVersion`.
+
+### Pago de patente a la gestoría
+
+Se registra siempre en pagos de vehículo (`/motos/pagos-vehiculo`), con
+`POST /api/vehicle-payments`, concepto `Patente`, la unidad y `operationId`.
+Desde la operación, la acción "Registrar pago de patente" abre ese mismo
+formulario precargado (operación, unidad y concepto); no hay un segundo
+formulario en la grilla de operaciones. En pagos de vehículo:
+
+- `GET /api/vehicle-payments?search=` busca además por número de boleto
+  (`operaciones.numero_boleto`).
+- El formulario busca la operación por boleto (con
+  `GET /api/sales/operations?search=`) y precarga operación y unidad. Si la
+  operación todavía no tiene unidad (pendiente de asignar, pedida o pendiente
+  de ingreso del proveedor), lo informa y no permite cargar el pago.
+- Cada fila con operación devuelve `operation.ticketNumber` y
+  `operation.licensing` (`mode`, `estimatedFrom`, `estimatedTo`, `overdue` y
+  `plate`), con las mismas reglas que la operación.
+
+### Resumen `licensing`
+
+La respuesta de la operación resume modalidad, cobro, pago y patente en
+`licensing`:
 
 ```json
 {
@@ -185,6 +262,7 @@ resume en `licensing`:
     "estimatedTo": "2026-09-18",
     "plateLoaded": false,
     "overdue": true,
+    "plate": { "status": "EN_TRAMITE_VENCIDA", "number": null, "receivedAt": null },
     "collection": { "status": "PENDIENTE", "amount": "85000.00", "incomeIds": ["uuid"] },
     "payment": { "status": "SIN_REGISTRAR", "amount": "0.00", "paymentIds": [] }
   }
@@ -196,10 +274,29 @@ cuando los ingresos de patente están cobrados y, si hay `amount`, su total lo
 cubre) o `PAGO_PENDIENTE`/`PAGADO`
 (BONIFICADA, según exista un pago de patente PAGADO). `collection.status`:
 `SIN_REGISTRAR|PENDIENTE|PAGO_PARCIAL|PAGADO`; `payment.status`:
-`SIN_REGISTRAR|PENDIENTE|PAGADO`.
+`SIN_REGISTRAR|PENDIENTE|PAGADO`. Los ingresos de patente `ANULADO` no cuentan
+como cobro (fase 5).
+
+`plate.status` (fase 5) es la situación de la patente en sí:
+
+| `plate.status` | Texto en pantalla | Cuándo |
+| --- | --- | --- |
+| `EN_TRAMITE` | Patente en trámite (estimada entre X e Y) | sin patente recibida |
+| `EN_TRAMITE_VENCIDA` | En trámite, pasó la fecha estimada | igual que `overdue`; sólo recordatorio |
+| `RECIBIDA` | Patente recibida | BONIFICADA o modalidad sin definir |
+| `RECIBIDA_COBRO_PENDIENTE` | Recibida, pago pendiente | PAGA_CLIENTE sin cobro que cubra la patente |
+| `RECIBIDA_COBRADA` | Recibida y paga | PAGA_CLIENTE con `status = COBRADO` |
+| `NO_APLICA` | — | BORRADOR, RECHAZADA o CANCELADA sin patente |
+
+La patente cuenta como recibida si se registró su llegada
+(`patente_recibida_en`) o si la unidad ya tenía patente (usados y cargas
+anteriores a la fase 5, sin fecha). `plateLoaded` se mantiene por
+compatibilidad y equivale a "recibida".
 
 `GET /api/sales/operations` acepta además
-`licensingMode=BONIFICADA|PAGA_CLIENTE|SIN_DEFINIR` y `licensingOverdue=true|false`.
+`licensingMode=BONIFICADA|PAGA_CLIENTE|SIN_DEFINIR`, `licensingOverdue=true|false`
+y `licensingCollectionPending=true` (fase 5: PAGA_CLIENTE con la patente
+recibida y el cobro al cliente pendiente).
 
 Plataformas: `EFECTIVO`, `CREDITO`, `EFECTIVO_CREDITO`, `MOTO_EFECTIVO`,
 `MOTO_CREDITO`, `MOTO_EFECTIVO_CREDITO`. `creditAmount` es obligatorio y

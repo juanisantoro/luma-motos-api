@@ -1,4 +1,5 @@
 import { luma_estado_operacion, Prisma } from '@prisma/client';
+import { isBusinessDay } from './ar-holidays';
 
 // Patentamiento ("licensing") of a sales operation.
 //
@@ -32,9 +33,8 @@ export function isOverdueEligibleState(status: luma_estado_operacion) {
 
 export const OVERDUE_ELIGIBLE_OPERATION_STATES = OVERDUE_ELIGIBLE_STATES;
 
-// Business days = Monday to Friday. National holidays are not modeled in the
-// system yet, so they count as business days (the window is a reminder, not
-// a legal term).
+// Business days = Monday to Friday except Argentine national holidays
+// (./ar-holidays). The window is a reminder, not a legal term.
 export function addBusinessDays(start: Date, days: number): Date {
   const result = new Date(
     Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate()),
@@ -42,8 +42,7 @@ export function addBusinessDays(start: Date, days: number): Date {
   let remaining = days;
   while (remaining > 0) {
     result.setUTCDate(result.getUTCDate() + 1);
-    const weekday = result.getUTCDay();
-    if (weekday !== 0 && weekday !== 6) remaining -= 1;
+    if (isBusinessDay(result)) remaining -= 1;
   }
   return result;
 }
@@ -70,12 +69,12 @@ export function argentinaToday(now = new Date()): Date {
 export function isLicensingOverdue(input: {
   status: luma_estado_operacion;
   estimatedTo: Date | null | undefined;
-  plateLoaded: boolean;
+  plateReceived: boolean;
   today: Date;
 }) {
   return (
     input.estimatedTo != null &&
-    !input.plateLoaded &&
+    !input.plateReceived &&
     isOverdueEligibleState(input.status) &&
     input.estimatedTo.getTime() < input.today.getTime()
   );
@@ -97,6 +96,59 @@ export type LicensingPayment = {
 
 export type LicensingStatus =
   'SIN_DEFINIR' | 'COBRO_PENDIENTE' | 'COBRADO' | 'PAGO_PENDIENTE' | 'PAGADO';
+
+// Fase 5: where the plate itself stands, independent of the gestoría payment.
+// - EN_TRAMITE: not received yet (shown with the estimated window).
+// - EN_TRAMITE_VENCIDA: not received and past the estimated window (only a
+//   reminder, same rule as `overdue`).
+// - RECIBIDA: received; BONIFICADA or mode not defined.
+// - RECIBIDA_COBRO_PENDIENTE / RECIBIDA_COBRADA: received with PAGA_CLIENTE,
+//   depending on whether the client collection covers the patent.
+// - NO_APLICA: drafts, rejected and cancelled operations without a plate.
+export const LICENSING_PLATE_STATUSES = [
+  'EN_TRAMITE',
+  'EN_TRAMITE_VENCIDA',
+  'RECIBIDA',
+  'RECIBIDA_COBRO_PENDIENTE',
+  'RECIBIDA_COBRADA',
+  'NO_APLICA',
+] as const;
+export type LicensingPlateStatus = (typeof LICENSING_PLATE_STATUSES)[number];
+
+export function licensingPlateStatus(input: {
+  mode: LicensingMode | null | undefined;
+  operationStatus: luma_estado_operacion;
+  plateReceived: boolean;
+  overdue: boolean;
+  collectionCovered: boolean;
+}): LicensingPlateStatus {
+  if (input.plateReceived) {
+    if (input.mode === 'PAGA_CLIENTE')
+      return input.collectionCovered
+        ? 'RECIBIDA_COBRADA'
+        : 'RECIBIDA_COBRO_PENDIENTE';
+    return 'RECIBIDA';
+  }
+  if (!isOverdueEligibleState(input.operationStatus)) return 'NO_APLICA';
+  return input.overdue ? 'EN_TRAMITE_VENCIDA' : 'EN_TRAMITE';
+}
+
+// A plate counts as received when the administrativa registered its arrival
+// (patente_recibida_en) or the unit already carries a plate (used units and
+// operations loaded before fase 5).
+export function isPlateReceived(input: {
+  receivedAt: Date | null | undefined;
+  unitPlate: string | null | undefined;
+}) {
+  return input.receivedAt != null || Boolean(input.unitPlate);
+}
+
+// Plate as typed (upper case, single spaces) and its normalized form, same
+// rule as inventory (only letters and digits).
+export function normalizeLicensePlate(value: string) {
+  const display = value.trim().replace(/\s+/g, ' ').toUpperCase();
+  return { display, normalized: display.replace(/[^A-Z0-9]/g, '') };
+}
 
 function collectionStatus(incomes: LicensingIncome[]) {
   if (!incomes.length) return 'SIN_REGISTRAR' as const;
@@ -136,11 +188,16 @@ export function licensingSummary(input: {
   estimatedFrom: Date | null | undefined;
   estimatedTo: Date | null | undefined;
   operationStatus: luma_estado_operacion;
-  plateLoaded: boolean;
+  plateNumber: string | null | undefined;
+  plateReceivedAt: Date | null | undefined;
   incomes: LicensingIncome[];
   payments: LicensingPayment[];
   today: Date;
 }) {
+  const plateReceived = isPlateReceived({
+    receivedAt: input.plateReceivedAt,
+    unitPlate: input.plateNumber,
+  });
   const collection = collectionStatus(input.incomes);
   const payment = paymentStatus(input.payments);
   // With a known patent amount, the client collection is complete only when
@@ -164,19 +221,32 @@ export function licensingSummary(input: {
           ? 'PAGADO'
           : 'PAGO_PENDIENTE'
         : 'SIN_DEFINIR';
+  const overdue = isLicensingOverdue({
+    status: input.operationStatus,
+    estimatedTo: input.estimatedTo,
+    plateReceived,
+    today: input.today,
+  });
   return {
     mode: input.mode ?? null,
     amount: input.amount?.toString() ?? null,
     status,
     estimatedFrom: dateOnly(input.estimatedFrom),
     estimatedTo: dateOnly(input.estimatedTo),
-    plateLoaded: input.plateLoaded,
-    overdue: isLicensingOverdue({
-      status: input.operationStatus,
-      estimatedTo: input.estimatedTo,
-      plateLoaded: input.plateLoaded,
-      today: input.today,
-    }),
+    // Kept for compatibility: true when the plate is received.
+    plateLoaded: plateReceived,
+    overdue,
+    plate: {
+      status: licensingPlateStatus({
+        mode: input.mode,
+        operationStatus: input.operationStatus,
+        plateReceived,
+        overdue,
+        collectionCovered,
+      }),
+      number: input.plateNumber ?? null,
+      receivedAt: dateOnly(input.plateReceivedAt),
+    },
     collection: {
       status: collection,
       amount: sum(input.incomes.map((income) => income.importe)),

@@ -29,6 +29,7 @@ import {
   MarkFinancingPaymentDto,
   RegisterSalesComponentCollectionDto,
   RevertFinancingPaymentDto,
+  RegisterSalesLicensePlateDto,
   RegisterSalesLicensingCollectionDto,
   RequestSalesSupplyDto,
   SalesOperationTrackingQueryDto,
@@ -94,6 +95,13 @@ export class SalesController {
     return this.service.financialInstitutions(query, actor);
   }
 
+  // Fase 5: feriados nacionales y días hábiles de la ventana estimada de
+  // patente, para que el front previsualice las mismas fechas que guarda la API.
+  @Get('licensing-calendar')
+  licensingCalendar() {
+    return this.service.licensingCalendar();
+  }
+
   @Get('approvals')
   @Permissions(PERMISSION_CODES.SALES_APPROVE)
   pendingApprovals(
@@ -141,6 +149,17 @@ export class SalesController {
     @CurrentUser() actor: AuthenticatedUser,
   ) {
     return this.service.updateLicensing(id, input, actor);
+  }
+
+  @Post(':id/licensing/plate')
+  @Permissions(PERMISSION_CODES.SALES_LICENSING_MANAGE)
+  @AuditedMutation()
+  registerLicensePlate(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() input: RegisterSalesLicensePlateDto,
+    @CurrentUser() actor: AuthenticatedUser,
+  ) {
+    return this.service.registerLicensePlate(id, input, actor);
   }
 
   @Post(':id/licensing/collections')

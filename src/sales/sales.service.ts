@@ -58,11 +58,15 @@ import {
   argentinaToday,
   LICENSING_INCOME_TYPE,
   LICENSING_PAYMENT_CONCEPT,
+  isOverdueEligibleState,
+  LICENSING_ESTIMATE_BUSINESS_DAYS,
   LicensingPayment,
   licensingEstimate,
   licensingSummary,
+  normalizeLicensePlate,
   OVERDUE_ELIGIBLE_OPERATION_STATES,
 } from './licensing';
+import { nationalHolidayDates } from './ar-holidays';
 import {
   ApproveSalesOperationDto,
   AssignSalesUnitDto,
@@ -81,6 +85,7 @@ import {
   MarkFinancingPaymentDto,
   RegisterSalesComponentCollectionDto,
   RevertFinancingPaymentDto,
+  RegisterSalesLicensePlateDto,
   RegisterSalesLicensingCollectionDto,
   RequestSalesSupplyDto,
   SalesOperationTrackingQueryDto,
@@ -216,6 +221,8 @@ const operationInclude = {
   ingresos_financieros: {
     where: {
       tipo_original: { equals: LICENSING_INCOME_TYPE, mode: 'insensitive' },
+      // Fase 5: an annulled collection is not a collection.
+      estado_registro: { not: 'ANULADO' },
     },
     select: {
       id: true,
@@ -477,6 +484,22 @@ interface LockedReservation {
   id: string;
 }
 
+// Operations past the estimated plate window without the plate received
+// (same rule as licensing.overdue).
+function licensingOverdueWhere(
+  today = argentinaToday(),
+): Prisma.operacionesWhereInput {
+  return {
+    estado_operacion: { in: [...OVERDUE_ELIGIBLE_OPERATION_STATES] },
+    patente_estimada_hasta: { lt: today },
+    patente_recibida_en: null,
+    OR: [
+      { unidad_vehiculo_id: null },
+      { unidades_vehiculos: { patente: null } },
+    ],
+  };
+}
+
 @Injectable()
 export class SalesService {
   constructor(
@@ -518,14 +541,12 @@ export class SalesService {
     const search = query.search?.trim();
     const operationNumber =
       search && /^\d+$/.test(search) ? BigInt(search) : undefined;
-    const overdueWhere: Prisma.operacionesWhereInput = {
-      estado_operacion: { in: [...OVERDUE_ELIGIBLE_OPERATION_STATES] },
-      patente_estimada_hasta: { lt: argentinaToday() },
-      OR: [
-        { unidad_vehiculo_id: null },
-        { unidades_vehiculos: { patente: null } },
-      ],
-    };
+    const overdueWhere = licensingOverdueWhere();
+    const collectionPendingIds = query.licensingCollectionPending
+      ? await this.prisma.withTenant(this.scope(actor), (tx) =>
+          this.licensingCollectionPendingIds(tx),
+        )
+      : undefined;
     const where: Prisma.operacionesWhereInput = {
       AND: [
         query.licensingOverdue === undefined
@@ -533,6 +554,7 @@ export class SalesService {
           : query.licensingOverdue
             ? overdueWhere
             : { NOT: overdueWhere },
+        collectionPendingIds ? { id: { in: collectionPendingIds } } : {},
         this.fulfillmentWhere(query.fulfillmentStatus),
       ],
       modalidad_patentamiento:
@@ -2025,111 +2047,350 @@ export class SalesService {
             'LICENSING_COLLECTION_NOT_ALLOWED',
             'Only operations where the client pays the patent can register a collection',
           );
-        const repeated = await tx.movimientos_caja.findFirst({
-          where: {
-            organizacion_id: current.organizacion_id,
-            clave_idempotencia: input.idempotencyKey,
-          },
-          select: { ingreso_id: true },
-        });
-        if (repeated) {
-          if (
-            repeated.ingreso_id &&
-            current.ingresos_financieros.some(
-              (income) => income.id === repeated.ingreso_id,
-            )
-          )
-            return this.present(tx, current);
-          throw apiError(
-            HttpStatus.CONFLICT,
-            'IDEMPOTENCY_CONFLICT',
-            'Idempotency key was already used with a different payload',
-          );
-        }
-        const incomeType = await tx.tipos_ingreso.findFirst({
-          where: { nombre_normalizado: LICENSING_INCOME_TYPE, activo: true },
-          select: { nombre: true },
-        });
-        if (!incomeType)
-          throw apiError(
-            HttpStatus.CONFLICT,
-            'LICENSING_INCOME_TYPE_MISSING',
-            'The "Patente" income type is not active',
-          );
-        const cashColumns = await resolveCashCollection(
+        const replayed = await this.registerLicensingCollection(
           tx,
-          current.organizacion_id,
-          () => this.cash.actorPersonnelId(tx, actor, current.organizacion_id),
-          {
-            paymentMethod: input.paymentMethod,
-            collectedById: input.collectedById,
-            handoverToId: input.handoverToId,
-          },
-        );
-        const income = await tx.ingresos.create({
-          data: {
-            organizacion_id: current.organizacion_id,
-            sucursal_id: current.sucursal_id,
-            cliente_id: current.cliente_id,
-            ...cashColumns,
-            fecha_ingreso: businessDate(collectionDate),
-            tipo_original: incomeType.nombre,
-            descripcion: `Cobro de patente · operación #${current.numero_operacion.toString()}`,
-            importe: amount,
-            moneda: current.moneda,
-            estado_registro: 'PENDIENTE',
-            referencia:
-              input.reference?.trim() || current.numero_boleto || undefined,
-            unidad_vehiculo_id: current.unidad_vehiculo_id ?? undefined,
-            operacion_id: id,
-            observaciones: input.notes?.trim(),
-            es_transferencia: false,
-          },
-          select: { id: true },
-        });
-        await this.cash.registerEntityMovement(
-          tx,
+          current,
+          input,
           actor,
-          current.organizacion_id,
-          current.moneda,
-          {
-            idempotencyKey: input.idempotencyKey,
-            accountId: input.accountId,
-            amount: amount.toFixed(2),
-            // Back-dated collections keep their business date; today's use
-            // the current time.
-            ...(collectionDate === today
-              ? {}
-              : { occurredAt: `${collectionDate}T12:00:00.000-03:00` }),
-            ...(input.reference?.trim() || current.numero_boleto
-              ? {
-                  reference: input.reference?.trim() || current.numero_boleto!,
-                }
-              : {}),
-            ...(input.notes?.trim() ? { notes: input.notes.trim() } : {}),
-          },
-          { ingreso_id: income.id },
-          tipo_movimiento_caja_luma.INGRESO,
-          direccion_caja_luma.CREDITO,
+          amount,
+          collectionDate,
+          today,
         );
-        const collected = await this.cash.settledAmount(
-          tx,
-          { ingreso_id: income.id },
-          tipo_movimiento_caja_luma.INGRESO,
-        );
-        await tx.ingresos.update({
-          where: {
-            id_organizacion_id: {
-              id: income.id,
-              organizacion_id: current.organizacion_id,
-            },
-          },
-          data: { estado_registro: paymentStatus(collected, amount) },
-        });
+        if (replayed) return this.present(tx, current);
         return this.present(tx, await this.operationOr404(tx, id, actor));
       },
       id,
     );
+  }
+
+  // Fase 5: calendar the estimated plate window uses (national holidays by
+  // year), so the front previews the same dates the API stores.
+  licensingCalendar() {
+    return {
+      businessDays: LICENSING_ESTIMATE_BUSINESS_DAYS,
+      holidays: nationalHolidayDates(),
+    };
+  }
+
+  // Fase 5: arrival of the plate, from the administrative operations grid or
+  // from vehicle payments. Stores the plate on the operation unit and the
+  // reception date on the operation. BONIFICADA: nothing is charged.
+  // PAGA_CLIENTE: `collection` optionally registers the client collection in
+  // the same transaction; otherwise the plate stays "recibida, cobro
+  // pendiente" until POST /:id/licensing/collections. The payment to the
+  // gestoría is not touched here: it stays in vehicle payments.
+  async registerLicensePlate(
+    id: string,
+    input: RegisterSalesLicensePlateDto,
+    actor: AuthenticatedUser,
+  ) {
+    const plate = normalizeLicensePlate(input.licensePlate);
+    if (plate.normalized.length < 5 || plate.normalized.length > 10)
+      throw apiError(
+        HttpStatus.BAD_REQUEST,
+        'INVALID_LICENSE_PLATE',
+        'The license plate must have between 5 and 10 letters or digits',
+      );
+    const today = argentinaToday().toISOString().slice(0, 10);
+    const receivedAt = input.receivedAt ?? today;
+    if (receivedAt > today)
+      throw apiError(
+        HttpStatus.BAD_REQUEST,
+        'LICENSE_PLATE_RECEIVED_IN_FUTURE',
+        'The plate reception date cannot be in the future',
+      );
+    const collection = input.collection;
+    let collectionAmount: Prisma.Decimal | undefined;
+    if (collection) {
+      if (!actor.role.permissions.includes(PERMISSION_CODES.INCOMES_COLLECT))
+        throw new ForbiddenException(
+          'Registering the client collection requires ingresos.cobrar',
+        );
+      collectionAmount = new Prisma.Decimal(collection.amount);
+      if (collectionAmount.lessThanOrEqualTo(0))
+        throw apiError(
+          HttpStatus.BAD_REQUEST,
+          'INVALID_AMOUNT',
+          'Amount must be greater than zero',
+        );
+    }
+    return this.mutate(
+      actor,
+      'SALES_OPERATION_LICENSE_PLATE_RECEIVED',
+      async (tx, event) => {
+        const current = await this.operationOr404(tx, id, actor, true);
+        this.setTargetOrganization(event, actor, current.organizacion_id);
+        this.assertVersion(current.version_fila, input.expectedVersion);
+        if (!isOverdueEligibleState(current.estado_operacion))
+          throw apiError(
+            HttpStatus.CONFLICT,
+            'LICENSE_PLATE_NOT_ALLOWED',
+            'The plate can only be registered on submitted, approved or closed operations',
+          );
+        if (!current.modalidad_patentamiento)
+          throw apiError(
+            HttpStatus.CONFLICT,
+            'LICENSING_MODE_REQUIRED',
+            'Define whether the patent is bonified or paid by the client first',
+          );
+        const unit = current.unidades_vehiculos;
+        if (!current.unidad_vehiculo_id || !unit)
+          throw apiError(
+            HttpStatus.CONFLICT,
+            'OPERATION_UNIT_REQUIRED',
+            'The operation has no physical unit assigned yet',
+          );
+        if (receivedAt < current.fecha_operacion.toISOString().slice(0, 10))
+          throw apiError(
+            HttpStatus.BAD_REQUEST,
+            'LICENSE_PLATE_RECEIVED_BEFORE_OPERATION',
+            'The plate reception date cannot be before the operation date',
+          );
+        if (
+          collection &&
+          current.modalidad_patentamiento !==
+            modalidad_patentamiento_luma.PAGA_CLIENTE
+        )
+          throw apiError(
+            HttpStatus.CONFLICT,
+            'LICENSING_COLLECTION_NOT_ALLOWED',
+            'Only operations where the client pays the patent can register a collection',
+          );
+        const duplicated = await tx.unidades_vehiculos.findFirst({
+          where: {
+            organizacion_id: current.organizacion_id,
+            patente_normalizada: plate.normalized,
+            id: { not: unit.id },
+          },
+          select: { id: true, vin_mostrado: true },
+        });
+        if (duplicated)
+          throw apiError(
+            HttpStatus.CONFLICT,
+            'LICENSE_PLATE_IN_USE',
+            'Another unit already has that license plate',
+            { unitId: duplicated.id, vin: duplicated.vin_mostrado },
+          );
+        await tx.unidades_vehiculos.update({
+          where: {
+            id_organizacion_id: {
+              id: unit.id,
+              organizacion_id: current.organizacion_id,
+            },
+          },
+          data: {
+            patente: plate.display,
+            patente_normalizada: plate.normalized,
+          },
+        });
+        await tx.operaciones.update({
+          where: {
+            id_organizacion_id: {
+              id,
+              organizacion_id: current.organizacion_id,
+            },
+          },
+          data: {
+            patente_recibida_en: businessDate(receivedAt),
+            version_fila: { increment: 1 },
+          },
+        });
+        if (collection && collectionAmount)
+          await this.registerLicensingCollection(
+            tx,
+            current,
+            collection,
+            actor,
+            collectionAmount,
+            collection.collectionDate ?? today,
+            today,
+          );
+        return this.present(tx, await this.operationOr404(tx, id, actor));
+      },
+      id,
+    );
+  }
+
+  // Fase 5: PAGA_CLIENTE operations with the plate received whose client
+  // collection does not cover the patent yet (same rule as
+  // licensing.plate.status = RECIBIDA_COBRO_PENDIENTE). Runs under the
+  // caller's tenant context, so RLS limits it to the visible organizations.
+  private async licensingCollectionPendingIds(
+    tx: Prisma.TransactionClient,
+  ): Promise<string[]> {
+    const rows = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+      SELECT o."id"
+      FROM "public"."operaciones" AS o
+      LEFT JOIN "public"."unidades_vehiculos" AS u
+        ON u."id" = o."unidad_vehiculo_id"
+       AND u."organizacion_id" = o."organizacion_id"
+      LEFT JOIN LATERAL (
+        SELECT
+          COUNT(*) AS total,
+          COUNT(*) FILTER (WHERE i."estado_registro" <> 'PAGADO') AS open,
+          COALESCE(SUM(i."importe") FILTER (WHERE i."estado_registro" = 'PAGADO'), 0) AS paid
+        FROM "public"."ingresos" AS i
+        WHERE i."operacion_id" = o."id"
+          AND i."organizacion_id" = o."organizacion_id"
+          AND lower(i."tipo_original") = ${LICENSING_INCOME_TYPE}
+          AND i."estado_registro" <> 'ANULADO'
+      ) AS c ON TRUE
+      WHERE o."modalidad_patentamiento" = 'PAGA_CLIENTE'
+        AND o."estado_operacion" IN (${Prisma.join(
+          OVERDUE_ELIGIBLE_OPERATION_STATES.map(
+            (state) => Prisma.sql`${state}::luma_estado_operacion`,
+          ),
+        )})
+        AND (o."patente_recibida_en" IS NOT NULL OR u."patente" IS NOT NULL)
+        AND (
+          c.total = 0
+          OR c.open > 0
+          OR (o."importe_patentamiento" IS NOT NULL AND c.paid < o."importe_patentamiento")
+        )
+    `);
+    return rows.map((row) => row.id);
+  }
+
+  // Fase 5 dashboard (ADMINISTRATIVA): plates past the estimated window
+  // without being loaded, and PAGA_CLIENTE plates received with the client
+  // collection pending, within the actor's branch scope.
+  async licensingAlerts(actor: AuthenticatedUser, branches: BranchScope) {
+    return this.prisma.withTenant(this.scope(actor), async (tx) => {
+      const base: Prisma.operacionesWhereInput = {
+        organizacion_id: actor.organization.id,
+        sucursal_id: branches.where(),
+      };
+      const pendingIds = await this.licensingCollectionPendingIds(tx);
+      const [overdue, receivedPendingCollection] = await Promise.all([
+        tx.operaciones.count({
+          where: { AND: [base, licensingOverdueWhere()] },
+        }),
+        pendingIds.length
+          ? tx.operaciones.count({
+              where: { AND: [base, { id: { in: pendingIds } }] },
+            })
+          : 0,
+      ]);
+      return { overdue, receivedPendingCollection };
+    });
+  }
+
+  // Creates the "Patente" income linked to the operation and its cash
+  // movement in the chosen account (fase 4 cash circuit included). Shared by
+  // the one-step collection and the plate arrival (fase 5). Returns true when
+  // the idempotency key was already used for this operation (replay).
+  private async registerLicensingCollection(
+    tx: Prisma.TransactionClient,
+    current: OperationRecord,
+    input: RegisterSalesLicensingCollectionDto,
+    actor: AuthenticatedUser,
+    amount: Prisma.Decimal,
+    collectionDate: string,
+    today: string,
+  ): Promise<boolean> {
+    const id = current.id;
+    const repeated = await tx.movimientos_caja.findFirst({
+      where: {
+        organizacion_id: current.organizacion_id,
+        clave_idempotencia: input.idempotencyKey,
+      },
+      select: { ingreso_id: true },
+    });
+    if (repeated) {
+      if (
+        repeated.ingreso_id &&
+        current.ingresos_financieros.some(
+          (income) => income.id === repeated.ingreso_id,
+        )
+      )
+        return true;
+      throw apiError(
+        HttpStatus.CONFLICT,
+        'IDEMPOTENCY_CONFLICT',
+        'Idempotency key was already used with a different payload',
+      );
+    }
+    const incomeType = await tx.tipos_ingreso.findFirst({
+      where: { nombre_normalizado: LICENSING_INCOME_TYPE, activo: true },
+      select: { nombre: true },
+    });
+    if (!incomeType)
+      throw apiError(
+        HttpStatus.CONFLICT,
+        'LICENSING_INCOME_TYPE_MISSING',
+        'The "Patente" income type is not active',
+      );
+    const cashColumns = await resolveCashCollection(
+      tx,
+      current.organizacion_id,
+      () => this.cash.actorPersonnelId(tx, actor, current.organizacion_id),
+      {
+        paymentMethod: input.paymentMethod,
+        collectedById: input.collectedById,
+        handoverToId: input.handoverToId,
+      },
+    );
+    const income = await tx.ingresos.create({
+      data: {
+        organizacion_id: current.organizacion_id,
+        sucursal_id: current.sucursal_id,
+        cliente_id: current.cliente_id,
+        ...cashColumns,
+        fecha_ingreso: businessDate(collectionDate),
+        tipo_original: incomeType.nombre,
+        descripcion: `Cobro de patente · operación #${current.numero_operacion.toString()}`,
+        importe: amount,
+        moneda: current.moneda,
+        estado_registro: 'PENDIENTE',
+        referencia:
+          input.reference?.trim() || current.numero_boleto || undefined,
+        unidad_vehiculo_id: current.unidad_vehiculo_id ?? undefined,
+        operacion_id: id,
+        observaciones: input.notes?.trim(),
+        es_transferencia: false,
+      },
+      select: { id: true },
+    });
+    await this.cash.registerEntityMovement(
+      tx,
+      actor,
+      current.organizacion_id,
+      current.moneda,
+      {
+        idempotencyKey: input.idempotencyKey,
+        accountId: input.accountId,
+        amount: amount.toFixed(2),
+        // Back-dated collections keep their business date; today's use
+        // the current time.
+        ...(collectionDate === today
+          ? {}
+          : { occurredAt: `${collectionDate}T12:00:00.000-03:00` }),
+        ...(input.reference?.trim() || current.numero_boleto
+          ? {
+              reference: input.reference?.trim() || current.numero_boleto!,
+            }
+          : {}),
+        ...(input.notes?.trim() ? { notes: input.notes.trim() } : {}),
+      },
+      { ingreso_id: income.id },
+      tipo_movimiento_caja_luma.INGRESO,
+      direccion_caja_luma.CREDITO,
+    );
+    const collected = await this.cash.settledAmount(
+      tx,
+      { ingreso_id: income.id },
+      tipo_movimiento_caja_luma.INGRESO,
+    );
+    await tx.ingresos.update({
+      where: {
+        id_organizacion_id: {
+          id: income.id,
+          organizacion_id: current.organizacion_id,
+        },
+      },
+      data: { estado_registro: paymentStatus(collected, amount) },
+    });
+    return false;
   }
 
   // Fase 4: collection of a payment-plan component. In one transaction it
@@ -4578,7 +4839,8 @@ export class SalesService {
         estimatedFrom: item.patente_estimada_desde,
         estimatedTo: item.patente_estimada_hasta,
         operationStatus: item.estado_operacion,
-        plateLoaded: Boolean(currentUnit?.patente),
+        plateNumber: currentUnit?.patente,
+        plateReceivedAt: item.patente_recibida_en,
         incomes: item.ingresos_financieros ?? [],
         payments: licensingPayments,
         today,

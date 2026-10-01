@@ -237,6 +237,7 @@ export class DashboardService {
       recentInquiries,
       managementAlerts,
       topModels,
+      licensingAlerts,
     ] = await Promise.all([
       has(PERMISSION_CODES.CREDIT_PLANS_READ)
         ? this.creditPlans.dueTodaySummary(actor, branches)
@@ -265,11 +266,14 @@ export class DashboardService {
       has(PERMISSION_CODES.SALES_READ)
         ? this.sales.topModels(actor, { period, limit: 5 })
         : null,
+      // Fase 5: patentes vencidas sin cargar y PAGA_CLIENTE recibidas con el
+      // cobro pendiente.
+      has(PERMISSION_CODES.SALES_LICENSING_MANAGE)
+        ? this.sales.licensingAlerts(actor, branches)
+        : null,
     ]);
-    // "comisiones por pagar" was in scope but ADMINISTRATIVA holds none of
-    // comisiones.consultar/.pagar/.gestionar in the seeded permission set -
-    // deliberately dropped rather than gated on a permission that would
-    // never be true for this role. See the session report.
+    // Decided: ADMINISTRATIVA does not see commissions for now ("comisiones
+    // por pagar" dropped from this home, no comisiones.* permission).
     return {
       dueTodayAlert,
       cashBalanceToday,
@@ -288,6 +292,7 @@ export class DashboardService {
         consultedAt: row.consultado_en,
       })),
       managementAlerts,
+      licensingAlerts,
       topModels,
     };
   }

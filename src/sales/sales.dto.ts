@@ -90,6 +90,12 @@ export class SalesOperationQueryDto {
   @IsIn(SALES_LICENSING_MODE_FILTERS)
   licensingMode?: SalesLicensingModeFilter;
   @IsOptional() @Transform(toBoolean) @IsBoolean() licensingOverdue?: boolean;
+  // Fase 5: PAGA_CLIENTE with the plate received and the client collection
+  // still pending.
+  @IsOptional()
+  @Transform(toBoolean)
+  @IsBoolean()
+  licensingCollectionPending?: boolean;
   @IsOptional()
   @IsIn(SALES_FULFILLMENT_FILTERS)
   fulfillmentStatus?: SalesFulfillmentFilter;
@@ -259,6 +265,21 @@ export class RegisterSalesLicensingCollectionDto {
   paymentMethod?: metodo_cobranza_luma;
   @IsOptional() @IsUUID() collectedById?: string;
   @IsOptional() @IsUUID() handoverToId?: string;
+}
+
+// Fase 5: llegada de la patente. `collection` registra en el mismo paso el
+// cobro al cliente (sólo PAGA_CLIENTE, requiere además ingresos.cobrar).
+export class RegisterSalesLicensePlateDto {
+  @Type(() => Number) @IsInt() @Min(0) expectedVersion!: number;
+  @IsString() @IsNotEmpty() @MaxLength(20) licensePlate!: string;
+  @IsOptional()
+  @IsDateString()
+  @Matches(BUSINESS_DATE_PATTERN)
+  receivedAt?: string;
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => RegisterSalesLicensingCollectionDto)
+  collection?: RegisterSalesLicensingCollectionDto;
 }
 
 // Fase 4: cobro de un componente del plan de pago. Crea el ingreso ya

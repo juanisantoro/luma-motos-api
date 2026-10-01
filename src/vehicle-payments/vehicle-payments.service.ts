@@ -5,12 +5,20 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { luma_estado_operacion, Prisma } from '@prisma/client';
 import { AuditService, AuthenticatedAuditEvent } from '../audit/audit.service';
 import type { AuthenticatedUser } from '../auth/auth.types';
 import { BranchScope } from '../branch-scope/branch-scope';
 import { CashService } from '../cash/cash.service';
 import { PrismaService } from '../prisma/prisma.service';
+import {
+  argentinaToday,
+  isLicensingOverdue,
+  isPlateReceived,
+  LICENSING_INCOME_TYPE,
+  LicensingMode,
+  licensingPlateStatus,
+} from '../sales/licensing';
 import {
   CreateVehiclePaymentCatalogEntryDto,
   CreateVehiclePaymentDto,
@@ -42,7 +50,19 @@ type VehiclePaymentRow = {
   tipo_vehiculo: string;
   operacion_id: string | null;
   numero_operacion: bigint | null;
+  numero_boleto: string | null;
+  estado_operacion: luma_estado_operacion | null;
+  modalidad_patentamiento: LicensingMode | null;
+  patente_estimada_desde: Date | null;
+  patente_estimada_hasta: Date | null;
+  patente_recibida_en: Date | null;
+  operacion_patente: string | null;
+  cobro_patente_cubierto: boolean | null;
 };
+
+function dateOnly(value: Date | null): string | null {
+  return value ? value.toISOString().slice(0, 10) : null;
+}
 
 function parseBusinessDate(value: string): Date {
   const result = new Date(`${value}T00:00:00.000Z`);
@@ -136,7 +156,15 @@ export class VehiclePaymentsService {
         p.unidad_vehiculo_id, u.vin_mostrado, u.patente, u.version_id,
         v.nombre AS version_nombre, m.nombre AS modelo_nombre,
         mk.nombre AS marca_nombre, m.tipo_vehiculo,
-        p.operacion_id, o.numero_operacion
+        p.operacion_id, o.numero_operacion, o.numero_boleto,
+        o.estado_operacion, o.modalidad_patentamiento,
+        o.patente_estimada_desde, o.patente_estimada_hasta,
+        o.patente_recibida_en, ou.patente AS operacion_patente,
+        (
+          o.id IS NOT NULL
+          AND lc.total > 0 AND lc.open = 0
+          AND (o.importe_patentamiento IS NULL OR lc.paid >= o.importe_patentamiento)
+        ) AS cobro_patente_cubierto
       FROM pagos_vehiculo p
       JOIN conceptos_pago_vehiculo c ON c.id = p.concepto_id
       JOIN proveedores_pago_vehiculo b ON b.id = p.proveedor_id
@@ -145,10 +173,56 @@ export class VehiclePaymentsService {
       JOIN modelos_vehiculos m ON m.id = v.modelo_id
       JOIN marcas_vehiculos mk ON mk.id = m.marca_id
       LEFT JOIN operaciones o ON o.id = p.operacion_id
+      LEFT JOIN unidades_vehiculos ou
+        ON ou.id = o.unidad_vehiculo_id AND ou.organizacion_id = o.organizacion_id
+      LEFT JOIN LATERAL (
+        SELECT
+          COUNT(*) AS total,
+          COUNT(*) FILTER (WHERE i.estado_registro <> 'PAGADO') AS open,
+          COALESCE(SUM(i.importe) FILTER (WHERE i.estado_registro = 'PAGADO'), 0) AS paid
+        FROM ingresos i
+        WHERE i.operacion_id = o.id
+          AND i.organizacion_id = o.organizacion_id
+          AND lower(i.tipo_original) = ${LICENSING_INCOME_TYPE}
+          AND i.estado_registro <> 'ANULADO'
+      ) lc ON TRUE
     `;
   }
 
-  private mapRow(row: VehiclePaymentRow) {
+  // Fase 5: patent situation of the linked operation, same rules as
+  // licensing.plate in sales operations.
+  private operationLicensing(row: VehiclePaymentRow, today: Date) {
+    if (!row.operacion_id || !row.estado_operacion) return null;
+    const plateReceived = isPlateReceived({
+      receivedAt: row.patente_recibida_en,
+      unitPlate: row.operacion_patente,
+    });
+    const overdue = isLicensingOverdue({
+      status: row.estado_operacion,
+      estimatedTo: row.patente_estimada_hasta,
+      plateReceived,
+      today,
+    });
+    return {
+      mode: row.modalidad_patentamiento,
+      estimatedFrom: dateOnly(row.patente_estimada_desde),
+      estimatedTo: dateOnly(row.patente_estimada_hasta),
+      overdue,
+      plate: {
+        status: licensingPlateStatus({
+          mode: row.modalidad_patentamiento,
+          operationStatus: row.estado_operacion,
+          plateReceived,
+          overdue,
+          collectionCovered: row.cobro_patente_cubierto === true,
+        }),
+        number: row.operacion_patente,
+        receivedAt: dateOnly(row.patente_recibida_en),
+      },
+    };
+  }
+
+  private mapRow(row: VehiclePaymentRow, today = argentinaToday()) {
     return {
       id: row.id,
       date: row.fecha.toISOString().slice(0, 10),
@@ -171,7 +245,12 @@ export class VehiclePaymentsService {
         version: row.version_nombre,
       },
       operation: row.operacion_id
-        ? { id: row.operacion_id, number: row.numero_operacion?.toString() ?? '' }
+        ? {
+            id: row.operacion_id,
+            number: row.numero_operacion?.toString() ?? '',
+            ticketNumber: row.numero_boleto,
+            licensing: this.operationLicensing(row, today),
+          }
         : null,
       createdAt: row.creado_en.toISOString(),
       updatedAt: row.actualizado_en.toISOString(),
@@ -228,6 +307,7 @@ export class VehiclePaymentsService {
         OR m.nombre ILIKE ${`%${search}%`}
         OR v.nombre ILIKE ${`%${search}%`}
         OR o.numero_operacion::text ILIKE ${`%${search}%`}
+        OR o.numero_boleto ILIKE ${`%${search}%`}
       )`);
     }
     const where = Prisma.sql`WHERE ${Prisma.join(conditions, ' AND ')}`;
@@ -252,8 +332,9 @@ export class VehiclePaymentsService {
         ${where}
       `),
     );
+    const today = argentinaToday();
     return {
-      items: rows.map((row) => this.mapRow(row)),
+      items: rows.map((row) => this.mapRow(row, today)),
       total: Number(count),
       page: query.page,
       limit: query.limit,

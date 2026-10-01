@@ -8,6 +8,7 @@ import { AuditService } from '../audit/audit.service';
 import type { AuthenticatedAuditEvent } from '../audit/audit.service';
 import type { AuthenticatedUser } from '../auth/auth.types';
 import { CashService } from '../cash/cash.service';
+import { BranchScope } from '../branch-scope/branch-scope';
 import { PrismaService } from '../prisma/prisma.service';
 import { SalesService, trackingTotals } from './sales.service';
 
@@ -1585,6 +1586,270 @@ describe('SalesService', () => {
       });
     });
 
+    describe('fase 5 - llegada de la patente', () => {
+      const accountId = 'b1c2d3e4-0000-4000-8000-000000000001';
+      const idempotencyKey = 'c1c2d3e4-0000-4000-8000-000000000003';
+      const collector: AuthenticatedUser = {
+        ...actor,
+        role: {
+          ...actor.role,
+          permissions: [
+            'sucursales.todas',
+            'ventas.patentamiento.gestionar',
+            'ingresos.cobrar',
+          ],
+        },
+      };
+
+      function plateSetup(
+        current: ReturnType<typeof licensedOperation>,
+        duplicated: { id: string; vin_mostrado: string } | null = null,
+      ) {
+        const operationUpdate = jest
+          .fn<Promise<unknown>, [Prisma.operacionesUpdateArgs]>()
+          .mockResolvedValue({});
+        const unitUpdate = jest
+          .fn<Promise<unknown>, [Prisma.unidades_vehiculosUpdateArgs]>()
+          .mockResolvedValue({});
+        const incomeCreate = jest
+          .fn<Promise<unknown>, [Prisma.ingresosCreateArgs]>()
+          .mockResolvedValue({ id: 'income-plate' });
+        const registerEntityMovement = jest.fn().mockResolvedValue({});
+        const reloaded = {
+          ...current,
+          patente_recibida_en: new Date('2026-09-17T00:00:00.000Z'),
+          version_fila: current.version_fila + 1,
+        };
+        const transaction = {
+          $queryRaw: jest.fn().mockResolvedValue([{ id: operationId }]),
+          operaciones: {
+            findFirst: jest
+              .fn()
+              .mockResolvedValueOnce(current)
+              .mockResolvedValue(reloaded),
+            update: operationUpdate,
+          },
+          unidades_vehiculos: {
+            findFirst: jest.fn().mockResolvedValue(duplicated),
+            update: unitUpdate,
+          },
+          movimientos_caja: { findFirst: jest.fn().mockResolvedValue(null) },
+          tipos_ingreso: {
+            findFirst: jest.fn().mockResolvedValue({ nombre: 'Patente' }),
+          },
+          personal: {
+            findFirst: jest.fn().mockResolvedValue({ id: 'staff-1' }),
+          },
+          ingresos: {
+            create: incomeCreate,
+            update: jest.fn().mockResolvedValue({}),
+          },
+        } as unknown as Prisma.TransactionClient;
+        const cash = {
+          registerEntityMovement,
+          settledAmount: jest.fn().mockResolvedValue(new Prisma.Decimal(85000)),
+          actorPersonnelId: jest.fn().mockResolvedValue('staff-1'),
+        } as unknown as CashService;
+        return {
+          sales: service(transaction, cash),
+          operationUpdate,
+          unitUpdate,
+          incomeCreate,
+          registerEntityMovement,
+        };
+      }
+
+      it('BONIFICADA: stores the plate on the unit and the reception date, charging nothing', async () => {
+        const setup = plateSetup(
+          licensedOperation('APROBADA', {
+            modalidad_patentamiento: 'BONIFICADA',
+            importe_patentamiento: null,
+          }),
+        );
+
+        const result = await setup.sales.registerLicensePlate(
+          operationId,
+          {
+            expectedVersion: 2,
+            licensePlate: ' a123 bcd ',
+            receivedAt: '2026-09-17',
+          },
+          actor,
+        );
+
+        expect(setup.unitUpdate.mock.calls[0]?.[0]).toMatchObject({
+          where: {
+            id_organizacion_id: { id: unitId, organizacion_id: organizationId },
+          },
+          data: { patente: 'A123 BCD', patente_normalizada: 'A123BCD' },
+        });
+        expect(setup.operationUpdate.mock.calls[0]?.[0].data).toEqual({
+          patente_recibida_en: new Date('2026-09-17T00:00:00.000Z'),
+          version_fila: { increment: 1 },
+        });
+        expect(setup.incomeCreate).not.toHaveBeenCalled();
+        expect(result.licensing.plate).toMatchObject({
+          status: 'RECIBIDA',
+          receivedAt: '2026-09-17',
+        });
+      });
+
+      it('PAGA_CLIENTE without collection leaves the plate received with the collection pending', async () => {
+        const setup = plateSetup(licensedOperation('APROBADA'));
+        const result = await setup.sales.registerLicensePlate(
+          operationId,
+          {
+            expectedVersion: 2,
+            licensePlate: 'A123BCD',
+            receivedAt: '2026-09-17',
+          },
+          actor,
+        );
+        expect(setup.incomeCreate).not.toHaveBeenCalled();
+        expect(result.licensing.plate.status).toBe('RECIBIDA_COBRO_PENDIENTE');
+      });
+
+      it('PAGA_CLIENTE registers the client collection in the same step', async () => {
+        const setup = plateSetup(licensedOperation('APROBADA'));
+        await setup.sales.registerLicensePlate(
+          operationId,
+          {
+            expectedVersion: 2,
+            licensePlate: 'A123BCD',
+            receivedAt: '2026-09-17',
+            collection: {
+              idempotencyKey,
+              accountId,
+              amount: '85000',
+              collectionDate: '2026-09-17',
+              paymentMethod: 'TRANSFERENCIA_BANCARIA',
+            },
+          },
+          collector,
+        );
+        expect(setup.incomeCreate.mock.calls[0]?.[0].data).toMatchObject({
+          tipo_original: 'Patente',
+          operacion_id: operationId,
+          referencia: 'B-0001',
+          importe: new Prisma.Decimal(85000),
+        });
+        expect(setup.registerEntityMovement).toHaveBeenCalledWith(
+          expect.anything(),
+          collector,
+          organizationId,
+          'ARS',
+          expect.objectContaining({ idempotencyKey, accountId }),
+          { ingreso_id: 'income-plate' },
+          'INGRESO',
+          'CREDITO',
+        );
+      });
+
+      it('requires ingresos.cobrar to collect and PAGA_CLIENTE to accept a collection', async () => {
+        const collection = { idempotencyKey, accountId, amount: '85000' };
+        await expect(
+          plateSetup(licensedOperation('APROBADA')).sales.registerLicensePlate(
+            operationId,
+            { expectedVersion: 2, licensePlate: 'A123BCD', collection },
+            actor,
+          ),
+        ).rejects.toThrow(ForbiddenException);
+
+        const bonified = plateSetup(
+          licensedOperation('APROBADA', {
+            modalidad_patentamiento: 'BONIFICADA',
+            importe_patentamiento: null,
+          }),
+        );
+        await expect(
+          bonified.sales.registerLicensePlate(
+            operationId,
+            { expectedVersion: 2, licensePlate: 'A123BCD', collection },
+            collector,
+          ),
+        ).rejects.toMatchObject({
+          response: { code: 'LICENSING_COLLECTION_NOT_ALLOWED' },
+        });
+        expect(bonified.unitUpdate).not.toHaveBeenCalled();
+      });
+
+      it('validates state, mode, unit, dates and duplicated plates', async () => {
+        const register = (
+          current: ReturnType<typeof licensedOperation>,
+          input: Partial<{ licensePlate: string; receivedAt: string }> = {},
+          duplicated: { id: string; vin_mostrado: string } | null = null,
+        ) =>
+          plateSetup(current, duplicated).sales.registerLicensePlate(
+            operationId,
+            { expectedVersion: 2, licensePlate: 'A123BCD', ...input },
+            actor,
+          );
+
+        await expect(
+          register(licensedOperation('BORRADOR')),
+        ).rejects.toMatchObject({
+          response: { code: 'LICENSE_PLATE_NOT_ALLOWED' },
+        });
+        await expect(
+          register(
+            licensedOperation('APROBADA', {
+              modalidad_patentamiento: null,
+              importe_patentamiento: null,
+            }),
+          ),
+        ).rejects.toMatchObject({
+          response: { code: 'LICENSING_MODE_REQUIRED' },
+        });
+        await expect(
+          register(
+            licensedOperation('APROBADA', {
+              unidad_vehiculo_id: null,
+              unidades_vehiculos: null,
+            }),
+          ),
+        ).rejects.toMatchObject({
+          response: { code: 'OPERATION_UNIT_REQUIRED' },
+        });
+        await expect(
+          register(licensedOperation('APROBADA'), { receivedAt: '2026-08-01' }),
+        ).rejects.toMatchObject({
+          response: { code: 'LICENSE_PLATE_RECEIVED_BEFORE_OPERATION' },
+        });
+        await expect(
+          register(licensedOperation('APROBADA'), { receivedAt: '2999-01-01' }),
+        ).rejects.toMatchObject({
+          response: { code: 'LICENSE_PLATE_RECEIVED_IN_FUTURE' },
+        });
+        await expect(
+          register(licensedOperation('APROBADA'), { licensePlate: 'AB-1' }),
+        ).rejects.toMatchObject({
+          response: { code: 'INVALID_LICENSE_PLATE' },
+        });
+        await expect(
+          register(
+            licensedOperation('APROBADA'),
+            {},
+            { id: 'other-unit', vin_mostrado: 'VIN-OTRO' },
+          ),
+        ).rejects.toMatchObject({
+          response: {
+            code: 'LICENSE_PLATE_IN_USE',
+            details: { unitId: 'other-unit', vin: 'VIN-OTRO' },
+          },
+        });
+      });
+
+      it('rejects a stale version', async () => {
+        await expect(
+          plateSetup(licensedOperation('APROBADA')).sales.registerLicensePlate(
+            operationId,
+            { expectedVersion: 1, licensePlate: 'A123BCD' },
+            actor,
+          ),
+        ).rejects.toThrow(ConflictException);
+      });
+    });
+
     it('reports collection and payment status from linked incomes and vehicle payments', async () => {
       const bonified = licensedOperation('APROBADA', {
         id: operationId,
@@ -1686,10 +1951,77 @@ describe('SalesService', () => {
           in: ['PENDIENTE_APROBACION', 'APROBADA', 'CERRADA'],
         },
         patente_estimada_hasta: { lt: expect.any(Date) as Date },
+        // Fase 5: a registered arrival also stops the reminder.
+        patente_recibida_en: null,
         OR: [
           { unidad_vehiculo_id: null },
           { unidades_vehiculos: { patente: null } },
         ],
+      });
+    });
+
+    it('fase 5: filters received PAGA_CLIENTE plates with the collection pending', async () => {
+      const findMany = jest
+        .fn<Promise<unknown[]>, [Prisma.operacionesFindManyArgs]>()
+        .mockResolvedValue([]);
+      const queryRaw = jest
+        .fn<Promise<unknown>, [Prisma.Sql]>()
+        .mockResolvedValue([{ id: 'pending-1' }]);
+      const query = queryService({
+        $queryRaw: queryRaw,
+        operaciones: { count: jest.fn().mockResolvedValue(0), findMany },
+      } as unknown as Prisma.TransactionClient);
+
+      await query.findAll(
+        {
+          vehicleType: 'MOTO',
+          licensingCollectionPending: true,
+          page: 1,
+          limit: 50,
+        },
+        actor,
+      );
+      const and = findMany.mock.calls[0]?.[0].where
+        ?.AND as Prisma.operacionesWhereInput[];
+      expect(and).toContainEqual({ id: { in: ['pending-1'] } });
+      const sql = queryRaw.mock.calls[0][0].strings.join('?');
+      expect(sql).toContain(`o."modalidad_patentamiento" = 'PAGA_CLIENTE'`);
+      expect(sql).toContain(
+        `o."patente_recibida_en" IS NOT NULL OR u."patente" IS NOT NULL`,
+      );
+      expect(sql).toContain(`i."estado_registro" <> 'ANULADO'`);
+    });
+
+    it('fase 5: counts overdue plates and pending collections for the dashboard', async () => {
+      const count = jest
+        .fn<Promise<number>, [Prisma.operacionesCountArgs]>()
+        .mockResolvedValueOnce(3)
+        .mockResolvedValueOnce(2);
+      const query = queryService({
+        $queryRaw: jest
+          .fn()
+          .mockResolvedValue([{ id: 'pending-1' }, { id: 'pending-2' }]),
+        operaciones: { count },
+      } as unknown as Prisma.TransactionClient);
+      const branchActor: AuthenticatedUser = {
+        ...actor,
+        role: { ...actor.role, permissions: [] },
+        branch: { id: 'branch-1', code: 'SM', name: 'San Miguel' },
+      };
+
+      await expect(
+        query.licensingAlerts(branchActor, BranchScope.forActor(branchActor)),
+      ).resolves.toEqual({ overdue: 3, receivedPendingCollection: 2 });
+      const [overdueArgs, pendingArgs] = count.mock.calls.map(
+        (call) => call[0].where?.AND as Prisma.operacionesWhereInput[],
+      );
+      expect(overdueArgs?.[0]).toMatchObject({
+        organizacion_id: organizationId,
+        sucursal_id: { in: ['branch-1'] },
+      });
+      expect(overdueArgs?.[1]).toMatchObject({ patente_recibida_en: null });
+      expect(pendingArgs?.[1]).toEqual({
+        id: { in: ['pending-1', 'pending-2'] },
       });
     });
   });

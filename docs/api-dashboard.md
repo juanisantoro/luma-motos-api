@@ -155,6 +155,7 @@ aprobaciones →" del panel: la bandeja completa es
       "consultedAt": "2026-08-29T15:00:00.000Z"
     }
   ],
+  "licensingAlerts": { "overdue": 2, "receivedPendingCollection": 1 },
   "managementAlerts": {
     "overdueInstallments": { "amount": 900000, "count": 3 },
     "staleVehiclePayments": { "count": 1 },
@@ -180,13 +181,12 @@ aprobaciones →" del panel: la bandeja completa es
 | `managementAlerts` | Se arma si el actor tiene al menos uno de `creditos.consultar` / `pagos_vehiculo.consultar` / `inventario.consultar` | Cada sub-campo respeta su propio permiso por separado |
 | `managementAlerts.overdueInstallments` | `creditos.consultar` | Cuotas vencidas hace más de 30 días |
 | `managementAlerts.zeroStockModels` | `inventario.consultar` | Versiones vendibles con cero unidades `EN_STOCK` en la sucursal |
+| `licensingAlerts` | `ventas.patentamiento.gestionar` | Fase 5. `overdue`: patentes que pasaron la fecha estimada sin cargar (mismo filtro que `licensingOverdue=true`). `receivedPendingCollection`: PAGA_CLIENTE con la patente recibida y el cobro al cliente pendiente (`licensingCollectionPending=true`). Ambos sobre las sucursales del actor, MOTO + AUTO |
 | `topModels` | `ventas.consultar` | |
 
-**Pendiente de decisión**: "Comisiones por pagar" estaba en el mockup
-aprobado para este home pero no se implementó — ADMINISTRATIVA no tiene
-ningún permiso `comisiones.*` en el seed actual (sólo GERENTE y
-ADMINISTRADOR lo tienen). Antes de agregarlo hay que definir con qué
-permiso se habilita para este rol.
+**Decidido**: la ADMINISTRATIVA no ve comisiones por ahora. Se descarta la
+tarjeta "Comisiones por pagar" de su home y no se le asigna ningún permiso
+`comisiones.*`.
 
 ## VENDEDOR / CALLCENTER — su propia cartera
 
