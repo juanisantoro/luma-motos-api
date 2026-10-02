@@ -60,6 +60,7 @@ export const PERMISSION_CODES = {
   CREDIT_PLANS_BCRA_DETAIL: 'creditos.bcra.detalle',
   CASH_READ: 'caja.consultar',
   CASH_MANAGE: 'caja.gestionar',
+  CASH_ACCOUNTS_MANAGE: 'caja.cuentas.gestionar',
   CASH_TRANSFER: 'caja.transferir',
   CASH_REVERSE: 'caja.reversar',
   CASH_RECEIVE_HANDOVER: 'caja.recibir_rendicion',

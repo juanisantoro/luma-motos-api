@@ -121,7 +121,8 @@ async function assertActivePersonnel(
  * - EFECTIVO: el cobrador por defecto es quien registra; el destinatario de la
  *   rendición es obligatorio y debe tener `caja.recibir_rendicion`. Si el
  *   cobrador ya es el destinatario, nace RENDIDO (lo recibió él mismo).
- * - Otro medio: no admite destinatario de rendición.
+ * - Otro medio: no admite destinatario de rendición; el cobrador por defecto
+ *   también es quien registra.
  */
 export async function resolveCashCollection(
   tx: Prisma.TransactionClient,
@@ -139,9 +140,13 @@ export async function resolveCashCollection(
       );
     if (input.collectedById)
       await assertActivePersonnel(tx, input.collectedById, organizationId);
+    // Con medio informado, quien cobró es por defecto quien registra, igual
+    // que en efectivo. Sin medio (ingresos legacy) no se inventa un cobrador.
+    const nonCashCollector =
+      input.collectedById ?? (method ? await actorPersonnelId() : null);
     return {
       medio_pago: method,
-      cobrado_por_personal_id: input.collectedById ?? null,
+      cobrado_por_personal_id: nonCashCollector,
       rendido_a_personal_id: null,
       estado_rendicion: null,
       rendicion_confirmada_en: null,

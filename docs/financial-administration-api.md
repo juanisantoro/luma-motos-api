@@ -62,7 +62,8 @@ Payment, collection, recovery, transfer, and reversal requests require an
 | `gastos.pagar` | Register expense payments | Administrativa, Gerente, Administrador |
 | `gastos.recuperar` | Register recoveries | Administrativa, Gerente, Administrador |
 | `caja.consultar` | View accounts, balances, movements, and transfers | Administrativa, Gerente, Administrador |
-| `caja.gestionar` | Create and edit cash accounts | Gerente, Administrador |
+| `caja.gestionar` | General cash management (no longer gates the accounts ABM) | Gerente, Administrador |
+| `caja.cuentas.gestionar` | Create and edit cash accounts (`POST`/`PATCH /cash/accounts`) and the "Cuentas de caja" screen | Administrador |
 | `caja.transferir` | Create internal transfers | Administrativa, Gerente, Administrador |
 | `caja.reversar` | Reverse entity movements and transfers | Gerente, Administrador |
 | `caja.recibir_rendicion` | Receive cash handovers and confirm them | Administrador |
@@ -241,7 +242,8 @@ DESEMBOLSO_FINANCIERA|PAGARE|OTRO`. For `EFECTIVO`:
   permission; no role name or person is hardcoded.
 - The income starts in `PENDIENTE_RENDICION`. If the collector is the
   recipient, it starts `RENDIDO`.
-- Non-cash methods reject `handoverToId` (`400 HANDOVER_ONLY_FOR_CASH`).
+- Non-cash methods reject `handoverToId` (`400 HANDOVER_ONLY_FOR_CASH`). When
+  a method is sent, `collectedById` also defaults to the registering user.
 - Once `RENDIDO`, method, collector and recipient are locked
   (`409 HANDOVER_ALREADY_CONFIRMED`).
 
@@ -326,6 +328,13 @@ movement). `collectedBy` is who received the money. `handover` is `null` for
 non-cash incomes.
 
 ## Payment-plan collections (fase 4)
+
+This endpoint is also what the UI calls from **Ingresos → Nuevo ingreso** when
+the type is "Cobro de operación" (shown as "Pago de la moto (venta)"): the form
+searches the operation through `GET /sales/operations/tracking`, proposes the
+component balance (partial amounts allowed) and posts the collection here, so
+the sale balance always drops. That type and "Cuota crédito" are never created
+through `POST /incomes` from the UI.
 
 `POST /sales/operations/:id/payment-components/:componentId/collections`
 (`ventas.consultar` + `ingresos.cobrar`):
@@ -673,8 +682,23 @@ Account create request:
 Account types are `CAJA`, `BANCO`, `SOCIO`, `PROCESADORA_TARJETA`,
 `FINANCIERA`, and `OTRO`.
 
+`code` is optional: when omitted it is derived from `name` (uppercase, no
+accents, `_` separators) and gets a numeric suffix if the code is taken. The
+"Cuentas de caja" screen only asks for the name.
+
+`responsiblePersonnelId` is the person the money of that account is handed to
+or deposited to (a partner's cash box or bank account). `branchId` empty means
+an organization-wide account, only manageable with every branch in scope.
+`PATCH` accepts `null` for `branchId` and `responsiblePersonnelId`.
+
 Account response includes the same identity fields, nested `branch`,
 `responsiblePersonnel`, timestamps, and `balance` as a decimal string.
+It also returns `branchId` and `responsiblePersonnelId` (the frontend filters
+accounts by branch with them), `imported` and `importedLabel`. Accounts created
+by the historical Excel import have `imported: true` and `importedLabel` with
+the original owner text; the frontend shows them as "Histórica: <label>"
+without the `HIST-…` code. `GET /cash/accounts` lists non-imported accounts
+first.
 
 ### Transfer routes
 

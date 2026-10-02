@@ -114,6 +114,31 @@ describe('cash handover rules', () => {
     expect(code(error).code).toBe('HANDOVER_ONLY_FOR_CASH');
   });
 
+  it('defaults the collector to the actor for non-cash methods', async () => {
+    const { client } = tx([recipientId]);
+    const transfer = await resolveCashCollection(
+      client,
+      organizationId,
+      () => Promise.resolve(actorPersonnelId),
+      { paymentMethod: 'TRANSFERENCIA_BANCARIA' },
+    );
+    expect(transfer).toMatchObject({
+      medio_pago: 'TRANSFERENCIA_BANCARIA',
+      cobrado_por_personal_id: actorPersonnelId,
+      rendido_a_personal_id: null,
+      estado_rendicion: null,
+    });
+
+    // Sin medio (ingreso legacy) no se asigna cobrador.
+    const legacy = await resolveCashCollection(
+      client,
+      organizationId,
+      () => Promise.resolve(actorPersonnelId),
+      {},
+    );
+    expect(legacy.cobrado_por_personal_id).toBeNull();
+  });
+
   it('builds the recipient lookup from the permission', () => {
     expect(handoverRecipientWhere(organizationId)).toEqual({
       organizacion_id: organizationId,

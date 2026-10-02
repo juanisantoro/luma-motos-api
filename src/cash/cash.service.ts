@@ -85,6 +85,22 @@ type TransferRecord = Prisma.transferencias_cajaGetPayload<{
   include: typeof transferInclude;
 }>;
 
+function importedAccountLabel(item: {
+  nombre: string;
+  datos_inferidos: Prisma.JsonValue;
+}): string {
+  const inferred = item.datos_inferidos;
+  const original =
+    inferred && typeof inferred === 'object' && !Array.isArray(inferred)
+      ? inferred.responsable_original
+      : null;
+  if (typeof original === 'string' && original.trim()) return original.trim();
+  return (
+    item.nombre.replace(/^Cuenta historica importada:?\s*/i, '').trim() ||
+    'sin identificar'
+  );
+}
+
 @Injectable()
 export class CashService {
   constructor(
@@ -132,7 +148,8 @@ export class CashService {
         tx.cuentas_caja.findMany({
           where,
           include: accountInclude,
-          orderBy: [{ nombre: 'asc' }, { id: 'asc' }],
+          // Cuentas propias primero; las históricas importadas al final.
+          orderBy: [{ es_importada: 'asc' }, { nombre: 'asc' }, { id: 'asc' }],
           skip: (query.page - 1) * query.limit,
           take: query.limit,
         }),
@@ -192,9 +209,12 @@ export class CashService {
             input.responsiblePersonnelId,
             organizationId,
           );
+        const code = input.code?.trim()
+          ? input.code.trim().toUpperCase()
+          : await this.availableAccountCode(tx, organizationId, input.name);
         const account = await tx.cuentas_caja.create({
           data: {
-            codigo: input.code.trim().toUpperCase(),
+            codigo: code,
             nombre: input.name.trim(),
             tipo_cuenta: input.type,
             sucursal_id: branchId,
@@ -905,6 +925,12 @@ export class CashService {
       active: item.activo,
       organizationId: item.organizacion_id,
       balance: balance.toString(),
+      branchId: item.sucursal_id,
+      responsiblePersonnelId: item.personal_responsable_id,
+      // Cuentas creadas por la importación del Excel histórico: el front las
+      // muestra como "Histórica: <responsable original>" y al final.
+      imported: item.es_importada,
+      importedLabel: item.es_importada ? importedAccountLabel(item) : null,
       branch: item.sucursales
         ? {
             id: item.sucursales.id,
@@ -1077,6 +1103,45 @@ export class CashService {
         'INVALID_PERSONNEL',
         'Personnel is invalid or inactive',
       );
+  }
+
+  /**
+   * Código estable derivado del nombre cuando el alta no lo envía (la pantalla
+   * de cuentas de caja sólo pide el nombre). Agrega un sufijo si ya existe.
+   */
+  private async availableAccountCode(
+    tx: Prisma.TransactionClient,
+    organizationId: string,
+    name: string,
+  ) {
+    const base =
+      name
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toUpperCase()
+        .replace(/[^A-Z0-9]+/g, '_')
+        .replace(/^_+|_+$/g, '')
+        .slice(0, 34) || 'CUENTA';
+    const taken = new Set(
+      (
+        await tx.cuentas_caja.findMany({
+          where: {
+            organizacion_id: organizationId,
+            codigo: { startsWith: base },
+          },
+          select: { codigo: true },
+        })
+      ).map((account) => account.codigo),
+    );
+    if (!taken.has(base)) return base;
+    for (let suffix = 2; suffix < 1000; suffix += 1) {
+      const candidate = `${base}_${suffix}`;
+      if (!taken.has(candidate)) return candidate;
+    }
+    return financialConflict(
+      'CASH_ACCOUNT_CODE_TAKEN',
+      'A cash account with that name already exists',
+    );
   }
 
   private async accountOr404(

@@ -240,7 +240,8 @@ export class CashAccountQueryDto extends FinancialPageDto {
 
 export class CreateCashAccountDto {
   @IsOptional() @IsUUID() organizationId?: string;
-  @IsString() @IsNotEmpty() @MaxLength(40) code!: string;
+  // Opcional: si no se envía se deriva del nombre.
+  @IsOptional() @IsString() @IsNotEmpty() @MaxLength(40) code?: string;
   @IsString() @IsNotEmpty() @MaxLength(140) name!: string;
   @IsEnum(tipo_cuenta_caja_luma) type!: tipo_cuenta_caja_luma;
   @IsOptional() @IsUUID() branchId?: string;

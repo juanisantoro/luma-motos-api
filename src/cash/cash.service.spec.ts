@@ -282,4 +282,145 @@ describe('CashService', () => {
       }),
     ]);
   });
+
+  describe('cash accounts management', () => {
+    function accountRow(overrides: Record<string, unknown> = {}) {
+      return {
+        id: '6f0f0f43-8cf0-4a0f-9d1f-0a8a4a6f0c11',
+        codigo: 'CAJA_LUCAS',
+        nombre: 'Caja Lucas',
+        tipo_cuenta: 'SOCIO' as const,
+        sucursal_id: null,
+        personal_responsable_id: 'f4b6ce19-ce56-4125-b058-e1f087c742bc',
+        moneda: 'ARS',
+        activo: true,
+        creado_en: new Date('2026-10-02T10:00:00.000Z'),
+        actualizado_en: new Date('2026-10-02T10:00:00.000Z'),
+        organizacion_id: organizationId,
+        es_importada: false,
+        datos_inferidos: {},
+        sucursales: null,
+        personal: {
+          id: 'f4b6ce19-ce56-4125-b058-e1f087c742bc',
+          nombre_completo: 'Lucas',
+        },
+        ...overrides,
+      };
+    }
+
+    function serviceFor(tx: Prisma.TransactionClient) {
+      const execute = jest.fn(
+        (
+          _event: unknown,
+          work: (client: Prisma.TransactionClient) => Promise<unknown>,
+        ) => work(tx),
+      );
+      return new CashService(
+        {} as PrismaService,
+        { execute } as unknown as AuditService,
+      );
+    }
+
+    it('derives the account code from the name and avoids taken codes', async () => {
+      const create = jest.fn().mockResolvedValue(accountRow());
+      const tx = {
+        personal: { findFirst: jest.fn().mockResolvedValue({ id: 'p' }) },
+        cuentas_caja: {
+          findMany: jest.fn().mockResolvedValue([{ codigo: 'CAJA_LUCAS' }]),
+          create,
+        },
+      } as unknown as Prisma.TransactionClient;
+
+      const result = await serviceFor(tx).createAccount(
+        {
+          name: ' Caja Lucás ',
+          type: 'SOCIO',
+          responsiblePersonnelId: 'f4b6ce19-ce56-4125-b058-e1f087c742bc',
+        },
+        actor,
+      );
+
+      expect(create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            codigo: 'CAJA_LUCAS_2',
+            nombre: 'Caja Lucás',
+            sucursal_id: null,
+          }) as unknown,
+        }),
+      );
+      expect(result).toEqual(
+        expect.objectContaining({
+          branchId: null,
+          responsiblePersonnelId: 'f4b6ce19-ce56-4125-b058-e1f087c742bc',
+          imported: false,
+          importedLabel: null,
+          responsiblePersonnel: {
+            id: 'f4b6ce19-ce56-4125-b058-e1f087c742bc',
+            fullName: 'Lucas',
+          },
+        }),
+      );
+    });
+
+    it('keeps an explicit code', async () => {
+      const create = jest.fn().mockResolvedValue(accountRow());
+      const findMany = jest.fn();
+      const tx = {
+        cuentas_caja: { findMany, create },
+      } as unknown as Prisma.TransactionClient;
+
+      await serviceFor(tx).createAccount(
+        { code: 'banco_ars', name: 'Banco', type: 'BANCO' },
+        actor,
+      );
+
+      expect(findMany).not.toHaveBeenCalled();
+      expect(create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ codigo: 'BANCO_ARS' }) as unknown,
+        }),
+      );
+    });
+
+    it('labels imported accounts with their original owner and lists them last', async () => {
+      const findMany = jest.fn().mockResolvedValue([
+        accountRow(),
+        accountRow({
+          id: '0b6f8a3e-7a3c-4a55-8f0e-4b8f5f1f2a22',
+          codigo: 'HIST-0123456789ABCDEF01234567',
+          nombre: 'Cuenta historica importada: NICO',
+          es_importada: true,
+          datos_inferidos: { responsable_original: 'Nico' },
+          personal_responsable_id: null,
+          personal: null,
+        }),
+      ]);
+      const tx = {
+        cuentas_caja: { count: jest.fn().mockResolvedValue(2), findMany },
+        movimientos_caja: { findMany: jest.fn().mockResolvedValue([]) },
+        $queryRaw: jest.fn().mockResolvedValue([]),
+      } as unknown as Prisma.TransactionClient;
+      const prisma = {
+        withTenant: jest.fn(
+          (
+            _scope: unknown,
+            work: (client: Prisma.TransactionClient) => Promise<unknown>,
+          ) => work(tx),
+        ),
+      } as unknown as PrismaService;
+      const service = new CashService(prisma, {} as AuditService);
+
+      const result = await service.findAccounts({ page: 1, limit: 50 }, actor);
+
+      expect(findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          orderBy: [{ es_importada: 'asc' }, { nombre: 'asc' }, { id: 'asc' }],
+        }),
+      );
+      expect(result.items[1]).toEqual(
+        expect.objectContaining({ imported: true, importedLabel: 'Nico' }),
+      );
+    });
+  });
 });

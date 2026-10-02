@@ -47,7 +47,7 @@ export class CashController {
   }
 
   @Post('accounts')
-  @Permissions(PERMISSION_CODES.CASH_MANAGE)
+  @Permissions(PERMISSION_CODES.CASH_ACCOUNTS_MANAGE)
   @AuditedMutation()
   createAccount(
     @Body() input: CreateCashAccountDto,
@@ -57,7 +57,7 @@ export class CashController {
   }
 
   @Patch('accounts/:id')
-  @Permissions(PERMISSION_CODES.CASH_MANAGE)
+  @Permissions(PERMISSION_CODES.CASH_ACCOUNTS_MANAGE)
   @AuditedMutation()
   updateAccount(
     @Param('id', ParseUUIDPipe) id: string,

@@ -387,6 +387,13 @@ const managedPermissions = [
     roles: ['GERENTE', 'ADMINISTRADOR'],
   },
   {
+    codigo: 'caja.cuentas.gestionar',
+    modulo: 'caja',
+    descripcion:
+      'Crea y edita las cuentas de caja: a quién se le rinde el efectivo o se le deposita.',
+    roles: ['ADMINISTRADOR'],
+  },
+  {
     codigo: 'caja.transferir',
     modulo: 'caja',
     descripcion: 'Registra transferencias internas balanceadas.',
