@@ -105,8 +105,9 @@ sólo con el manual.
 ## Manuales
 
 El manual se elige por `role.code` de la sesión (`src/assistant/assistant.manuals.ts`),
-nunca por un dato del cliente. `ADMINISTRADOR` no tiene manual propio: recibe los
-de todos los perfiles, con la aclaración de que las limitaciones de cada perfil
+nunca por un dato del cliente. `ADMINISTRADOR` recibe su manual (lo exclusivo del perfil: usuarios,
+roles, cuentas de caja, rendiciones, corrección de ventas, escalas) seguido de los
+de todos los demás perfiles, con la aclaración de que las limitaciones de cada perfil
 no le aplican. Un rol clonado o nuevo no tiene asistente hasta registrarlo ahí. Los textos de `src/assistant/manuals/*.manual.ts`
 se generan desde los HTML del frontend, que son la fuente de verdad:
 

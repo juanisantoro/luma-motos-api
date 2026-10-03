@@ -192,6 +192,14 @@ describe('AssistantService', () => {
     const body = JSON.parse(fetchMock.mock.calls[0][1]?.body as string) as {
       messages: Array<{ content: string }>;
     };
+    // Su propio manual (usuarios, roles, cuentas de caja...) va primero.
+    expect(body.messages[0].content).toContain('Manual del Administrador');
+    expect(body.messages[0].content).toContain('Cuentas de caja');
+    expect(
+      body.messages[0].content.indexOf('MANUAL DEL PERFIL ADMINISTRADOR'),
+    ).toBeLessThan(
+      body.messages[0].content.indexOf('MANUAL DEL PERFIL ADMINISTRATIVA'),
+    );
     expect(body.messages[0].content).toContain('Manual de la Administrativa');
     expect(body.messages[0].content).toContain('Manual del Vendedor');
     expect(body.messages[0].content).toContain('ve todo el sistema');
