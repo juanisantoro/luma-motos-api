@@ -1430,6 +1430,14 @@ export class SalesService {
       const where: Prisma.personalWhereInput = {
         organizacion_id: organizationId,
         estado: 'ACTIVO',
+        // Seller options are the people who actually have a system user.
+        // Personnel that only exists because it came in the spreadsheet import
+        // (no usuario_id) stays on its historical operations but is no longer
+        // offered as a seller.
+        usuario_id:
+          assignmentRole === SalesAssignmentRole.VENDEDOR
+            ? { not: null }
+            : undefined,
         roles:
           assignmentRole === SalesAssignmentRole.VENDEDOR
             ? {

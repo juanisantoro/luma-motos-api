@@ -478,7 +478,9 @@ pedidos al proveedor no recibidos.
 Lookups de formulario:
 
 - `GET /api/sales/operations/sellers?organizationId=&branchId?=&search=&page=&limit=`
-  devuelve por defecto los vendedores activos de toda la organización; `branchId`
+  devuelve por defecto los vendedores activos de toda la organización que
+  tienen usuario del sistema (`personal.usuario_id` no nulo; el personal que
+  sólo vino de la importación no se ofrece); `branchId`
   es un filtro opcional para otros consumidores. Cada item es
   `{id,employeeCode,fullName,isCurrentUser,branch:{id,code,name}|null,
 branches:[{id,code,name}]}`; `branch` es la sucursal principal y `branches`

@@ -813,6 +813,7 @@ describe('SalesService', () => {
     expect(findMany.mock.calls[0]?.[0].where).toMatchObject({
       organizacion_id: organizationId,
       estado: 'ACTIVO',
+      usuario_id: { not: null },
       OR: [
         { sucursal_principal_id: unitId },
         {
