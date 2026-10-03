@@ -244,6 +244,46 @@ export class UpdateSalesOperationDto {
   licensingAmount?: number | null;
 }
 
+// Corrección administrativa de una operación ya cargada (operaciones
+// migradas): mismos datos que el PATCH, en cualquier estado y sin cambiar el
+// estado. No incluye sucursal, unidad ni patentamiento (tienen su circuito).
+export class CorrectSalesOperationDto {
+  @Type(() => Number) @IsInt() @Min(0) expectedVersion!: number;
+  @IsOptional() @IsUUID() clientId?: string;
+  @IsOptional() @IsUUID() sellerId?: string;
+  @IsOptional() @IsUUID() contactId?: string | null;
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0.01)
+  agreedPrice?: number;
+  @IsOptional()
+  @IsEnum(plataforma_pago_luma)
+  paymentPlatform?: plataforma_pago_luma;
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0.01)
+  creditAmount?: number | null;
+  // Financiera del crédito. Sólo hace falta cuando la forma de pago lleva
+  // crédito y la operación todavía no tiene una financiación cargada.
+  @IsOptional() @IsUUID() financialInstitutionId?: string;
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(500)
+  guarantor?: string | null;
+  @IsOptional() @IsDateString() operationDate?: string;
+  @IsOptional()
+  @IsEnum(luma_estado_entrega)
+  deliveryStatus?: luma_estado_entrega;
+  @IsOptional() @IsBoolean() papersDelivered?: boolean;
+  @IsOptional() @IsEnum(deuda_operacion_luma) debt?: deuda_operacion_luma;
+  @IsOptional() @IsString() @MaxLength(2000) notes?: string | null;
+  @IsOptional() @IsString() @MaxLength(40) ticketNumber?: string | null;
+  @IsOptional() @IsBoolean() includesHelmet?: boolean;
+}
+
 const MONEY_PATTERN = /^(0|[1-9]\d{0,15})(\.\d{1,2})?$/;
 const BUSINESS_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 

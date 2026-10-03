@@ -70,6 +70,7 @@ import { nationalHolidayDates } from './ar-holidays';
 import {
   ApproveSalesOperationDto,
   AssignSalesUnitDto,
+  CorrectSalesOperationDto,
   CreateSalesOperationDto,
   CreateSalesTradeInDto,
   ReasonedSalesActionDto,
@@ -499,6 +500,24 @@ function licensingOverdueWhere(
     ],
   };
 }
+
+const CREDIT_PAYMENT_PLATFORMS: plataforma_pago_luma[] = [
+  plataforma_pago_luma.CREDITO,
+  plataforma_pago_luma.EFECTIVO_CREDITO,
+  plataforma_pago_luma.MOTO_CREDITO,
+  plataforma_pago_luma.MOTO_EFECTIVO_CREDITO,
+];
+const TRADE_IN_PAYMENT_PLATFORMS: plataforma_pago_luma[] = [
+  plataforma_pago_luma.MOTO_EFECTIVO,
+  plataforma_pago_luma.MOTO_CREDITO,
+  plataforma_pago_luma.MOTO_EFECTIVO_CREDITO,
+];
+const CASH_PAYMENT_PLATFORMS: plataforma_pago_luma[] = [
+  plataforma_pago_luma.EFECTIVO,
+  plataforma_pago_luma.EFECTIVO_CREDITO,
+  plataforma_pago_luma.MOTO_EFECTIVO,
+  plataforma_pago_luma.MOTO_EFECTIVO_CREDITO,
+];
 
 @Injectable()
 export class SalesService {
@@ -1943,6 +1962,410 @@ export class SalesService {
       },
       id,
     );
+  }
+
+  // Corrección administrativa de una operación ya cargada (operaciones
+  // migradas). A diferencia de PATCH /:id:
+  // - funciona en cualquier estado y nunca lo cambia (no vuelve a BORRADOR
+  //   ni pide aprobación, aunque cambie el precio);
+  // - no toca la unidad, la reserva, la sucursal ni los precios de lista y
+  //   mínimo guardados;
+  // - si cambia el precio o la forma de pago, reacomoda el plan de pago
+  //   aunque ya tenga cobros (ver reconcileCorrectedPaymentPlan).
+  // Requiere ventas.corregir. Queda auditada con los valores anteriores.
+  async correct(
+    id: string,
+    input: CorrectSalesOperationDto,
+    actor: AuthenticatedUser,
+  ) {
+    if (Object.keys(input).length === 1)
+      throw new BadRequestException('At least one editable field is required');
+    return this.mutate(
+      actor,
+      'SALES_OPERATION_CORRECTED',
+      async (tx, event) => {
+        const current = await this.operationOr404(tx, id, actor, true);
+        this.setTargetOrganization(event, actor, current.organizacion_id);
+        this.assertVersion(current.version_fila, input.expectedVersion);
+
+        const agreedPrice =
+          input.agreedPrice === undefined
+            ? current.precio_acordado
+            : new Prisma.Decimal(input.agreedPrice);
+        const platform = input.paymentPlatform ?? current.plataforma_pago;
+        // A platform without credit never keeps a credit amount.
+        const creditAmount =
+          platform && CREDIT_PAYMENT_PLATFORMS.includes(platform)
+            ? input.creditAmount === undefined
+              ? current.monto_credito
+              : input.creditAmount === null
+                ? null
+                : new Prisma.Decimal(input.creditAmount)
+            : null;
+        const planTouched =
+          input.agreedPrice !== undefined ||
+          input.paymentPlatform !== undefined ||
+          input.creditAmount !== undefined ||
+          input.financialInstitutionId !== undefined;
+        if (planTouched && platform)
+          this.assertPaymentContract(platform, creditAmount, agreedPrice);
+
+        if (input.clientId)
+          await this.clientOr400(tx, input.clientId, current.organizacion_id);
+        const sellerAssignmentRole = input.sellerId
+          ? await this.sellerOr400(tx, input.sellerId, current.organizacion_id)
+          : undefined;
+        if (input.contactId)
+          await this.sellerOr400(
+            tx,
+            input.contactId,
+            current.organizacion_id,
+            SalesAssignmentRole.CONTACTO,
+          );
+        const estimate = input.operationDate
+          ? licensingEstimate(new Date(input.operationDate))
+          : undefined;
+
+        event.previousData = {
+          clientId: current.cliente_id,
+          sellerIds: current.asignaciones_personal_operacion.map(
+            (assignment) =>
+              `${assignment.rol_asignacion}:${assignment.personal.id}`,
+          ),
+          agreedPrice: current.precio_acordado.toString(),
+          paymentPlatform: current.plataforma_pago,
+          creditAmount: current.monto_credito?.toString() ?? null,
+          operationDate: current.fecha_operacion.toISOString(),
+          ticketNumber: current.numero_boleto,
+          status: current.estado_operacion,
+        };
+
+        await tx.operaciones.update({
+          where: {
+            id_organizacion_id: {
+              id,
+              organizacion_id: current.organizacion_id,
+            },
+          },
+          data: {
+            cliente_id: input.clientId,
+            precio_acordado: input.agreedPrice,
+            plataforma_pago: input.paymentPlatform,
+            monto_credito: planTouched && platform ? creditAmount : undefined,
+            respaldo_garante:
+              input.guarantor === undefined
+                ? undefined
+                : input.guarantor === null
+                  ? null
+                  : input.guarantor.trim(),
+            fecha_operacion: input.operationDate
+              ? new Date(input.operationDate)
+              : undefined,
+            patente_estimada_desde: estimate?.from,
+            patente_estimada_hasta: estimate?.to,
+            estado_entrega: input.deliveryStatus,
+            estado_documentacion:
+              input.papersDelivered === undefined
+                ? undefined
+                : input.papersDelivered
+                  ? 'COMPLETA'
+                  : 'NO_INICIADA',
+            documentacion_entregada_en:
+              input.papersDelivered === undefined
+                ? undefined
+                : input.papersDelivered
+                  ? (current.documentacion_entregada_en ?? new Date())
+                  : null,
+            debe: input.debt,
+            notas:
+              input.notes === undefined
+                ? undefined
+                : input.notes === null
+                  ? null
+                  : input.notes.trim(),
+            numero_boleto:
+              input.ticketNumber === undefined
+                ? undefined
+                : input.ticketNumber === null
+                  ? null
+                  : input.ticketNumber.trim(),
+            incluye_casco: input.includesHelmet,
+            version_fila: { increment: 1 },
+          },
+        });
+
+        if (input.sellerId) {
+          await tx.asignaciones_personal_operacion.deleteMany({
+            where: {
+              operacion_id: id,
+              organizacion_id: current.organizacion_id,
+              rol_asignacion: { in: SELLER_ASSIGNMENT_ROLES },
+            },
+          });
+          await tx.asignaciones_personal_operacion.create({
+            data: {
+              operacion_id: id,
+              personal_id: input.sellerId,
+              rol_asignacion: sellerAssignmentRole!,
+              organizacion_id: current.organizacion_id,
+            },
+          });
+        }
+        if (input.contactId !== undefined) {
+          await tx.asignaciones_personal_operacion.deleteMany({
+            where: {
+              operacion_id: id,
+              organizacion_id: current.organizacion_id,
+              rol_asignacion: 'CONTACTO',
+            },
+          });
+          if (input.contactId)
+            await tx.asignaciones_personal_operacion.create({
+              data: {
+                operacion_id: id,
+                personal_id: input.contactId,
+                rol_asignacion: 'CONTACTO',
+                organizacion_id: current.organizacion_id,
+              },
+            });
+        }
+
+        const detachedIncomes =
+          planTouched && platform
+            ? await this.reconcileCorrectedPaymentPlan(tx, current, {
+                platform,
+                agreedPrice,
+                creditAmount,
+                financialInstitutionId: input.financialInstitutionId,
+              })
+            : 0;
+        event.metadata = {
+          correctedFields: Object.keys(input).filter(
+            (key) => key !== 'expectedVersion',
+          ),
+          detachedIncomes,
+        };
+        return this.present(tx, await this.operationOr404(tx, id, actor));
+      },
+      id,
+    );
+  }
+
+  // Leaves the payment plan matching the corrected price and platform:
+  // one financing component for the credit amount, the trade-ins as they
+  // are, and the rest as cash. Components that still apply are updated in
+  // place, so their collections stay linked. A component that no longer
+  // applies is marked CANCELADA (never deleted: it may carry legacy
+  // collections) and its incomes stay on the operation without a component.
+  // Returns how many incomes were detached.
+  private async reconcileCorrectedPaymentPlan(
+    tx: Prisma.TransactionClient,
+    operation: OperationRecord,
+    target: {
+      platform: plataforma_pago_luma;
+      agreedPrice: Prisma.Decimal;
+      creditAmount: Prisma.Decimal | null;
+      financialInstitutionId?: string;
+    },
+  ): Promise<number> {
+    const organizationId = operation.organizacion_id;
+    const active = (operation.componentes_pago_operacion ?? []).filter(
+      (component) => component.estado_pago !== 'CANCELADA',
+    );
+    const financing = active.filter(
+      (component) =>
+        component.tipo_componente === tipo_componente_pago_luma.FINANCIACION,
+    );
+    const tradeIns = active.filter(
+      (component) =>
+        component.tipo_componente === tipo_componente_pago_luma.TOMA_PARTE_PAGO,
+    );
+    const cash = active.filter(
+      (component) =>
+        component.tipo_componente !== tipo_componente_pago_luma.FINANCIACION &&
+        component.tipo_componente !== tipo_componente_pago_luma.TOMA_PARTE_PAGO,
+    );
+    const zero = new Prisma.Decimal(0);
+    const credit = target.creditAmount ?? zero;
+    const tradeInTotal = tradeIns.reduce(
+      (total, component) => total.plus(component.importe_esperado),
+      zero,
+    );
+    const expectsTradeIn = TRADE_IN_PAYMENT_PLATFORMS.includes(target.platform);
+    // Trade-ins are loaded with their own form (vehicle data): a correction
+    // neither creates nor removes them.
+    if (expectsTradeIn !== tradeIns.length > 0)
+      throw apiError(
+        HttpStatus.CONFLICT,
+        expectsTradeIn
+          ? 'CORRECTION_TRADE_IN_REQUIRED'
+          : 'CORRECTION_TRADE_IN_PRESENT',
+        expectsTradeIn
+          ? 'The selected payment platform needs a trade-in and the operation has none'
+          : 'The operation has a trade-in and the selected payment platform does not include one',
+      );
+    const cashTotal = target.agreedPrice.minus(credit).minus(tradeInTotal);
+    const expectsCash = CASH_PAYMENT_PLATFORMS.includes(target.platform);
+    if (cashTotal.lessThan(0) || expectsCash !== cashTotal.greaterThan(0))
+      throw apiError(
+        HttpStatus.BAD_REQUEST,
+        'CORRECTION_PLAN_MISMATCH',
+        'Price, credit and trade-in amounts do not match the selected payment platform',
+        {
+          agreedPrice: target.agreedPrice.toString(),
+          creditAmount: credit.toString(),
+          tradeInAmount: tradeInTotal.toString(),
+        },
+      );
+
+    let detached = 0;
+    const cancel = async (componentId: string) => {
+      const result = await tx.ingresos.updateMany({
+        where: {
+          componente_pago_id: componentId,
+          organizacion_id: organizationId,
+        },
+        data: { componente_pago_id: null },
+      });
+      detached += result.count;
+      await tx.componentes_pago_operacion.update({
+        where: {
+          id_organizacion_id: {
+            id: componentId,
+            organizacion_id: organizationId,
+          },
+        },
+        data: { estado_pago: 'CANCELADA' },
+      });
+    };
+    const kept: string[] = [];
+
+    // Financing.
+    const [mainFinancing, ...extraFinancing] = financing;
+    const financingChanges =
+      credit.greaterThan(0) !== financing.length > 0 ||
+      extraFinancing.length > 0 ||
+      (mainFinancing !== undefined &&
+        (!mainFinancing.importe_esperado.equals(credit) ||
+          (target.financialInstitutionId !== undefined &&
+            target.financialInstitutionId !== mainFinancing.financiera_id)));
+    if (financingChanges) {
+      // An own credit already has its installments generated from the
+      // financed amount: changing it here would leave them out of sync.
+      const ownCredits = await tx.operacion_creditos.count({
+        where: { operacion_id: operation.id, estado: { not: 'CANCELADO' } },
+      });
+      if (ownCredits)
+        throw apiError(
+          HttpStatus.CONFLICT,
+          'CORRECTION_OWN_CREDIT_ACTIVE',
+          'The operation has an own credit with installments; its financing cannot be corrected here',
+        );
+    }
+    if (credit.greaterThan(0)) {
+      const financialInstitutionId =
+        target.financialInstitutionId ?? mainFinancing?.financiera_id;
+      if (!financialInstitutionId)
+        throw apiError(
+          HttpStatus.BAD_REQUEST,
+          'CORRECTION_FINANCIAL_INSTITUTION_REQUIRED',
+          'A financial institution is required for the credit amount',
+        );
+      if (financialInstitutionId !== mainFinancing?.financiera_id) {
+        const financial = await tx.financieras.findFirst({
+          where: {
+            id: financialInstitutionId,
+            organizacion_id: organizationId,
+            activo: true,
+          },
+          select: { id: true },
+        });
+        if (!financial)
+          throw new BadRequestException(
+            'Financial institution is invalid or inactive',
+          );
+      }
+      if (mainFinancing) {
+        await tx.componentes_pago_operacion.update({
+          where: {
+            id_organizacion_id: {
+              id: mainFinancing.id,
+              organizacion_id: organizationId,
+            },
+          },
+          data: {
+            importe_esperado: credit,
+            financiera_id: financialInstitutionId,
+            consulta_crediticia_id:
+              financialInstitutionId === mainFinancing.financiera_id
+                ? undefined
+                : null,
+          },
+        });
+        kept.push(mainFinancing.id);
+      } else {
+        const created = await tx.componentes_pago_operacion.create({
+          data: {
+            operacion_id: operation.id,
+            tipo_componente: tipo_componente_pago_luma.FINANCIACION,
+            importe_esperado: credit,
+            financiera_id: financialInstitutionId,
+            organizacion_id: organizationId,
+          },
+          select: { id: true },
+        });
+        kept.push(created.id);
+      }
+      for (const component of extraFinancing) await cancel(component.id);
+    } else {
+      for (const component of financing) await cancel(component.id);
+    }
+
+    // Cash: the first cash-like component absorbs the difference.
+    if (cashTotal.greaterThan(0)) {
+      const [mainCash, ...otherCash] = cash;
+      const others = otherCash.reduce(
+        (total, component) => total.plus(component.importe_esperado),
+        zero,
+      );
+      const keepOthers = cashTotal.minus(others).greaterThan(0);
+      if (mainCash) {
+        await tx.componentes_pago_operacion.update({
+          where: {
+            id_organizacion_id: {
+              id: mainCash.id,
+              organizacion_id: organizationId,
+            },
+          },
+          data: {
+            importe_esperado: keepOthers ? cashTotal.minus(others) : cashTotal,
+          },
+        });
+        kept.push(mainCash.id);
+        if (keepOthers)
+          kept.push(...otherCash.map((component) => component.id));
+        else for (const component of otherCash) await cancel(component.id);
+      } else {
+        const created = await tx.componentes_pago_operacion.create({
+          data: {
+            operacion_id: operation.id,
+            tipo_componente: tipo_componente_pago_luma.EFECTIVO,
+            importe_esperado: cashTotal,
+            organizacion_id: organizationId,
+          },
+          select: { id: true },
+        });
+        kept.push(created.id);
+      }
+    } else {
+      for (const component of cash) await cancel(component.id);
+    }
+
+    // The expected amounts changed: bring each status back in line with
+    // what was already collected.
+    for (const componentId of kept)
+      await syncComponentPaymentStatus(tx, componentId, organizationId);
+    return detached;
   }
 
   // Administrative management of the licensing mode/amount from the

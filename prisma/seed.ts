@@ -260,6 +260,13 @@ const managedPermissions = [
     roles: ['ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
   },
   {
+    codigo: 'ventas.corregir',
+    modulo: 'ventas',
+    descripcion:
+      'Corrige los datos de una operación ya cargada (vendedor, cliente, precio, forma de pago) en cualquier estado, sin cambiar su estado.',
+    roles: ['ADMINISTRATIVA', 'ADMINISTRADOR'],
+  },
+  {
     codigo: 'ventas.patentamiento.gestionar',
     modulo: 'ventas',
     descripcion:

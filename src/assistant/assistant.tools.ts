@@ -3,6 +3,8 @@ import { PERMISSION_CODES } from '../auth/auth.constants';
 import type { AuthenticatedUser } from '../auth/auth.types';
 import { ClientsService } from '../clients/clients.service';
 import { ClientListQueryDto } from '../clients/dto/client-list-query.dto';
+import { RejectedInquiryQueryDto } from '../credit-inquiries/credit-inquiries.dto';
+import { CreditInquiriesService } from '../credit-inquiries/credit-inquiries.service';
 import { InventoryQueryDto } from '../inventory/inventory.dto';
 import { InventoryService } from '../inventory/inventory.service';
 import {
@@ -26,14 +28,19 @@ import { VehiclePaymentsService } from '../vehicle-payments/vehicle-payments.ser
 //    el modelo la pide igual, se rechaza.
 // 3. El modelo nunca elige de quién son los datos: no hay parámetros de
 //    vendedor, sucursal ni organización. Sólo texto de búsqueda y filtros de
-//    estado.
+//    estado. Buscar ventas por documento resuelve el cliente con la consulta
+//    de la pantalla Clientes (y su permiso) y filtra por ese cliente dentro
+//    de lo que el usuario ya ve.
 // 4. Sólo lectura, pocas filas y sin totales: Lumi no cuenta ventas, no suma
 //    importes ni compara vendedores o sucursales.
 // 5. Al modelo sólo le llegan los campos listados acá (nunca costos, precio
-//    mínimo, comisiones ni datos internos). El documento y el teléfono de un
-//    cliente sólo salen por buscar_clientes, que exige clientes.consultar.
+//    mínimo, comisiones ni datos internos). El teléfono de un cliente sólo
+//    sale por buscar_clientes (clientes.consultar) y el documento por esa
+//    consulta o por buscar_clientes_en_rojo, cuyas pantallas ya lo muestran.
 
 const MAX_ROWS = 8;
+// Clients a document may resolve to when searching sales by document.
+const MAX_DOCUMENT_CLIENTS = 3;
 
 const VEHICLE_TYPES = ['MOTO', 'AUTO'] as const;
 const OPERATION_STATUSES = [
@@ -75,6 +82,37 @@ function textArg(args: Args, key: string): string | undefined {
   if (typeof value !== 'string') return undefined;
   const trimmed = value.trim().slice(0, 80);
   return trimmed || undefined;
+}
+
+// The model often sends a whole pasted line ("CARRIZO ALEJANDRO DNI
+// 34713296") as the search text. The screen services match that text as a
+// single piece, so it finds nothing. This separates the document (7 to 11
+// digits, with or without dots) from the rest.
+const DOCUMENT_LABELS =
+  /\b(dni|cuit|cuil|documento|doc|nro|n°|numero)\b[.:]?/gi;
+
+export function splitSearch(value: string | undefined): {
+  text?: string;
+  document?: string;
+} {
+  if (!value) return {};
+  const undotted = value.replace(/(\d)[.](?=\d{3}\b)/g, '$1');
+  const match = /(?<![\w-])\d{7,11}(?![\w-])/.exec(undotted);
+  if (!match) return { text: value };
+  const text = (
+    undotted.slice(0, match.index) +
+    ' ' +
+    undotted.slice(match.index + match[0].length)
+  )
+    .replace(DOCUMENT_LABELS, ' ')
+    .replace(/[\s,;:·#-]+/g, ' ')
+    .trim();
+  return { text: text || undefined, document: match[0] };
+}
+
+function documentArg(args: Args, key: string): string | undefined {
+  const digits = textArg(args, key)?.replace(/\D/g, '');
+  return digits && digits.length >= 5 ? digits : undefined;
 }
 
 function trueArg(args: Args, key: string): true | undefined {
@@ -146,12 +184,27 @@ interface UnitView {
 }
 
 interface ClientView {
+  id: string;
   fullName: string;
   documentType: string | null;
   documentNumber: string | null;
   phone: string | null;
   email: string | null;
   active: boolean;
+}
+
+interface RejectedInquiryView {
+  client: {
+    fullName: string;
+    documentType: string | null;
+    documentNumber: string | null;
+  };
+  financialEntity: { name: string };
+  reason: string | null;
+  consultedAt: Date | string;
+  attemptCount: number;
+  branch: { name: string };
+  registeredBy: { fullName: string };
 }
 
 interface Page<T> {
@@ -231,8 +284,17 @@ const vehicleTypeProperty = {
 
 const searchProperty = (what: string) => ({
   type: 'string',
-  description: `Texto a buscar: ${what}. Omitilo para listar las más recientes.`,
+  description: `Texto a buscar, un solo dato por vez: ${what}. Omitilo para listar las más recientes.`,
 });
+
+const documentProperty = {
+  type: 'string',
+  description:
+    'Número de documento del cliente, sólo los dígitos. Usalo en lugar de "busqueda" cuando tengas el documento.',
+};
+
+const NO_DOCUMENT_SEARCH =
+  'Las ventas no se pueden buscar por documento con este perfil. Buscá por nombre y apellido del cliente, número de operación, boleto, chasis o patente.';
 
 @Injectable()
 export class AssistantToolsService {
@@ -244,7 +306,52 @@ export class AssistantToolsService {
     vehiclePayments: VehiclePaymentsService,
     inventory: InventoryService,
     clients: ClientsService,
+    creditInquiries: CreditInquiriesService,
   ) {
+    const findClients = async (
+      search: string | undefined,
+      actor: AuthenticatedUser,
+      limit = MAX_ROWS,
+    ) =>
+      (await clients.findAll(
+        Object.assign(new ClientListQueryDto(), { search, page: 1, limit }),
+        actor,
+      )) as unknown as Page<ClientView>;
+
+    // Sales by search text. When the text carries a document, or finds
+    // nothing and a document was given, the client is resolved through the
+    // Clientes screen query and its sales are listed.
+    const findOperations = async <T>(
+      args: Args,
+      actor: AuthenticatedUser,
+      list: (filter: {
+        search?: string;
+        clientId?: string;
+      }) => Promise<Page<T>>,
+    ): Promise<{ result: Page<T>; note?: string }> => {
+      const { text, document: found } = splitSearch(textArg(args, 'busqueda'));
+      const document = documentArg(args, 'documentoCliente') ?? found;
+      // A bare number can also be an operation or ticket number.
+      const result = await list({ search: text ?? document });
+      if (!document || result.items.length) return { result };
+      if (!actor.role.permissions.includes(PERMISSION_CODES.CLIENTS_READ))
+        return { result, note: NO_DOCUMENT_SEARCH };
+      const matches = await findClients(document, actor, MAX_DOCUMENT_CLIENTS);
+      const pages = await Promise.all(
+        matches.items
+          .slice(0, MAX_DOCUMENT_CLIENTS)
+          .map((client) => list({ clientId: client.id })),
+      );
+      return {
+        result: {
+          items: pages.flatMap((item) => item.items),
+          total: pages.reduce((sum, item) => sum + item.total, 0),
+        },
+      };
+    };
+    const withNote = <R extends object>(body: R, note?: string) =>
+      note ? { ...body, nota: note } : body;
+
     this.tools = [
       {
         name: 'buscar_clientes',
@@ -252,18 +359,17 @@ export class AssistantToolsService {
           'Busca clientes en la cartera que el usuario ve en la pantalla Clientes: nombre, documento, teléfono, correo y si está activo. Usala cuando pregunten por una persona o un documento.',
         permissions: [PERMISSION_CODES.CLIENTS_READ],
         properties: {
-          busqueda: searchProperty('nombre, documento o correo del cliente'),
+          busqueda: searchProperty('nombre o correo del cliente'),
+          documento: documentProperty,
         },
         run: async (args, actor) => {
-          const query = Object.assign(new ClientListQueryDto(), {
-            search: textArg(args, 'busqueda'),
-            page: 1,
-            limit: MAX_ROWS,
-          });
-          const result = (await clients.findAll(
-            query,
-            actor,
-          )) as unknown as Page<ClientView>;
+          const { text, document: found } = splitSearch(
+            textArg(args, 'busqueda'),
+          );
+          const document = documentArg(args, 'documento') ?? found;
+          let result = await findClients(document ?? text, actor);
+          if (!result.items.length && document && text)
+            result = await findClients(text, actor);
           return page(result, (client) => ({
             cliente: client.fullName,
             documento: [client.documentType, client.documentNumber]
@@ -276,15 +382,56 @@ export class AssistantToolsService {
         },
       },
       {
+        name: 'buscar_clientes_en_rojo',
+        description:
+          'Busca en la pantalla Clientes en rojo (consultas crediticias): personas a las que una financiera les rechazó un crédito, con financiera, fecha y motivo. Usala cuando pregunten si alguien está en rojo, tiene rechazos o mal historial crediticio.',
+        permissions: [PERMISSION_CODES.CREDIT_INQUIRIES_READ],
+        properties: {
+          busqueda: searchProperty('nombre de la persona'),
+          documento: documentProperty,
+        },
+        run: async (args, actor) => {
+          const { text, document: found } = splitSearch(
+            textArg(args, 'busqueda'),
+          );
+          const document = documentArg(args, 'documento') ?? found;
+          const find = async (filter: { search?: string; document?: string }) =>
+            (await creditInquiries.findRejected(
+              Object.assign(new RejectedInquiryQueryDto(), {
+                ...filter,
+                page: 1,
+                limit: MAX_ROWS,
+              }),
+              actor,
+            )) as unknown as Page<RejectedInquiryView>;
+          let result = await find(document ? { document } : { search: text });
+          if (!result.items.length && document && text)
+            result = await find({ search: text });
+          return page(result, (row) => ({
+            cliente: row.client.fullName,
+            documento: [row.client.documentType, row.client.documentNumber]
+              .filter(Boolean)
+              .join(' '),
+            financiera: row.financialEntity.name,
+            fechaRechazo: day(row.consultedAt),
+            motivo: row.reason,
+            intentosDeLaPersona: row.attemptCount,
+            sucursal: row.branch.name,
+            registradoPor: row.registeredBy.fullName,
+          }));
+        },
+      },
+      {
         name: 'buscar_operaciones',
         description:
-          'Busca ventas (operaciones) que el usuario puede ver en la pantalla Operaciones: estado, cliente, vehículo, situación de la unidad y patentamiento. Sirve para "cómo está la operación X", "qué patentes están demoradas" o "qué patentes recibidas tienen cobro pendiente".',
+          'Busca ventas (operaciones) que el usuario puede ver en la pantalla Operaciones: estado, cliente, vehículo, situación de la unidad y patentamiento. Sirve para "cómo está la operación X", "qué compró / qué operaciones tiene tal cliente", "qué patentes están demoradas" o "qué patentes recibidas tienen cobro pendiente".',
         permissions: [PERMISSION_CODES.SALES_READ],
         properties: {
           tipoVehiculo: vehicleTypeProperty,
           busqueda: searchProperty(
             'número de operación, número de boleto, nombre del cliente, chasis o patente',
           ),
+          documentoCliente: documentProperty,
           estado: { type: 'string', enum: OPERATION_STATUSES },
           patenteDemorada: {
             type: 'boolean',
@@ -298,20 +445,28 @@ export class AssistantToolsService {
           },
         },
         run: async (args, actor) => {
-          const query = Object.assign(new SalesOperationQueryDto(), {
-            vehicleType: enumArg(args, 'tipoVehiculo', VEHICLE_TYPES) ?? 'MOTO',
-            search: textArg(args, 'busqueda'),
-            status: enumArg(args, 'estado', OPERATION_STATUSES),
-            licensingOverdue: trueArg(args, 'patenteDemorada'),
-            licensingCollectionPending: trueArg(args, 'patenteCobroPendiente'),
-            page: 1,
-            limit: MAX_ROWS,
-          });
-          const result = (await sales.findAll(
-            query,
+          const { result, note } = await findOperations(
+            args,
             actor,
-          )) as unknown as Page<OperationView>;
-          return page(result, operation);
+            async (filter) =>
+              (await sales.findAll(
+                Object.assign(new SalesOperationQueryDto(), {
+                  vehicleType:
+                    enumArg(args, 'tipoVehiculo', VEHICLE_TYPES) ?? 'MOTO',
+                  ...filter,
+                  status: enumArg(args, 'estado', OPERATION_STATUSES),
+                  licensingOverdue: trueArg(args, 'patenteDemorada'),
+                  licensingCollectionPending: trueArg(
+                    args,
+                    'patenteCobroPendiente',
+                  ),
+                  page: 1,
+                  limit: MAX_ROWS,
+                }),
+                actor,
+              )) as unknown as Page<OperationView>,
+          );
+          return withNote(page(result, operation), note);
         },
       },
       {
@@ -327,19 +482,25 @@ export class AssistantToolsService {
           busqueda: searchProperty(
             'número de operación, número de boleto, nombre del cliente, chasis o patente',
           ),
+          documentoCliente: documentProperty,
         },
         run: async (args, actor) => {
-          const query = Object.assign(new SalesOperationTrackingQueryDto(), {
-            vehicleType: enumArg(args, 'tipoVehiculo', VEHICLE_TYPES) ?? 'MOTO',
-            search: textArg(args, 'busqueda'),
-            page: 1,
-            limit: MAX_ROWS,
-          });
-          const result = (await sales.tracking(
-            query,
+          const { result, note } = await findOperations(
+            args,
             actor,
-          )) as unknown as Page<TrackingView>;
-          return page(result, (row) => ({
+            async (filter) =>
+              (await sales.tracking(
+                Object.assign(new SalesOperationTrackingQueryDto(), {
+                  vehicleType:
+                    enumArg(args, 'tipoVehiculo', VEHICLE_TYPES) ?? 'MOTO',
+                  ...filter,
+                  page: 1,
+                  limit: MAX_ROWS,
+                }),
+                actor,
+              )) as unknown as Page<TrackingView>,
+          );
+          const rows = page(result, (row) => ({
             operacion: row.number,
             boleto: row.ticketNumber,
             fecha: day(row.operationDate),
@@ -353,6 +514,7 @@ export class AssistantToolsService {
             saldo: row.balanceAmount,
             efectivoSinRendir: row.pendingHandoverAmount,
           }));
+          return withNote(rows, note);
         },
       },
       {

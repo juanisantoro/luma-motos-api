@@ -53,6 +53,7 @@ ejecuta y le devuelve el resultado para que redacte la respuesta.
 | Consulta | Servicio que usa | Permisos (los del endpoint) |
 | --- | --- | --- |
 | `buscar_clientes` | `ClientsService.findAll` | `clientes.consultar` |
+| `buscar_clientes_en_rojo` | `CreditInquiriesService.findRejected` | `consultas_crediticias.consultar` |
 | `buscar_operaciones` | `SalesService.findAll` | `ventas.consultar` |
 | `seguimiento_cobros` | `SalesService.tracking` | `ventas.consultar` + `ingresos.consultar` |
 | `pagos_patentes_seguros` | `VehiclePaymentsService.findAll` | `pagos_vehiculo.consultar` |
@@ -69,20 +70,30 @@ Reglas de seguridad (valen para cualquier consulta que se agregue):
    en el log.
 3. **El modelo no elige de quién son los datos.** No existen parámetros de
    vendedor, sucursal ni organización: sólo texto de búsqueda y filtros de
-   estado. Cualquier otro parámetro que mande se descarta.
+   estado. Cualquier otro parámetro que mande se descarta. Buscar ventas por
+   documento (`documentoCliente`, o un documento dentro del texto) resuelve el
+   cliente con `ClientsService.findAll` —sólo si el usuario tiene
+   `clientes.consultar`— y filtra por ese cliente dentro de lo que ya ve.
 4. **Sólo lectura, hasta 8 filas, sin totales.** El resultado lleva un
    `hayMasResultados` booleano en lugar de la cantidad. El prompt además le
    prohíbe dar totales, cantidades de ventas, facturación, costos, comisiones
    o comparaciones entre vendedores o sucursales.
 5. **Lista blanca de campos.** Al modelo no le llegan ids, precio de lista ni
-   mínimo, costos, notas ni proveedor. El documento y el teléfono de un cliente
-   sólo salen por `buscar_clientes` (lo mismo que muestra la pantalla Clientes),
-   nunca su domicilio ni sus notas.
+   mínimo, costos, notas ni proveedor. El teléfono de un cliente sólo sale por
+   `buscar_clientes` y el documento por esa consulta o por
+   `buscar_clientes_en_rojo` (lo mismo que muestran esas pantallas), nunca su
+   domicilio ni sus notas.
 6. **Sin detalles de errores.** Si el servicio rechaza la consulta, el modelo
    sólo recibe "no se pudo consultar".
 7. **Nunca se reusan.** Una respuesta que leyó datos se guarda con
    `uso_datos = true` y queda fuera del reuso de respuestas (además hay un
    CHECK en la base).
+
+Los servicios de las pantallas buscan el texto como una sola pieza, así que
+"CARRIZO ALEJANDRO DNI 34713296" no encuentra nada. `splitSearch` separa el
+documento (7 a 11 dígitos) del resto antes de consultar: clientes y clientes
+en rojo se buscan por documento y, si no hay coincidencia, por nombre; las
+ventas por el texto y, si no hay coincidencia, por el cliente de ese documento.
 
 Los datos que devuelve una consulta (nombre del cliente, importes, patentes)
 se envían a OpenAI para redactar la respuesta, y la respuesta queda guardada

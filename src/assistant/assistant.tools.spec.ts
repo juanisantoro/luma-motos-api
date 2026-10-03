@@ -1,10 +1,11 @@
 import { ForbiddenException } from '@nestjs/common';
 import type { AuthenticatedUser } from '../auth/auth.types';
 import type { ClientsService } from '../clients/clients.service';
+import type { CreditInquiriesService } from '../credit-inquiries/credit-inquiries.service';
 import type { InventoryService } from '../inventory/inventory.service';
 import type { SalesService } from '../sales/sales.service';
 import type { VehiclePaymentsService } from '../vehicle-payments/vehicle-payments.service';
-import { AssistantToolsService } from './assistant.tools';
+import { AssistantToolsService, splitSearch } from './assistant.tools';
 
 // Lumi sólo puede leer lo que el usuario ya ve en sus pantallas. Estos tests
 // fijan esa regla: permisos por consulta, sin parámetros que elijan de quién
@@ -88,12 +89,16 @@ describe('AssistantToolsService', () => {
   const paymentsFindAll = jest.fn();
   const inventoryFindAll = jest.fn();
   const clientsFindAll = jest.fn();
+  const findRejected = jest.fn();
   const tools = new AssistantToolsService(
     { findAll, tracking } as unknown as SalesService,
     { findAll: paymentsFindAll } as unknown as VehiclePaymentsService,
     { findAll: inventoryFindAll } as unknown as InventoryService,
     { findAll: clientsFindAll } as unknown as ClientsService,
+    { findRejected } as unknown as CreditInquiriesService,
   );
+  const call = (mock: jest.Mock, index = 0) =>
+    mock.mock.calls[index] as [Record<string, unknown>, unknown];
   const names = (user: AuthenticatedUser) =>
     tools.definitions(user).map((definition) => definition.function.name);
 
@@ -279,6 +284,163 @@ describe('AssistantToolsService', () => {
     });
     expect(
       JSON.parse(await tools.run('buscar_clientes', '{}', seller)),
+    ).toEqual({ error: 'El usuario no tiene acceso a esa información.' });
+  });
+
+  it('separates a pasted name and document instead of searching both as one text', () => {
+    expect(splitSearch('CARRIZO ALEJANDRO DNI 34713296')).toEqual({
+      text: 'CARRIZO ALEJANDRO',
+      document: '34713296',
+    });
+    expect(splitSearch('dni 34.713.296')).toEqual({ document: '34713296' });
+    expect(splitSearch('34713296')).toEqual({ document: '34713296' });
+    // Operation numbers, tickets, chassis and plates are left alone.
+    for (const text of ['132', 'SM-0417', '8BFYCK4D5TM010526', 'A123BCD'])
+      expect(splitSearch(text)).toEqual({ text });
+    expect(splitSearch(undefined)).toEqual({});
+  });
+
+  it('searches clients by the document when the text carries one', async () => {
+    clientsFindAll.mockResolvedValue({ items: [], total: 0 });
+
+    await tools.run(
+      'buscar_clientes',
+      '{"busqueda":"CARRIZO ALEJANDRO DNI 34713296"}',
+      clientsOnly,
+    );
+
+    // By document first; with no match, by name.
+    expect(
+      (clientsFindAll.mock.calls as Array<[{ search: string }]>).map(
+        ([query]) => query.search,
+      ),
+    ).toEqual(['34713296', 'CARRIZO ALEJANDRO']);
+  });
+
+  it('finds the sales of a client by document through the clients screen query', async () => {
+    findAll
+      .mockResolvedValueOnce({ items: [], total: 0 })
+      .mockResolvedValueOnce({ items: [operationRow], total: 1 });
+    clientsFindAll.mockResolvedValue({
+      items: [{ id: 'client-uuid', fullName: 'CARRIZO ALEJANDRO' }],
+      total: 1,
+    });
+
+    const answer = await tools.run(
+      'buscar_operaciones',
+      '{"documentoCliente":"34.713.296"}',
+      administrative,
+    );
+
+    expect(call(clientsFindAll)[0]).toMatchObject({
+      search: '34713296',
+    });
+    expect(call(clientsFindAll)[1]).toBe(administrative);
+    // Still SalesService.findAll with the session user: the client filter
+    // only narrows what that user already sees.
+    expect(call(findAll, 1)[0]).toMatchObject({
+      clientId: 'client-uuid',
+      vehicleType: 'MOTO',
+      limit: 8,
+    });
+    expect(call(findAll, 1)[0].search).toBeUndefined();
+    expect(call(findAll, 1)[1]).toBe(administrative);
+    expect(answer).toContain('"operacion":"1048"');
+  });
+
+  it('searches sales by the name when a name and a document come together', async () => {
+    await tools.run(
+      'buscar_operaciones',
+      '{"busqueda":"CARRIZO ALEJANDRO DNI 34713296"}',
+      administrative,
+    );
+
+    expect(findAll).toHaveBeenCalledTimes(1);
+    expect(call(findAll)[0]).toMatchObject({
+      search: 'CARRIZO ALEJANDRO',
+    });
+    expect(clientsFindAll).not.toHaveBeenCalled();
+  });
+
+  it('does not resolve documents for a user without clientes.consultar', async () => {
+    findAll.mockResolvedValue({ items: [], total: 0 });
+
+    const answer = await tools.run(
+      'buscar_operaciones',
+      '{"busqueda":"34713296"}',
+      seller,
+    );
+
+    expect(clientsFindAll).not.toHaveBeenCalled();
+    expect(findAll).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(answer)).toMatchObject({
+      resultados: [],
+      nota: expect.stringContaining(
+        'no se pueden buscar por documento',
+      ) as unknown,
+    });
+  });
+
+  it('searches rejected credit clients only with consultas_crediticias.consultar', async () => {
+    const credit = actor('X', ['consultas_crediticias.consultar']);
+    findRejected.mockResolvedValue({
+      items: [
+        {
+          id: 'inquiry-uuid',
+          client: {
+            id: 'client-uuid',
+            documentType: 'DNI',
+            documentNumber: '34713296',
+            fullName: 'CARRIZO ALEJANDRO',
+          },
+          financialEntity: { id: 'entity-uuid', name: 'Financiera SA' },
+          outcome: 'RECHAZADA',
+          reason: 'Veraz',
+          consultedAt: new Date('2026-09-20T03:00:00.000Z'),
+          attemptCount: 2,
+          branch: { id: 'branch-1', code: 'SM', name: 'San Miguel' },
+          registeredBy: { id: 'person-uuid', fullName: 'Pérez, Ana' },
+          operation: null,
+          externalReference: 'ref-interna',
+        },
+      ],
+      total: 1,
+    });
+
+    expect(names(credit)).toEqual(['buscar_clientes_en_rojo']);
+    expect(names(administrative)).not.toContain('buscar_clientes_en_rojo');
+    const answer = await tools.run(
+      'buscar_clientes_en_rojo',
+      '{"documento":"34713296"}',
+      credit,
+    );
+
+    expect(call(findRejected)[0]).toMatchObject({
+      document: '34713296',
+      page: 1,
+      limit: 8,
+    });
+    expect(call(findRejected)[0].branchId).toBeUndefined();
+    expect(call(findRejected)[1]).toBe(credit);
+    expect(JSON.parse(answer)).toEqual({
+      resultados: [
+        {
+          cliente: 'CARRIZO ALEJANDRO',
+          documento: 'DNI 34713296',
+          financiera: 'Financiera SA',
+          fechaRechazo: '2026-09-20',
+          motivo: 'Veraz',
+          intentosDeLaPersona: 2,
+          sucursal: 'San Miguel',
+          registradoPor: 'Pérez, Ana',
+        },
+      ],
+      hayMasResultados: false,
+    });
+    expect(answer).not.toContain('uuid');
+    expect(answer).not.toContain('ref-interna');
+    expect(
+      JSON.parse(await tools.run('buscar_clientes_en_rojo', '{}', seller)),
     ).toEqual({ error: 'El usuario no tiene acceso a esa información.' });
   });
 

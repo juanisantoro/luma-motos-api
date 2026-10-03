@@ -16,6 +16,7 @@ import { Permissions } from '../auth/decorators/permissions.decorator';
 import {
   ApproveSalesOperationDto,
   AssignSalesUnitDto,
+  CorrectSalesOperationDto,
   CreateSalesOperationDto,
   CreateSalesTradeInDto,
   ReasonedSalesActionDto,
@@ -138,6 +139,19 @@ export class SalesController {
     @CurrentUser() actor: AuthenticatedUser,
   ) {
     return this.service.update(id, input, actor);
+  }
+
+  // Corrección administrativa desde la grilla: edita los datos de la venta
+  // en cualquier estado, sin cambiar el estado ni pedir aprobación.
+  @Patch(':id/correction')
+  @Permissions(PERMISSION_CODES.SALES_CORRECT)
+  @AuditedMutation()
+  correct(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() input: CorrectSalesOperationDto,
+    @CurrentUser() actor: AuthenticatedUser,
+  ) {
+    return this.service.correct(id, input, actor);
   }
 
   @Patch(':id/licensing')

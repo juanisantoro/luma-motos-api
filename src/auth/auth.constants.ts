@@ -40,6 +40,7 @@ export const PERMISSION_CODES = {
   SALES_CLOSE: 'ventas.cerrar',
   SALES_LICENSING_MANAGE: 'ventas.patentamiento.gestionar',
   SALES_ASSIGN_UNIT: 'ventas.asignar_unidad',
+  SALES_CORRECT: 'ventas.corregir',
   STOCK_RESERVATIONS_MANAGE: 'reservas_stock.gestionar',
   PURCHASES_READ: 'compras.consultar',
   PURCHASES_MANAGE: 'compras.gestionar',

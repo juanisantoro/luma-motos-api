@@ -13,6 +13,7 @@ Todas las rutas usan el prefijo `/api`, requieren JWT y quedan acotadas por RLS 
 | `ventas.cerrar`            | ADMINISTRATIVA, GERENTE, ADMINISTRADOR           |
 | `ventas.patentamiento.gestionar` | ADMINISTRATIVA, GERENTE, ADMINISTRADOR     |
 | `ventas.asignar_unidad`    | ADMINISTRATIVA, GERENTE, ADMINISTRADOR           |
+| `ventas.corregir`          | ADMINISTRATIVA, ADMINISTRADOR                    |
 | `reservas_stock.gestionar` | VENDEDOR, ADMINISTRATIVA, GERENTE, ADMINISTRADOR |
 
 El seed es idempotente: crea o actualiza el catálogo y agrega asignaciones faltantes sin retirar permisos personalizados.
@@ -114,6 +115,45 @@ sólo admite entrega, papeles, debe, observaciones y número de boleto; la
 modalidad de patentamiento de una operación aprobada se gestiona con
 `PATCH /:id/licensing`. Cambiar `operationDate` recalcula la ventana estimada de
 patente.
+
+### Corrección de una operación ya cargada
+
+`PATCH /api/sales/operations/:id/correction` requiere `ventas.corregir` y
+`expectedVersion`. Existe para dejar bien asociadas las operaciones migradas:
+funciona en **cualquier estado** (incluidas `CERRADA` y `CANCELADA`), no cambia
+el estado y no vuelve a pedir aprobación aunque el precio quede bajo lista.
+
+Acepta `clientId`, `sellerId`, `contactId` (nullable), `agreedPrice`,
+`paymentPlatform`, `creditAmount` (nullable), `financialInstitutionId`,
+`guarantor` (nullable), `operationDate`, `deliveryStatus`, `papersDelivered`,
+`debt`, `notes` (nullable), `ticketNumber` (nullable) e `includesHelmet`. Sólo
+se tocan los campos enviados. No modifica unidad, modelo, sucursal, precio de
+lista ni patentamiento (siguen por `PATCH /:id/unit` y `PATCH /:id/licensing`).
+
+Si llega `agreedPrice`, `paymentPlatform`, `creditAmount` o
+`financialInstitutionId`, el plan de pago se reconcilia en la misma
+transacción:
+
+- las tomas en parte de pago se conservan tal cual;
+- el componente `FINANCIACION` se crea o actualiza con el monto y la financiera
+  (la enviada o la que ya tenía); una plataforma sin crédito deja
+  `monto_credito` en `null`;
+- el efectivo pasa a ser `precio − crédito − tomas`;
+- los componentes que sobran no se borran: quedan en `CANCELADA` y sus ingresos
+  se desvinculan (`componente_pago_id = null`), de modo que los cobros siguen en
+  la venta pero fuera del plan;
+- se recalcula el estado de pago de cada componente vigente.
+
+| Código                                      | Motivo                                                                 |
+| ------------------------------------------- | ---------------------------------------------------------------------- |
+| `CORRECTION_FINANCIAL_INSTITUTION_REQUIRED` | La forma de pago lleva crédito y no hay financiera enviada ni previa   |
+| `CORRECTION_OWN_CREDIT_ACTIVE`              | Hay crédito propio con cuotas vigentes y se intenta cambiar el crédito |
+| `CORRECTION_PLAN_MISMATCH`                  | Crédito + tomas superan el precio de cierre                            |
+| `CORRECTION_TRADE_IN_REQUIRED`              | Forma de pago "con moto" sin toma cargada                              |
+| `CORRECTION_TRADE_IN_PRESENT`               | Forma de pago sin moto en una venta que tiene toma                     |
+
+Auditoría: acción `SALES_OPERATION_CORRECTED`, con los datos anteriores y
+`metadata = { correctedFields, detachedIncomes }`.
 
 ## Casco de regalo y patentamiento
 
