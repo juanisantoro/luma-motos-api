@@ -127,6 +127,9 @@ export class CreateIncomeDto {
   @IsOptional() @IsString() @MaxLength(160) reference?: string;
   @IsOptional() @IsUUID() unitId?: string;
   @IsOptional() @IsUUID() operationId?: string;
+  // Circuito (motos/autos) donde se carga: clasifica el ingreso en la grilla
+  // cuando no tiene unidad ni operación.
+  @IsOptional() @IsEnum(tipo_vehiculo_luma) vehicleType?: tipo_vehiculo_luma;
   @IsString() @IsNotEmpty() @MaxLength(2000) description!: string;
   @IsString() @Matches(MONEY_PATTERN) totalAmount!: string;
   @IsOptional() @IsString() @Matches(CURRENCY_PATTERN) currency?: string;

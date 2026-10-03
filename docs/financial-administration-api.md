@@ -175,6 +175,13 @@ Detail adds `notes` and `movements`.
 
 ### Filters
 
+`vehicleType` (`MOTO|AUTO`) lists the incomes whose unit or operation is of
+that type, plus the incomes with neither unit nor operation that were created
+with that `vehicleType` (`POST /incomes` accepts it as an optional field and
+stores it in `ingresos.tipo_vehiculo`; the UI always sends the circuit of the
+screen). An income with no unit, no operation and no stored `vehicleType`
+belongs to no vehicle-type list.
+
 Common filters plus `type`, `unitId`, `operationId`, `accountId`,
 `collectorId`, `clientId`, `ticketNumber`, `paymentMethod`,
 `handoverStatus` (`PENDIENTE_RENDICION|RENDIDO`) and `handoverToId`.

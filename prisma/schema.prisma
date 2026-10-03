@@ -1421,6 +1421,8 @@ model ingresos {
   rendicion_confirmada_por_personal_id String? @db.Uuid
   version_fila            Int                 @default(0)
   cuota_credito_id        String?             @db.Uuid
+  /// Circuito donde se cargó; sólo clasifica ingresos sin unidad ni operación.
+  tipo_vehiculo           tipo_vehiculo_luma?
   cuotas_credito          cuotas_credito?     @relation("ingreso_cuota_credito", fields: [cuota_credito_id, organizacion_id], references: [id, organizacion_id], onDelete: Restrict, onUpdate: NoAction, map: "ingreso_cuota_credito_organizacion_fk")
   clientes                clientes?           @relation("ingreso_cliente", fields: [cliente_id, organizacion_id], references: [id, organizacion_id], onDelete: Restrict, onUpdate: NoAction, map: "ingreso_cliente_organizacion_fk")
   componentes_pago_operacion componentes_pago_operacion? @relation("ingreso_componente_pago", fields: [componente_pago_id, organizacion_id], references: [id, organizacion_id], onDelete: Restrict, onUpdate: NoAction, map: "ingreso_componente_pago_organizacion_fk")

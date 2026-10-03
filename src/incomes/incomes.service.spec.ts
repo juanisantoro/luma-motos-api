@@ -133,6 +133,27 @@ describe('IncomesService', () => {
     expect(count).not.toHaveBeenCalled();
   });
 
+  it('lists by vehicle type the incomes without unit or operation loaded in that circuit', async () => {
+    await service.findAll({ page: 1, limit: 20, vehicleType: 'MOTO' }, actor);
+
+    const where = findMany.mock.calls[0]?.[0].where;
+    const clauses = where?.AND as Prisma.ingresosWhereInput[];
+    expect(clauses).toHaveLength(3);
+    expect(clauses[2]).toEqual({
+      OR: [
+        { unidad_vehiculo_id: { not: null } },
+        { operacion_id: { not: null } },
+        { tipo_vehiculo: 'MOTO' },
+      ],
+    });
+  });
+
+  it('does not filter by vehicle type when it is not requested', async () => {
+    await service.findAll({ page: 1, limit: 20 }, actor);
+
+    expect(findMany.mock.calls[0]?.[0].where?.AND).toBeUndefined();
+  });
+
   it('rejects collections while a legacy income requires reconciliation', async () => {
     findFirst.mockResolvedValue({
       ...income,

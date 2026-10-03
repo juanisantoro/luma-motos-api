@@ -276,10 +276,13 @@ export class IncomesService {
                 },
               ],
             },
+            // Sin unidad ni operación se clasifica por el circuito donde se
+            // cargó; sin ese dato no pertenece a ninguna grilla por tipo.
             {
               OR: [
                 { unidad_vehiculo_id: { not: null } },
                 { operacion_id: { not: null } },
+                { tipo_vehiculo: query.vehicleType },
               ],
             },
           ]
@@ -431,6 +434,7 @@ export class IncomesService {
             referencia: input.reference?.trim(),
             unidad_vehiculo_id: input.unitId,
             operacion_id: input.operationId,
+            tipo_vehiculo: input.vehicleType,
             cliente_id: clientId,
             ...cashColumns,
             observaciones: input.notes?.trim(),
