@@ -4408,10 +4408,13 @@ export class SalesService {
     organizationId: string,
   ) {
     const client = await tx.clientes.findFirst({
-      where: { id, organizacion_id: organizationId, activo: true },
-      select: { id: true },
+      where: { id, organizacion_id: organizationId },
+      select: { id: true, activo: true },
     });
-    if (!client) throw new BadRequestException('Client is invalid or inactive');
+    if (!client) throw new BadRequestException('Client is invalid');
+    // Un cliente inactivo no bloquea la venta: se reactiva.
+    if (client.activo === false)
+      await tx.clientes.update({ where: { id }, data: { activo: true } });
   }
 
   private async resolveClient(
@@ -4449,12 +4452,13 @@ export class SalesService {
       },
       select: { id: true, activo: true },
     });
-    if (existing && !existing.activo)
-      throw new ConflictException('A matching client exists but is inactive');
     if (existing) {
+      // Un cliente no debería quedar inactivo: si lo estaba, la venta lo
+      // reactiva en vez de rechazarse.
       await tx.clientes.update({
         where: { id: existing.id },
         data: {
+          activo: true,
           numero_documento: inline.documentNumber,
           nombre_completo: inline.fullName,
           nombre_normalizado: normalizeClientName(inline.fullName),

@@ -74,9 +74,10 @@ inventario, disponibilidad de proveedor y abastecimiento ya filtran por
 El contrato principal usa `client`; `clientId` se acepta como alternativa
 temporal compatible, nunca junto con `client`. La misma transacción tenant/RLS
 normaliza y bloquea la identidad organización+tipo+número, reutiliza el cliente
-activo o lo crea y luego crea la operación. No requiere `clientes.gestionar`.
+existente o lo crea y luego crea la operación. No requiere `clientes.gestionar`.
 Una coincidencia existente sólo actualiza nombre, teléfono y presentación del
-documento; una coincidencia inactiva devuelve `409`.
+documento. Un cliente no debería quedar inactivo: si la coincidencia (o el
+`clientId` indicado) está inactiva, la venta la reactiva en vez de rechazarse.
 
 **Fase 3 (sólo motos) — de dónde sale la unidad:**
 

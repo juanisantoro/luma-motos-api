@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { APP_GUARD } from '@nestjs/core';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { AssistantModule } from './assistant/assistant.module';
 import { AuditModule } from './audit/audit.module';
 import { BcraModule } from './bcra/bcra.module';
 import { MutationAuditGuard } from './audit/guards/mutation-audit.guard';
@@ -68,6 +69,7 @@ import { DashboardModule } from './dashboard/dashboard.module';
     CreditPlansModule,
     BcraModule,
     DashboardModule,
+    AssistantModule,
   ],
   providers: [
     {

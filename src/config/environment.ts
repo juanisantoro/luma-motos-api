@@ -24,6 +24,10 @@ export interface EnvironmentVariables {
   PORT: number;
   CATALOG_UPLOADS_DIR: string;
   CATALOG_PHOTO_MAX_BYTES: number;
+  OPENAI_API_KEY?: string;
+  OPENAI_MODEL: string;
+  OPENAI_FALLBACK_MODELS: string;
+  OPENAI_TIMEOUT_MS: number;
 }
 
 const environmentSchema = Joi.object<EnvironmentVariables>({
@@ -92,6 +96,16 @@ const environmentSchema = Joi.object<EnvironmentVariables>({
     .integer()
     .min(1)
     .default(5 * 1024 * 1024),
+  // Asistente de ayuda (src/assistant). Sin OPENAI_API_KEY la API arranca
+  // igual y el asistente responde 503 ASSISTANT_NOT_CONFIGURED.
+  OPENAI_API_KEY: Joi.string().min(1).optional(),
+  OPENAI_MODEL: Joi.string().min(1).default('gpt-4o-mini'),
+  OPENAI_FALLBACK_MODELS: Joi.string().allow('').default('gpt-4.1-mini,gpt-4o'),
+  OPENAI_TIMEOUT_MS: Joi.number()
+    .integer()
+    .min(1_000)
+    .max(120_000)
+    .default(30_000),
 })
   .and('SMTP_HOST', 'SMTP_PORT', 'SMTP_SECURE', 'SMTP_USER', 'SMTP_PASSWORD')
   .with('SMTP_HOST', ['SMTP_FROM_EMAIL', 'SMTP_FROM_NAME'])

@@ -1803,6 +1803,36 @@ enum tipo_organizacion_luma {
   FRANQUICIA
 }
 
+/// Lumi (asistente de ayuda): registro de preguntas y respuestas, y fuente
+/// del reuso de respuestas. Not modeled with Prisma relations on purpose
+/// (same rationale as pagos_vehiculo above): AssistantService reads/writes
+/// it with raw SQL. Foreign keys, the cache CHECK and RLS live in the
+/// 20261003010000_assistant_queries migration.
+model consultas_asistente {
+  id                   String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizacion_id      String   @db.Uuid
+  usuario_id           String   @db.Uuid
+  sucursal_id          String?  @db.Uuid
+  rol_codigo           String   @db.VarChar(60)
+  version_manual       String   @db.Char(16)
+  pregunta             String
+  pregunta_normalizada String   @db.VarChar(600)
+  respuesta            String
+  cubierta             Boolean
+  con_historial        Boolean  @default(false)
+  desde_cache          Boolean  @default(false)
+  consulta_origen_id   String?  @db.Uuid
+  modelo               String?  @db.VarChar(80)
+  tokens_entrada       Int?
+  tokens_entrada_cache Int?
+  tokens_salida        Int?
+  creado_en            DateTime @default(now()) @db.Timestamptz(6)
+
+  @@unique([id, organizacion_id], map: "consultas_asistente_id_organizacion_unico")
+  @@index([organizacion_id, creado_en(sort: Desc)], map: "consultas_asistente_organizacion_fecha_indice")
+  @@index([organizacion_id, rol_codigo, version_manual, pregunta_normalizada], map: "consultas_asistente_reuso_indice")
+}
+
 /// Not modeled with Prisma relations on purpose (same rationale as
 /// pagos_vehiculo above): read/write goes through raw SQL in
 /// CreditPlansService to avoid depending on a regenerated Prisma Client.
