@@ -1,6 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PERMISSION_CODES } from '../auth/auth.constants';
 import type { AuthenticatedUser } from '../auth/auth.types';
+import { ClientsService } from '../clients/clients.service';
+import { ClientListQueryDto } from '../clients/dto/client-list-query.dto';
 import { InventoryQueryDto } from '../inventory/inventory.dto';
 import { InventoryService } from '../inventory/inventory.service';
 import {
@@ -28,7 +30,8 @@ import { VehiclePaymentsService } from '../vehicle-payments/vehicle-payments.ser
 // 4. Sólo lectura, pocas filas y sin totales: Lumi no cuenta ventas, no suma
 //    importes ni compara vendedores o sucursales.
 // 5. Al modelo sólo le llegan los campos listados acá (nunca costos, precio
-//    mínimo, comisiones ni datos internos).
+//    mínimo, comisiones ni datos internos). El documento y el teléfono de un
+//    cliente sólo salen por buscar_clientes, que exige clientes.consultar.
 
 const MAX_ROWS = 8;
 
@@ -142,6 +145,15 @@ interface UnitView {
   branch: { name: string };
 }
 
+interface ClientView {
+  fullName: string;
+  documentType: string | null;
+  documentNumber: string | null;
+  phone: string | null;
+  email: string | null;
+  active: boolean;
+}
+
 interface Page<T> {
   items: T[];
   total: number;
@@ -231,8 +243,38 @@ export class AssistantToolsService {
     sales: SalesService,
     vehiclePayments: VehiclePaymentsService,
     inventory: InventoryService,
+    clients: ClientsService,
   ) {
     this.tools = [
+      {
+        name: 'buscar_clientes',
+        description:
+          'Busca clientes en la cartera que el usuario ve en la pantalla Clientes: nombre, documento, teléfono, correo y si está activo. Usala cuando pregunten por una persona o un documento.',
+        permissions: [PERMISSION_CODES.CLIENTS_READ],
+        properties: {
+          busqueda: searchProperty('nombre, documento o correo del cliente'),
+        },
+        run: async (args, actor) => {
+          const query = Object.assign(new ClientListQueryDto(), {
+            search: textArg(args, 'busqueda'),
+            page: 1,
+            limit: MAX_ROWS,
+          });
+          const result = (await clients.findAll(
+            query,
+            actor,
+          )) as unknown as Page<ClientView>;
+          return page(result, (client) => ({
+            cliente: client.fullName,
+            documento: [client.documentType, client.documentNumber]
+              .filter(Boolean)
+              .join(' '),
+            telefono: client.phone,
+            correo: client.email,
+            estado: client.active ? 'Activo' : 'Inactivo',
+          }));
+        },
+      },
       {
         name: 'buscar_operaciones',
         description:

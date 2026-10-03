@@ -52,6 +52,7 @@ ejecuta y le devuelve el resultado para que redacte la respuesta.
 
 | Consulta | Servicio que usa | Permisos (los del endpoint) |
 | --- | --- | --- |
+| `buscar_clientes` | `ClientsService.findAll` | `clientes.consultar` |
 | `buscar_operaciones` | `SalesService.findAll` | `ventas.consultar` |
 | `seguimiento_cobros` | `SalesService.tracking` | `ventas.consultar` + `ingresos.consultar` |
 | `pagos_patentes_seguros` | `VehiclePaymentsService.findAll` | `pagos_vehiculo.consultar` |
@@ -74,7 +75,9 @@ Reglas de seguridad (valen para cualquier consulta que se agregue):
    prohíbe dar totales, cantidades de ventas, facturación, costos, comisiones
    o comparaciones entre vendedores o sucursales.
 5. **Lista blanca de campos.** Al modelo no le llegan ids, precio de lista ni
-   mínimo, costos, documento o teléfono del cliente, notas ni proveedor.
+   mínimo, costos, notas ni proveedor. El documento y el teléfono de un cliente
+   sólo salen por `buscar_clientes` (lo mismo que muestra la pantalla Clientes),
+   nunca su domicilio ni sus notas.
 6. **Sin detalles de errores.** Si el servicio rechaza la consulta, el modelo
    sólo recibe "no se pudo consultar".
 7. **Nunca se reusan.** Una respuesta que leyó datos se guarda con

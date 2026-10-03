@@ -1,5 +1,6 @@
 import { ForbiddenException } from '@nestjs/common';
 import type { AuthenticatedUser } from '../auth/auth.types';
+import type { ClientsService } from '../clients/clients.service';
 import type { InventoryService } from '../inventory/inventory.service';
 import type { SalesService } from '../sales/sales.service';
 import type { VehiclePaymentsService } from '../vehicle-payments/vehicle-payments.service';
@@ -34,7 +35,9 @@ function actor(roleCode: string, permissions: string[]): AuthenticatedUser {
 }
 
 const seller = actor('VENDEDOR', ['ventas.consultar', 'inventario.consultar']);
+const clientsOnly = actor('X', ['clientes.consultar']);
 const administrative = actor('ADMINISTRATIVA', [
+  'clientes.consultar',
   'ventas.consultar',
   'ingresos.consultar',
   'pagos_vehiculo.consultar',
@@ -84,10 +87,12 @@ describe('AssistantToolsService', () => {
   const tracking = jest.fn();
   const paymentsFindAll = jest.fn();
   const inventoryFindAll = jest.fn();
+  const clientsFindAll = jest.fn();
   const tools = new AssistantToolsService(
     { findAll, tracking } as unknown as SalesService,
     { findAll: paymentsFindAll } as unknown as VehiclePaymentsService,
     { findAll: inventoryFindAll } as unknown as InventoryService,
+    { findAll: clientsFindAll } as unknown as ClientsService,
   );
   const names = (user: AuthenticatedUser) =>
     tools.definitions(user).map((definition) => definition.function.name);
@@ -100,6 +105,7 @@ describe('AssistantToolsService', () => {
   it('offers each query only with the permissions of its screen', () => {
     expect(names(seller)).toEqual(['buscar_operaciones', 'consultar_stock']);
     expect(names(administrative)).toEqual([
+      'buscar_clientes',
       'buscar_operaciones',
       'seguimiento_cobros',
       'pagos_patentes_seguros',
@@ -225,6 +231,55 @@ describe('AssistantToolsService', () => {
     expect(JSON.parse(answer)).toEqual({
       error: 'No se pudo consultar esa información.',
     });
+  });
+
+  it('searches clients only with clientes.consultar, without address or notes', async () => {
+    clientsFindAll.mockResolvedValue({
+      items: [
+        {
+          id: 'client-uuid',
+          fullName: 'VAZQUEZ LUCIANA',
+          documentType: 'DNI',
+          documentNumber: '34365310',
+          phone: '1125120415',
+          email: null,
+          address: 'Calle Falsa 123',
+          notes: 'nota interna',
+          active: true,
+        },
+      ],
+      total: 1,
+    });
+
+    expect(names(clientsOnly)).toEqual(['buscar_clientes']);
+    expect(names(seller)).not.toContain('buscar_clientes');
+    const answer = await tools.run(
+      'buscar_clientes',
+      '{"busqueda":"vazquez"}',
+      clientsOnly,
+    );
+
+    expect(clientsFindAll.mock.calls[0][0]).toMatchObject({
+      search: 'vazquez',
+      page: 1,
+      limit: 8,
+    });
+    expect(clientsFindAll.mock.calls[0][1]).toBe(clientsOnly);
+    expect(JSON.parse(answer)).toEqual({
+      resultados: [
+        {
+          cliente: 'VAZQUEZ LUCIANA',
+          documento: 'DNI 34365310',
+          telefono: '1125120415',
+          correo: null,
+          estado: 'Activo',
+        },
+      ],
+      hayMasResultados: false,
+    });
+    expect(
+      JSON.parse(await tools.run('buscar_clientes', '{}', seller)),
+    ).toEqual({ error: 'El usuario no tiene acceso a esa información.' });
   });
 
   it('defaults stock to units in stock and hides costs', async () => {

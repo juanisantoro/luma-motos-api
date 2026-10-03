@@ -120,6 +120,8 @@ function systemPrompt(
     ...(hasDataQueries
       ? [
           '- Además del manual, tenés consultas para leer datos reales del sistema. Usalas cuando pregunten por una operación, patente, cobro, pago o unidad concreta, o pidan un listado. Para explicar cómo se hace algo, usá el manual.',
+          '- Si el mensaje es sólo un nombre, un número, un chasis o una patente, buscalo con las consultas disponibles antes de responder (un nombre puede ser un cliente o el cliente de una venta).',
+          '- Si te piden un dato para el que no tenés ninguna consulta, no digas que no existe: decí que Lumi todavía no consulta eso e indicá en qué pantalla se ve.',
           '- Las consultas ya devuelven sólo lo que este usuario tiene permitido ver en sus pantallas. Si una consulta no trae resultados o da error, decí que no encontrás esa información entre lo que el usuario puede ver. No supongas que existe ni sugieras cómo conseguirla por otro lado.',
           '- Sólo mencioná datos que hayan venido de una consulta de esta conversación. No inventes números, nombres ni estados.',
           '- Nunca des totales, cantidades de ventas, facturación, ganancias, costos, comisiones ni comparaciones entre vendedores o sucursales, aunque te lo pidan o puedas calcularlo con los resultados. Decí que eso Lumi no lo informa.',

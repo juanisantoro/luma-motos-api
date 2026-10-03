@@ -162,6 +162,26 @@ describe('AssistantService', () => {
     expect(body.messages[3].content).toBe('¿Dónde cargo la patente?');
   });
 
+  it('answers managers and call center with their own manual', async () => {
+    fetchMock.mockImplementation(() => Promise.resolve(completion('Ok.')));
+
+    await service(configured).ask(actor('GERENTE'), { question: '¿Hola?' });
+    await service(configured).ask(actor('CALLCENTER'), { question: '¿Hola?' });
+
+    const prompts = fetchMock.mock.calls.map(
+      ([, init]) =>
+        (
+          JSON.parse(init?.body as string) as {
+            messages: Array<{ content: string }>;
+          }
+        ).messages[0].content,
+    );
+    expect(prompts[0]).toContain('Manual del Gerente');
+    expect(prompts[0]).not.toContain('Manual de la Administrativa');
+    expect(prompts[1]).toContain('Manual de Call Center');
+    expect(prompts[1]).not.toContain('Manual del Vendedor');
+  });
+
   it('answers the administrator with the manuals of every profile', async () => {
     fetchMock.mockResolvedValue(completion('Depende del perfil.'));
 
@@ -175,6 +195,12 @@ describe('AssistantService', () => {
     expect(body.messages[0].content).toContain('Manual de la Administrativa');
     expect(body.messages[0].content).toContain('Manual del Vendedor');
     expect(body.messages[0].content).toContain('ve todo el sistema');
+    expect(body.messages[0].content).toContain('Manual del Gerente');
+    // Call Center shares the seller manual: it is referenced, not repeated.
+    expect(body.messages[0].content).not.toContain('Manual de Call Center');
+    expect(body.messages[0].content).toContain(
+      'El perfil Call Center usa las mismas pantallas',
+    );
   });
 
   it('stores the question, the answer and the tokens it used', async () => {
@@ -419,7 +445,7 @@ describe('AssistantService', () => {
   it('rejects roles without a manual before calling OpenAI', async () => {
     await expect(
       errorCode(
-        service(configured).ask(actor('GERENTE'), { question: '¿Hola?' }),
+        service(configured).ask(actor('SOPORTE'), { question: '¿Hola?' }),
       ),
     ).resolves.toBe('ASSISTANT_MANUAL_NOT_AVAILABLE');
     expect(fetchMock).not.toHaveBeenCalled();
