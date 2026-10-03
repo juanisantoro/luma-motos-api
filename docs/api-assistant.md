@@ -1,7 +1,8 @@
 # Asistente de ayuda (Lumi)
 
-Responde preguntas de uso del sistema con el manual del rol del usuario. No
-consulta ni modifica datos: el modelo recibe sólo el manual y la conversación.
+Responde preguntas de uso del sistema con el manual del rol del usuario y,
+cuando hace falta, lee datos del sistema con las consultas de abajo. Nunca
+modifica nada.
 
 ## Endpoint
 
@@ -43,6 +44,50 @@ Errores tipados:
 El endpoint lleva `@AuditedMutation()` sólo para pasar `MutationAuditGuard`
 (es un POST): no escribe en la base ni pasa por `AuditService`.
 
+## Consultas de datos
+
+Lumi puede leer datos reales con un conjunto fijo de consultas
+(`src/assistant/assistant.tools.ts`). El modelo decide cuál pedir; el back la
+ejecuta y le devuelve el resultado para que redacte la respuesta.
+
+| Consulta | Servicio que usa | Permisos (los del endpoint) |
+| --- | --- | --- |
+| `buscar_operaciones` | `SalesService.findAll` | `ventas.consultar` |
+| `seguimiento_cobros` | `SalesService.tracking` | `ventas.consultar` + `ingresos.consultar` |
+| `pagos_patentes_seguros` | `VehiclePaymentsService.findAll` | `pagos_vehiculo.consultar` |
+| `consultar_stock` | `InventoryService.findAll` | `inventario.consultar` |
+
+Reglas de seguridad (valen para cualquier consulta que se agregue):
+
+1. **Mismo servicio que la pantalla, con el usuario de la sesión.** Sin SQL
+   propio. El alcance por sucursal, la restricción del vendedor a sus propias
+   ventas y el aislamiento por organización son los de la pantalla, porque es
+   el mismo código.
+2. **Mismos permisos que el endpoint.** Sin el permiso, la consulta no se le
+   ofrece al modelo; si el modelo la pide igual, se rechaza y queda un warning
+   en el log.
+3. **El modelo no elige de quién son los datos.** No existen parámetros de
+   vendedor, sucursal ni organización: sólo texto de búsqueda y filtros de
+   estado. Cualquier otro parámetro que mande se descarta.
+4. **Sólo lectura, hasta 8 filas, sin totales.** El resultado lleva un
+   `hayMasResultados` booleano en lugar de la cantidad. El prompt además le
+   prohíbe dar totales, cantidades de ventas, facturación, costos, comisiones
+   o comparaciones entre vendedores o sucursales.
+5. **Lista blanca de campos.** Al modelo no le llegan ids, precio de lista ni
+   mínimo, costos, documento o teléfono del cliente, notas ni proveedor.
+6. **Sin detalles de errores.** Si el servicio rechaza la consulta, el modelo
+   sólo recibe "no se pudo consultar".
+7. **Nunca se reusan.** Una respuesta que leyó datos se guarda con
+   `uso_datos = true` y queda fuera del reuso de respuestas (además hay un
+   CHECK en la base).
+
+Los datos que devuelve una consulta (nombre del cliente, importes, patentes)
+se envían a OpenAI para redactar la respuesta, y la respuesta queda guardada
+en `consultas_asistente`.
+
+Un perfil sin ninguno de esos permisos no tiene consultas: Lumi le responde
+sólo con el manual.
+
 ## Manuales
 
 El manual se elige por `role.code` de la sesión (`src/assistant/assistant.manuals.ts`),
@@ -69,8 +114,9 @@ registra a mano en `assistant.manuals.ts`.
 
 ## Registro de preguntas y reuso de respuestas
 
-Cada consulta queda en la tabla `consultas_asistente` (migración
-`20261003010000_assistant_queries`, RLS por organización): pregunta, respuesta,
+Cada consulta queda en la tabla `consultas_asistente` (migraciones
+`20261003010000_assistant_queries` y `20261003020000_assistant_queries_data`,
+RLS por organización): pregunta, respuesta,
 usuario, sucursal, rol, `cubierta`, modelo y tokens (`tokens_entrada`,
 `tokens_entrada_cache`, `tokens_salida`).
 

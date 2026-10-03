@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import type { AuthenticatedUser } from '../auth/auth.types';
 import { EnvironmentVariables } from '../config/environment';
 import type { PrismaService } from '../prisma/prisma.service';
+import type { AssistantToolsService } from './assistant.tools';
 import {
   ASSISTANT_NOT_COVERED_PREFIX,
   AssistantService,
@@ -62,7 +63,10 @@ describe('AssistantService', () => {
     .mockImplementation(() => undefined);
 
   // Rows returned by the stored-answer lookup, and the inserts it records.
-  const queryRaw = jest.fn<Promise<unknown[]>, [{ values: unknown[] }]>();
+  const queryRaw = jest.fn<
+    Promise<unknown[]>,
+    [{ values: unknown[]; strings: string[] }]
+  >();
   const executeRaw = jest.fn<Promise<number>, [{ values: unknown[] }]>();
   const withTenant = jest.fn(
     (_scope: unknown, operation: (tx: unknown) => Promise<unknown>) =>
@@ -72,12 +76,23 @@ describe('AssistantService', () => {
     .spyOn(Logger.prototype, 'warn')
     .mockImplementation(() => undefined);
 
+  // Data queries offered to the model and their results.
+  const toolDefinitions = jest.fn<unknown[], [AuthenticatedUser]>();
+  const runTool = jest.fn<
+    Promise<string>,
+    [string, string, AuthenticatedUser]
+  >();
+
   function service(values: Partial<EnvironmentVariables>) {
     return new AssistantService(
       {
         get: jest.fn((key: keyof EnvironmentVariables) => values[key]),
       } as unknown as ConfigService<EnvironmentVariables, true>,
       { withTenant } as unknown as PrismaService,
+      {
+        definitions: toolDefinitions,
+        run: runTool,
+      } as unknown as AssistantToolsService,
     );
   }
 
@@ -92,6 +107,11 @@ describe('AssistantService', () => {
     jest.clearAllMocks();
     queryRaw.mockResolvedValue([]);
     executeRaw.mockResolvedValue(1);
+    toolDefinitions.mockReturnValue([]);
+    withTenant.mockImplementation(
+      (_scope: unknown, operation: (tx: unknown) => Promise<unknown>) =>
+        operation({ $queryRaw: queryRaw, $executeRaw: executeRaw }),
+    );
   });
 
   afterAll(() => {
@@ -242,6 +262,129 @@ describe('AssistantService', () => {
 
     expect(result).toEqual({ answer: 'Listo.', covered: true, cached: false });
     expect(loggerWarn).toHaveBeenCalledTimes(2);
+  });
+
+  describe('data queries', () => {
+    const definition = {
+      type: 'function',
+      function: {
+        name: 'buscar_operaciones',
+        description: 'x',
+        parameters: {},
+      },
+    };
+    const toolCall = (name: string) =>
+      new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: null,
+                tool_calls: [
+                  {
+                    id: 'call-1',
+                    type: 'function',
+                    function: { name, arguments: '{"busqueda":"1048"}' },
+                  },
+                ],
+              },
+            },
+          ],
+          usage: { prompt_tokens: 100, completion_tokens: 10 },
+        }),
+        { status: 200 },
+      );
+
+    it('runs the query as the session user and answers with its result', async () => {
+      toolDefinitions.mockReturnValue([definition]);
+      runTool.mockResolvedValue('{"resultados":[{"operacion":"1048"}]}');
+      fetchMock
+        .mockResolvedValueOnce(toolCall('buscar_operaciones'))
+        .mockResolvedValueOnce(completion('La operación 1048 está aprobada.'));
+      const seller = actor('VENDEDOR');
+
+      const result = await service(configured).ask(seller, {
+        question: '¿Cómo está la operación 1048?',
+      });
+
+      expect(result).toEqual({
+        answer: 'La operación 1048 está aprobada.',
+        covered: true,
+        cached: false,
+      });
+      expect(runTool).toHaveBeenCalledWith(
+        'buscar_operaciones',
+        '{"busqueda":"1048"}',
+        seller,
+      );
+      const first = JSON.parse(fetchMock.mock.calls[0][1]?.body as string) as {
+        tools: unknown[];
+        messages: Array<{ content: string }>;
+      };
+      expect(first.tools).toEqual([definition]);
+      expect(first.messages[0].content).toContain('Nunca des totales');
+      const second = JSON.parse(fetchMock.mock.calls[1][1]?.body as string) as {
+        messages: Array<{ role: string; content: string }>;
+      };
+      expect(second.messages.at(-1)).toEqual({
+        role: 'tool',
+        tool_call_id: 'call-1',
+        content: '{"resultados":[{"operacion":"1048"}]}',
+      });
+      // Stored as a data answer (last value), so it is never reused.
+      expect(executeRaw.mock.calls[0][0].values.at(-1)).toBe(true);
+    });
+
+    it('offers no queries and keeps the no-data rule when the user has none', async () => {
+      fetchMock.mockResolvedValue(completion('Mirá la pantalla Operaciones.'));
+
+      await service(configured).ask(actor('VENDEDOR'), {
+        question: '¿Cuánto vendimos este mes?',
+      });
+
+      const body = JSON.parse(fetchMock.mock.calls[0][1]?.body as string) as {
+        tools?: unknown[];
+        messages: Array<{ content: string }>;
+      };
+      expect(body.tools).toBeUndefined();
+      expect(body.messages[0].content).toContain(
+        'No tenés acceso a los datos del sistema',
+      );
+      expect(runTool).not.toHaveBeenCalled();
+    });
+
+    it('stops offering queries after a few rounds so the model must answer', async () => {
+      toolDefinitions.mockReturnValue([definition]);
+      runTool.mockResolvedValue('{"resultados":[]}');
+      fetchMock.mockImplementation((_url, init) => {
+        const body = JSON.parse(init?.body as string) as { tools?: unknown[] };
+        return Promise.resolve(
+          body.tools
+            ? toolCall('buscar_operaciones')
+            : completion('No la encuentro.'),
+        );
+      });
+
+      const result = await service(configured).ask(actor('ADMINISTRATIVA'), {
+        question: '¿Cómo está la operación 9999?',
+      });
+
+      expect(result.answer).toBe('No la encuentro.');
+      expect(runTool).toHaveBeenCalledTimes(3);
+      expect(fetchMock).toHaveBeenCalledTimes(4);
+    });
+
+    it('only reuses stored answers that did not use data', async () => {
+      await service(configured)
+        .ask(actor('ADMINISTRATIVA'), {
+          question: '¿Cómo cargo un gasto?',
+        })
+        .catch(() => undefined);
+
+      expect(queryRaw.mock.calls[0][0].strings.join('?')).toContain(
+        'uso_datos = false',
+      );
+    });
   });
 
   it('normalizes questions and versions the prompt', () => {

@@ -1806,8 +1806,9 @@ enum tipo_organizacion_luma {
 /// Lumi (asistente de ayuda): registro de preguntas y respuestas, y fuente
 /// del reuso de respuestas. Not modeled with Prisma relations on purpose
 /// (same rationale as pagos_vehiculo above): AssistantService reads/writes
-/// it with raw SQL. Foreign keys, the cache CHECK and RLS live in the
-/// 20261003010000_assistant_queries migration.
+/// it with raw SQL. Foreign keys, the CHECKs and RLS live in the
+/// 20261003010000_assistant_queries and 20261003020000_assistant_queries_data
+/// migrations.
 model consultas_asistente {
   id                   String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   organizacion_id      String   @db.Uuid
@@ -1827,6 +1828,7 @@ model consultas_asistente {
   tokens_entrada_cache Int?
   tokens_salida        Int?
   creado_en            DateTime @default(now()) @db.Timestamptz(6)
+  uso_datos            Boolean  @default(false)
 
   @@unique([id, organizacion_id], map: "consultas_asistente_id_organizacion_unico")
   @@index([organizacion_id, creado_en(sort: Desc)], map: "consultas_asistente_organizacion_fecha_indice")

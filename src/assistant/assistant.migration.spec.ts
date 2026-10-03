@@ -37,6 +37,25 @@ describe('Assistant questions database invariants', () => {
     );
   });
 
+  it('never lets an answer that read data be a reused one', () => {
+    const dataMigration = readFileSync(
+      join(
+        process.cwd(),
+        'prisma',
+        'migrations',
+        '20261003020000_assistant_queries_data',
+        'migration.sql',
+      ),
+      'utf8',
+    );
+    expect(dataMigration).toContain(
+      'ADD COLUMN "uso_datos" BOOLEAN NOT NULL DEFAULT false',
+    );
+    expect(dataMigration).toContain(
+      'CHECK (NOT ("uso_datos" AND "desde_cache"))',
+    );
+  });
+
   it('only marks an answer as reused when it points at its origin', () => {
     expect(migration).toContain(
       'CHECK ("desde_cache" = ("consulta_origen_id" IS NOT NULL))',
