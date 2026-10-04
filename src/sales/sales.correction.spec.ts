@@ -266,6 +266,55 @@ describe('SalesService.correct', () => {
     );
   });
 
+  it('stamps the delivery date when the sale is marked as delivered', async () => {
+    const { service, transaction } = harness(operation('APROBADA'));
+
+    await service.correct(
+      operationId,
+      { expectedVersion: 2, deliveryStatus: 'ENTREGADO' },
+      actor,
+    );
+
+    // The database rejects ENTREGADO without entregado_en
+    // (operacion_entregado_en_valido).
+    const data = transaction.operaciones.update.mock.calls[0][0].data as {
+      estado_entrega: string;
+      entregado_en: Date | null | undefined;
+    };
+    expect(data.estado_entrega).toBe('ENTREGADO');
+    expect(data.entregado_en).toBeInstanceOf(Date);
+  });
+
+  it('keeps the delivery date untouched when the delivery status is not sent', async () => {
+    const { service, transaction } = harness(operation('APROBADA'));
+
+    await service.correct(
+      operationId,
+      { expectedVersion: 2, notes: 'Cambio de vendedor' },
+      actor,
+    );
+
+    const data = transaction.operaciones.update.mock.calls[0][0].data as {
+      entregado_en: Date | null | undefined;
+    };
+    expect(data.entregado_en).toBeUndefined();
+  });
+
+  it('clears the delivery date when the sale leaves the delivered status', async () => {
+    const { service, transaction } = harness(operation('APROBADA'));
+
+    await service.correct(
+      operationId,
+      { expectedVersion: 2, deliveryStatus: 'NO_PROGRAMADA' },
+      actor,
+    );
+
+    const data = transaction.operaciones.update.mock.calls[0][0].data as {
+      entregado_en: Date | null | undefined;
+    };
+    expect(data.entregado_en).toBeNull();
+  });
+
   it('moves a cash sale to cash + credit keeping the cash component', async () => {
     const { service, transaction } = harness(operation('APROBADA'));
 

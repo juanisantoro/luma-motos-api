@@ -10,6 +10,7 @@ import {
   direccion_caja_luma,
   estado_reserva_luma,
   luma_estado_inventario,
+  luma_estado_entrega,
   luma_estado_operacion,
   modalidad_patentamiento_luma,
   plataforma_pago_luma,
@@ -518,6 +519,17 @@ const CASH_PAYMENT_PLATFORMS: plataforma_pago_luma[] = [
   plataforma_pago_luma.MOTO_EFECTIVO,
   plataforma_pago_luma.MOTO_EFECTIVO_CREDITO,
 ];
+
+// La base exige fecha de entrega cuando la operación queda ENTREGADO
+// (operacion_entregado_en_valido). Se conserva la que ya tenía; al salir de
+// ENTREGADO se limpia. Sin cambio de estado no se toca.
+export function deliveredAtFor(
+  status: luma_estado_entrega | undefined,
+  current?: Date | null,
+): Date | null | undefined {
+  if (status === undefined) return undefined;
+  return status === 'ENTREGADO' ? (current ?? new Date()) : null;
+}
 
 @Injectable()
 export class SalesService {
@@ -1664,6 +1676,7 @@ export class SalesService {
             respaldo_garante: input.guarantor?.trim(),
             debe: input.debt,
             estado_entrega: input.deliveryStatus,
+            entregado_en: deliveredAtFor(input.deliveryStatus),
             estado_documentacion: input.papersDelivered
               ? 'COMPLETA'
               : undefined,
@@ -1887,6 +1900,10 @@ export class SalesService {
               ? new Date(input.operationDate)
               : undefined,
             estado_entrega: input.deliveryStatus,
+            entregado_en: deliveredAtFor(
+              input.deliveryStatus,
+              current.entregado_en,
+            ),
             estado_documentacion:
               input.papersDelivered === undefined
                 ? undefined
@@ -2072,6 +2089,10 @@ export class SalesService {
             patente_estimada_desde: estimate?.from,
             patente_estimada_hasta: estimate?.to,
             estado_entrega: input.deliveryStatus,
+            entregado_en: deliveredAtFor(
+              input.deliveryStatus,
+              current.entregado_en,
+            ),
             estado_documentacion:
               input.papersDelivered === undefined
                 ? undefined
