@@ -651,7 +651,9 @@ export class SalesService {
             relationLoadStrategy: 'join',
             where,
             include: operationInclude,
-            orderBy: [{ fecha_operacion: 'desc' }, { id: 'desc' }],
+            // Mismo día: la más nueva arriba. La fecha no lleva hora y el id
+            // es un UUID, así que desempatar por id las dejaba mezcladas.
+            orderBy: [{ fecha_operacion: 'desc' }, { numero_operacion: 'desc' }],
             skip: (query.page - 1) * query.limit,
             take: query.limit,
           }),
@@ -696,7 +698,7 @@ export class SalesService {
           };
     const orderBy = [
       { fecha_operacion: 'desc' as const },
-      { id: 'desc' as const },
+      { numero_operacion: 'desc' as const },
     ];
     return this.prisma.withTenant(this.scope(actor), async (tx) => {
       let total: number;
