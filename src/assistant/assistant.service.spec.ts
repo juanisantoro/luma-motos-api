@@ -352,10 +352,15 @@ describe('AssistantService', () => {
         seller,
       );
       const first = JSON.parse(fetchMock.mock.calls[0][1]?.body as string) as {
-        tools: unknown[];
+        tools: Array<{ function: { name: string } }>;
         messages: Array<{ content: string }>;
       };
-      expect(first.tools).toEqual([definition]);
+      // The data query plus the manual reader, which is always on offer.
+      expect(first.tools[0]).toEqual(definition);
+      expect(first.tools.map((tool) => tool.function.name)).toEqual([
+        'buscar_operaciones',
+        'leer_manual',
+      ]);
       expect(first.messages[0].content).toContain('Nunca des totales');
       const second = JSON.parse(fetchMock.mock.calls[1][1]?.body as string) as {
         messages: Array<{ role: string; content: string }>;
@@ -377,10 +382,12 @@ describe('AssistantService', () => {
       });
 
       const body = JSON.parse(fetchMock.mock.calls[0][1]?.body as string) as {
-        tools?: unknown[];
+        tools: Array<{ function: { name: string } }>;
         messages: Array<{ content: string }>;
       };
-      expect(body.tools).toBeUndefined();
+      expect(body.tools.map((tool) => tool.function.name)).toEqual([
+        'leer_manual',
+      ]);
       expect(body.messages[0].content).toContain(
         'No tenés acceso a los datos del sistema',
       );
@@ -406,6 +413,110 @@ describe('AssistantService', () => {
       expect(result.answer).toBe('No la encuentro.');
       expect(runTool).toHaveBeenCalledTimes(3);
       expect(fetchMock).toHaveBeenCalledTimes(4);
+    });
+
+    it('sends the index and only the sections about the question, not the whole manual', async () => {
+      fetchMock.mockImplementation(() => Promise.resolve(completion('Ok.')));
+      const prompt = async (role: string, question: string) => {
+        fetchMock.mockClear();
+        await service(configured).ask(actor(role), { question });
+        return (
+          JSON.parse(fetchMock.mock.calls[0][1]?.body as string) as {
+            messages: Array<{ content: string }>;
+          }
+        ).messages[0].content;
+      };
+
+      const commissions = await prompt('GERENTE', '¿Cómo pago una comisión?');
+      const [rules, sections] = commissions.split(
+        '===== SECCIONES DEL MANUAL PARA ESTA PREGUNTA =====',
+      );
+      // Every screen is still named in the index...
+      expect(rules).toContain('Clientes en rojo');
+      expect(rules).toContain('Patentamiento');
+      // ...but only the matching sections travel with their text.
+      expect(sections).toContain('### Pagar');
+      expect(sections).not.toContain('### Clientes en rojo');
+      expect(sections).not.toContain('### Patentamiento');
+      expect(sections.length).toBeLessThan(10_000);
+
+      // The index is the same for every question, so OpenAI can cache it.
+      const red = await prompt('GERENTE', '¿Qué es clientes en rojo?');
+      expect(red.startsWith(rules)).toBe(true);
+      expect(red).toContain('### Clientes en rojo');
+
+      // The administrator used to get every manual in full on each call.
+      const admin = await prompt('ADMINISTRADOR', '¿Cómo creo un usuario?');
+      expect(admin).toContain('### Crear un usuario');
+      expect(admin.length).toBeLessThan(25_000);
+
+      // A name to look up needs no manual text at all.
+      expect(await prompt('GERENTE', 'carrizo alejandro')).toContain(
+        '(Ninguna sección coincide con la pregunta.)',
+      );
+    });
+
+    it('keeps the subject of the previous question when choosing sections', async () => {
+      fetchMock.mockResolvedValue(completion('Ok.'));
+
+      await service(configured).ask(actor('GERENTE'), {
+        question: '¿Y después?',
+        history: [
+          { role: 'user', content: '¿Cómo pago una comisión?' },
+          { role: 'assistant', content: 'Andá a Comisiones → Pagar.' },
+        ],
+      });
+
+      const body = JSON.parse(fetchMock.mock.calls[0][1]?.body as string) as {
+        messages: Array<{ content: string }>;
+      };
+      expect(body.messages[0].content).toContain('### Pagar');
+    });
+
+    it('lets the model read a section from the index without counting it as data', async () => {
+      const readManual = (titles: string[]) =>
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: null,
+                  tool_calls: [
+                    {
+                      id: 'call-1',
+                      type: 'function',
+                      function: {
+                        name: 'leer_manual',
+                        arguments: JSON.stringify({ titulos: titles }),
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          }),
+          { status: 200 },
+        );
+      fetchMock
+        .mockResolvedValueOnce(readManual(['Clientes en rojo', 'no existe']))
+        .mockResolvedValueOnce(completion('Está en Clientes.'));
+
+      await service(configured).ask(actor('GERENTE'), {
+        question: 'carrizo alejandro',
+      });
+
+      const second = JSON.parse(fetchMock.mock.calls[1][1]?.body as string) as {
+        messages: Array<{ role: string; content: string }>;
+      };
+      const result = second.messages.at(-1);
+      expect(result?.role).toBe('tool');
+      expect(result?.content).toContain(
+        '[Manual del Gerente › Clientes]\n### Clientes en rojo',
+      );
+      // It is the manual, not user data: no data query ran and the answer
+      // stays reusable (last stored value).
+      expect(runTool).not.toHaveBeenCalled();
+      expect(executeRaw.mock.calls[0][0].values.at(-1)).toBe(false);
     });
 
     it('only reuses stored answers that did not use data', async () => {

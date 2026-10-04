@@ -118,6 +118,31 @@ node scripts/sync-assistant-manuals.mjs ../luma-motos-ui/src/features/manual/con
 Hay que volver a correrlo cada vez que cambia un manual. Un rol nuevo además se
 registra a mano en `assistant.manuals.ts`.
 
+### Qué parte del manual va en cada pregunta
+
+El manual entero ya no viaja en cada llamada: era casi todo el gasto de tokens
+(al `ADMINISTRADOR` le iban los de todos los perfiles). `assistant.manual-sections.ts`
+parte cada manual por sus títulos (`#`, `##`, `###`; los `####` quedan dentro de
+su sección) y el prompt lleva:
+
+1. Las reglas y el **índice** completo (capítulos y secciones). Es igual para
+   todas las preguntas de un rol, así que OpenAI lo puede cachear.
+2. Las **secciones elegidas** para la pregunta: hasta 5 y hasta 9.000
+   caracteres, por coincidencia de palabras con la pregunta y, con menos peso,
+   con el mensaje anterior del usuario. No hay llamada extra a OpenAI: la misma
+   pregunta arma siempre el mismo prompt. Un nombre o un número a buscar no
+   coincide con ninguna sección y no lleva texto del manual.
+
+Si el tema figura en el índice pero su sección no fue elegida, el modelo la pide
+con `leer_manual` (títulos del índice, hasta 3 secciones). No es una consulta de
+datos: no exige permisos, no pasa por `AssistantToolsService` y no marca la
+respuesta como `uso_datos`. Cuenta dentro de las mismas rondas que las consultas.
+
+`version_manual` se sigue calculando con las reglas y el manual completo, no con
+las secciones enviadas.
+
+Los límites están en `MAX_SELECTED_SECTIONS` y `MAX_SELECTED_CHARS`.
+
 ## Configuración
 
 | Variable | Default | Uso |

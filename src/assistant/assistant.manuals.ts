@@ -1,3 +1,8 @@
+import {
+  ManualSection,
+  manualIndex,
+  parseManual,
+} from './assistant.manual-sections';
 import { ADMINISTRADOR_MANUAL } from './manuals/administrador.manual';
 import { ADMINISTRATIVA_MANUAL } from './manuals/administrativa.manual';
 import { CALLCENTER_MANUAL } from './manuals/callcenter.manual';
@@ -26,24 +31,54 @@ const SAME_AS: Record<string, string> = { CALLCENTER: 'VENDEDOR' };
 export interface AssistantManual {
   // 'own': el manual del perfil del usuario. 'all': los de todos los perfiles.
   scope: 'own' | 'all';
+  // Texto completo. Ya no va al modelo: sólo identifica la versión del manual.
   text: string;
+  // Índice de capítulos y secciones, que sí va en cada pregunta.
+  index: string;
+  // Secciones entre las que se elige lo que va en cada pregunta.
+  sections: ManualSection[];
 }
 
+const cache = new Map<string, AssistantManual | null>();
+
 export function manualForRole(roleCode: string): AssistantManual | null {
+  if (!cache.has(roleCode)) cache.set(roleCode, buildManual(roleCode));
+  return cache.get(roleCode) ?? null;
+}
+
+function buildManual(roleCode: string): AssistantManual | null {
   if (!ALL_MANUALS_ROLES.has(roleCode)) {
     const own = MANUALS[roleCode];
-    return own ? { scope: 'own', text: own.text } : null;
+    if (!own) return null;
+    const parsed = parseManual(own);
+    return {
+      scope: 'own',
+      text: own.text,
+      index: `${parsed.title}\n${manualIndex(parsed)}`,
+      sections: parsed.sections,
+    };
+  }
+  const sections: ManualSection[] = [];
+  const index: string[] = [];
+  const text: string[] = [];
+  for (const [code, manual] of Object.entries(MANUALS)) {
+    const header = `===== MANUAL DEL PERFIL ${manual.profile.toUpperCase()} =====`;
+    const twin = SAME_AS[code];
+    if (twin) {
+      const note = `El perfil ${manual.profile} usa las mismas pantallas y pasos que el perfil ${MANUALS[twin].profile}: vale su manual.`;
+      index.push(`${header}\n${note}`);
+      text.push(`${header}\n${note}`);
+      continue;
+    }
+    const parsed = parseManual(manual);
+    sections.push(...parsed.sections);
+    index.push(`${header}\n${parsed.title}\n${manualIndex(parsed)}`);
+    text.push(`${header}\n${manual.text}`);
   }
   return {
     scope: 'all',
-    text: Object.entries(MANUALS)
-      .map(([code, manual]) => {
-        const twin = SAME_AS[code];
-        const body = twin
-          ? `El perfil ${manual.profile} usa las mismas pantallas y pasos que el perfil ${MANUALS[twin].profile}: vale su manual.`
-          : manual.text;
-        return `===== MANUAL DEL PERFIL ${manual.profile.toUpperCase()} =====\n${body}`;
-      })
-      .join('\n\n'),
+    text: text.join('\n\n'),
+    index: index.join('\n\n'),
+    sections,
   };
 }
