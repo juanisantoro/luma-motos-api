@@ -79,6 +79,7 @@ type InstallmentRow = {
   operacion_id: string;
   numero_operacion: bigint;
   cliente_nombre: string;
+  sucursal_id: string;
 };
 
 function parseBusinessDate(value: string): Date {
@@ -313,6 +314,8 @@ export class CreditPlansService {
       operationId: row.operacion_id,
       operationNumber: row.numero_operacion.toString(),
       clientName: row.cliente_nombre,
+      // Sucursal de la venta: la cuota se cobra en una caja de esa sucursal.
+      branchId: row.sucursal_id,
       number: row.numero_cuota,
       amount: Number(row.monto),
       dueDate: toIsoDate(row.vencimiento),
@@ -487,7 +490,8 @@ export class CreditPlansService {
           ELSE c.estado
         END AS estado_efectivo,
         c.monto_pagado, c.fecha_pago, c.creado_en, c.actualizado_en,
-        oc.operacion_id, o.numero_operacion, cl.nombre_completo AS cliente_nombre
+        oc.operacion_id, o.numero_operacion, cl.nombre_completo AS cliente_nombre,
+        o.sucursal_id
       FROM cuotas_credito c
       JOIN operacion_creditos oc ON oc.id = c.operacion_credito_id
       JOIN operaciones o ON o.id = oc.operacion_id

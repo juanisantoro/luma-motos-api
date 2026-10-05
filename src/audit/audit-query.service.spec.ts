@@ -413,7 +413,7 @@ describe('AuditQueryService', () => {
   it('lists money movements with who registered, the handover and totals', async () => {
     tx.movimientos_caja.count.mockResolvedValue(1);
     tx.movimientos_caja.findMany.mockResolvedValue([movement()]);
-    tx.movimientos_caja.groupBy.mockResolvedValue([
+    tx.movimientos_caja.groupBy.mockResolvedValueOnce([
       {
         cuenta_caja_id: 'acc-1',
         direccion: 'CREDITO',
@@ -430,9 +430,28 @@ describe('AuditQueryService', () => {
         _sum: { importe: new Prisma.Decimal('50') },
       },
     ]);
+    // Efectivo cobrado y todavía sin confirmar por quien lo recibe.
+    tx.movimientos_caja.groupBy.mockResolvedValueOnce([
+      {
+        cuenta_caja_id: 'acc-1',
+        _sum: { importe: new Prisma.Decimal('20000') },
+      },
+    ]);
     tx.cuentas_caja.findMany.mockResolvedValue([
-      { id: 'acc-1', moneda: 'ARS' },
-      { id: 'acc-usd', moneda: 'USD' },
+      {
+        id: 'acc-usd',
+        nombre: 'Caja Lucas dólares',
+        tipo_cuenta: 'SOCIO',
+        moneda: 'USD',
+        sucursales: { id: BRANCH, codigo: 'SM', nombre: 'San Miguel' },
+      },
+      {
+        id: 'acc-1',
+        nombre: 'Caja Lucas',
+        tipo_cuenta: 'SOCIO',
+        moneda: 'ARS',
+        sucursales: { id: BRANCH, codigo: 'SM', nombre: 'San Miguel' },
+      },
     ]);
 
     const page = await service.moneyMovements({ page: 1, limit: 50 }, actor());
@@ -441,6 +460,25 @@ describe('AuditQueryService', () => {
     expect(page.totals).toEqual([
       { currency: 'ARS', credit: '150000.5', debit: '0' },
       { currency: 'USD', credit: '800', debit: '50' },
+    ]);
+    // Una fila por caja, con su sucursal, para el cierre.
+    expect(page.summary).toEqual([
+      {
+        account: { id: 'acc-1', name: 'Caja Lucas', type: 'SOCIO' },
+        branch: { id: BRANCH, code: 'SM', name: 'San Miguel' },
+        currency: 'ARS',
+        credit: '150000.5',
+        debit: '0',
+        pendingHandover: '20000',
+      },
+      {
+        account: { id: 'acc-usd', name: 'Caja Lucas dólares', type: 'SOCIO' },
+        branch: { id: BRANCH, code: 'SM', name: 'San Miguel' },
+        currency: 'USD',
+        credit: '800',
+        debit: '50',
+        pendingHandover: '0',
+      },
     ]);
     expect(page.items[0]).toMatchObject({
       createdAt: new Date('2026-10-04T15:30:12.000Z'),
@@ -461,7 +499,7 @@ describe('AuditQueryService', () => {
     });
     const where = firstArg(tx.movimientos_caja.findMany).where;
     expect(where.organizacion_id).toBe(ORG);
-    expect(where.cuentas_caja).toBeUndefined();
+    expect(where.cuentas_caja).toEqual({ AND: [{}, {}] });
   });
 
   it('scopes money movements to the branches of the user and hides purchase amounts', async () => {
@@ -499,10 +537,17 @@ describe('AuditQueryService', () => {
       }),
     ]);
 
-    const page = await service.moneyMovements({ page: 1, limit: 50 }, scoped);
+    const page = await service.moneyMovements(
+      { page: 1, limit: 50, branchId: BRANCH },
+      scoped,
+    );
 
+    // Alcance del usuario y, además, la sucursal pedida en el filtro.
     expect(firstArg(tx.movimientos_caja.findMany).where.cuentas_caja).toEqual({
-      OR: [{ sucursal_id: null }, { sucursal_id: { in: [BRANCH] } }],
+      AND: [
+        { OR: [{ sucursal_id: null }, { sucursal_id: { in: [BRANCH] } }] },
+        { sucursal_id: BRANCH },
+      ],
     });
     expect(tx.movimientos_caja.groupBy).not.toHaveBeenCalled();
     expect(page.totals).toBeNull();

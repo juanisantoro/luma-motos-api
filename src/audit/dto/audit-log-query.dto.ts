@@ -77,6 +77,11 @@ export class AuditMoneyQueryDto extends AuditPageDto {
   @IsUUID()
   accountId?: string;
 
+  /** Sucursal de la cuenta de caja. */
+  @IsOptional()
+  @IsUUID()
+  branchId?: string;
+
   @IsOptional()
   @IsIn(Object.values(direccion_caja_luma))
   direction?: direccion_caja_luma;

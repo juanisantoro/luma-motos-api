@@ -653,6 +653,27 @@ export class CashService {
       organizationId,
       BranchScope.forActor(actor),
     );
+    // Las cuentas históricas importadas sólo conservan lo que vino del Excel:
+    // un cobro o pago nuevo va a una cuenta de caja actual.
+    if (account.es_importada)
+      financialBadRequest(
+        'HISTORIC_CASH_ACCOUNT',
+        'Imported historic cash accounts do not accept new movements',
+      );
+    // Un cobro entra a una caja de la sucursal del ingreso: así el cierre de
+    // cada sucursal sale de sus propias cajas. Las compartidas (sin sucursal)
+    // quedan para pagos y gastos, no para cobros.
+    if ('ingreso_id' in source) {
+      const income = await tx.ingresos.findFirst({
+        where: { id: source.ingreso_id, organizacion_id: organizationId },
+        select: { sucursal_id: true },
+      });
+      if (income && account.sucursal_id !== income.sucursal_id)
+        financialBadRequest(
+          'CASH_ACCOUNT_BRANCH_MISMATCH',
+          'A collection must enter a cash account of the income branch',
+        );
+    }
     if (account.moneda !== currency)
       financialBadRequest(
         'CURRENCY_MISMATCH',
@@ -1050,7 +1071,12 @@ export class CashService {
   ) {
     const account = await tx.cuentas_caja.findFirst({
       where: { id, organizacion_id: organizationId, activo: true },
-      select: { id: true, moneda: true, sucursal_id: true },
+      select: {
+        id: true,
+        moneda: true,
+        sucursal_id: true,
+        es_importada: true,
+      },
     });
     if (!account)
       financialBadRequest(

@@ -106,6 +106,7 @@ carga. Respeta el alcance de sucursal igual que `GET /cash/movements`
 | --- | --- |
 | `page`, `limit`, `from`, `to` | Como arriba; el rango es sobre `creado_en` (cuándo se cargó), no sobre la fecha contable. |
 | `accountId` | Cuenta de caja. |
+| `branchId` | Sucursal de la cuenta de caja. |
 | `direction` | `CREDITO` (entrada) o `DEBITO` (salida). |
 | `type` | `INGRESO`, `EGRESO`, `TRANSFERENCIA_ENTRANTE`, `TRANSFERENCIA_SALIENTE`, `REINTEGRO`, `AJUSTE`. |
 | `actorId` | Usuario que registró el movimiento. |
@@ -124,6 +125,28 @@ cuándo y con qué nota) o `reversalOfId` si el movimiento es una reversa.
 sus reversas), como strings decimales y **una fila por moneda** de la cuenta
 (`[{ currency, credit, debit }]`): pesos y dólares no se suman. Cada
 movimiento trae `account.currency`.
+
+`summary` es el resumen para el cierre: una fila por caja con movimientos
+vigentes en el filtro (`account`, `branch`, `currency`, `credit`, `debit`,
+`pendingHandover` = efectivo cobrado que todavía no confirmó quien lo
+recibe), ordenada por sucursal y caja. Es `null` cuando `totals` es `null`.
+
+## Reglas de las cajas
+
+- Un cobro (movimiento con `ingreso_id`) sólo entra a una cuenta **de la
+  sucursal del ingreso**: otra sucursal o una cuenta compartida devuelven
+  `400 CASH_ACCOUNT_BRANCH_MISMATCH`. Pagos de gastos, compras y comisiones
+  siguen aceptando cuentas compartidas.
+- Las cuentas históricas importadas (`es_importada`) no reciben movimientos
+  nuevos: `400 HISTORIC_CASH_ACCOUNT`. Reversar lo que ya tienen sigue
+  permitido.
+- La cuenta tiene que ser de la moneda del registro: `400 CURRENCY_MISMATCH`.
+
+Para pasar a una caja activa los cobros que quedaron en una histórica:
+`npm run caja:reasignar-historicas -- --actor-email <correo>` (simulación) y
+lo mismo con `--apply`. Reversa cada cobro en la histórica y lo vuelve a
+registrar en la caja del mismo socio, sucursal y moneda; lo deja en la
+auditoría como `INCOME_COLLECTION_REASSIGNED`.
 
 En una cuenta compartida, un usuario acotado ve el movimiento pero no la
 venta ni el cliente cuando el ingreso o el gasto es de otra sucursal.

@@ -70,6 +70,7 @@ export const AUDIT_ACTIONS: Record<string, CatalogEntry> = {
   INCOME_UPDATED: entry('DINERO', 'Ingreso modificado'),
   INCOME_COLLECTION_REGISTERED: entry('DINERO', 'Cobro de un ingreso'),
   INCOME_COLLECTION_REVERSED: entry('DINERO', 'Cobro reversado'),
+  INCOME_COLLECTION_REASSIGNED: entry('DINERO', 'Cobro reasignado de caja'),
   INCOME_CASH_HANDOVER_CONFIRMED: entry(
     'DINERO',
     'Rendición de efectivo confirmada',

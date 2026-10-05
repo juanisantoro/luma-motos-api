@@ -219,7 +219,7 @@ export class AuditQueryService {
 
   /** Opciones de los filtros de la pantalla. */
   async filters(actor: AuthenticatedUser) {
-    const [users, accounts] = await this.prisma.withTenant(
+    const [users, accounts, branches] = await this.prisma.withTenant(
       this.scope(actor),
       (tx) =>
         Promise.all([
@@ -244,7 +244,23 @@ export class AuditQueryService {
                 actor,
               ).whereSharedOrInScope<Prisma.cuentas_cajaWhereInput>(),
             },
-            select: { id: true, nombre: true, moneda: true, activo: true },
+            select: {
+              id: true,
+              nombre: true,
+              moneda: true,
+              activo: true,
+              sucursal_id: true,
+            },
+            orderBy: { nombre: 'asc' },
+          }),
+          tx.sucursales.findMany({
+            where: {
+              organizacion_id: actor.globalAccess
+                ? undefined
+                : actor.organization.id,
+              id: BranchScope.forActor(actor).where(),
+            },
+            select: { id: true, codigo: true, nombre: true },
             orderBy: { nombre: 'asc' },
           }),
         ]),
@@ -275,7 +291,13 @@ export class AuditQueryService {
         id: account.id,
         name: account.nombre,
         currency: account.moneda,
+        branchId: account.sucursal_id,
         active: account.activo,
+      })),
+      branches: branches.map((branch) => ({
+        id: branch.id,
+        code: branch.codigo,
+        name: branch.nombre,
       })),
     };
   }
@@ -465,6 +487,7 @@ export class AuditQueryService {
         page: query.page,
         limit: query.limit,
         totals: null,
+        summary: null,
       };
       const and: Prisma.movimientos_cajaWhereInput[] = [];
       const operationId = await this.resolveOperationId(tx, query, actor);
@@ -516,17 +539,25 @@ export class AuditQueryService {
       const where: Prisma.movimientos_cajaWhereInput = {
         AND: and,
         organizacion_id: actor.globalAccess ? undefined : actor.organization.id,
-        cuentas_caja:
-          BranchScope.forActor(
-            actor,
-          ).whereSharedOrInScope<Prisma.cuentas_cajaWhereInput>(),
+        cuentas_caja: {
+          AND: [
+            BranchScope.forActor(
+              actor,
+            ).whereSharedOrInScope<Prisma.cuentas_cajaWhereInput>() ?? {},
+            query.branchId ? { sucursal_id: query.branchId } : {},
+          ],
+        },
         cuenta_caja_id: query.accountId,
         direccion: query.direction,
         tipo_movimiento: query.type,
         creado_en: range(query.from, query.to),
       };
       const canSeePurchases = actor.role.permissions.includes(PURCHASE_COSTS);
-      const [total, items, sums] = await Promise.all([
+      // Totales de lo vigente: ni lo reversado ni sus reversas.
+      const active: Prisma.movimientos_cajaWhereInput = {
+        AND: [where, { revierte_a_id: null, other_movimientos_caja: null }],
+      };
+      const [total, items, sums, pending] = await Promise.all([
         tx.movimientos_caja.count({ where }),
         tx.movimientos_caja.findMany({
           where,
@@ -538,11 +569,23 @@ export class AuditQueryService {
         canSeePurchases
           ? tx.movimientos_caja.groupBy({
               by: ['cuenta_caja_id', 'direccion'],
-              // Totales de lo vigente: ni lo reversado ni sus reversas.
+              where: active,
+              _sum: { importe: true },
+            })
+          : Promise.resolve(null),
+        // Efectivo cobrado que todavía no confirmó quien lo recibe.
+        canSeePurchases
+          ? tx.movimientos_caja.groupBy({
+              by: ['cuenta_caja_id'],
               where: {
                 AND: [
-                  where,
-                  { revierte_a_id: null, other_movimientos_caja: null },
+                  active,
+                  {
+                    direccion: 'CREDITO',
+                    ingresos_movimientos_caja_ingreso: {
+                      estado_rendicion: 'PENDIENTE_RENDICION',
+                    },
+                  },
                 ],
               },
               _sum: { importe: true },
@@ -555,28 +598,56 @@ export class AuditQueryService {
         credit: string;
         debit: string;
       }> | null = null;
+      // Resumen para el cierre: una fila por caja, con su sucursal y moneda.
+      let summary: Array<{
+        account: { id: string; name: string; type: string };
+        branch: { id: string; code: string; name: string } | null;
+        currency: string;
+        credit: string;
+        debit: string;
+        pendingHandover: string;
+      }> | null = null;
       if (sums) {
+        const zero = new Prisma.Decimal(0);
         const accounts = await tx.cuentas_caja.findMany({
           where: { id: { in: sums.map((row) => row.cuenta_caja_id) } },
-          select: { id: true, moneda: true },
+          select: {
+            id: true,
+            nombre: true,
+            tipo_cuenta: true,
+            moneda: true,
+            sucursales: { select: { id: true, codigo: true, nombre: true } },
+          },
+        });
+        const rows = accounts.map((account) => {
+          const of = (direction: 'CREDITO' | 'DEBITO') =>
+            sums.find(
+              (row) =>
+                row.cuenta_caja_id === account.id &&
+                row.direccion === direction,
+            )?._sum.importe ?? zero;
+          return {
+            account,
+            credit: of('CREDITO'),
+            debit: of('DEBITO'),
+            pending:
+              pending?.find((row) => row.cuenta_caja_id === account.id)?._sum
+                .importe ?? zero,
+          };
         });
         const byCurrency = new Map<
           string,
           { credit: Prisma.Decimal; debit: Prisma.Decimal }
         >();
-        for (const row of sums) {
-          const currency =
-            accounts.find((account) => account.id === row.cuenta_caja_id)
-              ?.moneda ?? 'ARS';
-          const entry = byCurrency.get(currency) ?? {
-            credit: new Prisma.Decimal(0),
-            debit: new Prisma.Decimal(0),
+        for (const row of rows) {
+          const entry = byCurrency.get(row.account.moneda) ?? {
+            credit: zero,
+            debit: zero,
           };
-          const amount = row._sum.importe ?? new Prisma.Decimal(0);
-          if (row.direccion === 'CREDITO')
-            entry.credit = entry.credit.plus(amount);
-          else entry.debit = entry.debit.plus(amount);
-          byCurrency.set(currency, entry);
+          byCurrency.set(row.account.moneda, {
+            credit: entry.credit.plus(row.credit),
+            debit: entry.debit.plus(row.debit),
+          });
         }
         totals = [...byCurrency.entries()]
           .sort(([left], [right]) => left.localeCompare(right))
@@ -585,6 +656,34 @@ export class AuditQueryService {
             credit: entry.credit.toString(),
             debit: entry.debit.toString(),
           }));
+        summary = rows
+          .sort(
+            (left, right) =>
+              (left.account.sucursales?.nombre ?? '').localeCompare(
+                right.account.sucursales?.nombre ?? '',
+                'es',
+              ) ||
+              left.account.nombre.localeCompare(right.account.nombre, 'es') ||
+              left.account.moneda.localeCompare(right.account.moneda),
+          )
+          .map((row) => ({
+            account: {
+              id: row.account.id,
+              name: row.account.nombre,
+              type: row.account.tipo_cuenta,
+            },
+            branch: row.account.sucursales
+              ? {
+                  id: row.account.sucursales.id,
+                  code: row.account.sucursales.codigo,
+                  name: row.account.sucursales.nombre,
+                }
+              : null,
+            currency: row.account.moneda,
+            credit: row.credit.toString(),
+            debit: row.debit.toString(),
+            pendingHandover: row.pending.toString(),
+          }));
       }
       return {
         items: items.map((item) => this.moneyItem(item, actor)),
@@ -592,6 +691,7 @@ export class AuditQueryService {
         page: query.page,
         limit: query.limit,
         totals,
+        summary,
       };
     });
   }

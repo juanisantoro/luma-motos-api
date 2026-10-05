@@ -124,6 +124,96 @@ describe('CashService', () => {
     expect(create).not.toHaveBeenCalled();
   });
 
+  it('rejects a new movement into an imported historic account', async () => {
+    const create = jest.fn();
+    const tx = {
+      $executeRaw: jest.fn().mockResolvedValue(1),
+      movimientos_caja: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create,
+      },
+      cuentas_caja: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'ed533c59-526d-45e8-aed4-f909aaaf09f4',
+          moneda: 'ARS',
+          sucursal_id: null,
+          es_importada: true,
+        }),
+      },
+    } as unknown as Prisma.TransactionClient;
+    const service = new CashService({} as PrismaService, {} as AuditService);
+
+    await expect(
+      service.registerEntityMovement(
+        tx,
+        actor,
+        organizationId,
+        'ARS',
+        {
+          idempotencyKey: '7c0d7c56-6f3a-4b54-9d3e-0f6f3a0b8f11',
+          accountId: 'ed533c59-526d-45e8-aed4-f909aaaf09f4',
+          amount: '4500000.00',
+        },
+        { ingreso_id: '20e42390-db9f-42bf-9db1-634f663e8ed2' },
+        tipo_movimiento_caja_luma.INGRESO,
+        direccion_caja_luma.CREDITO,
+      ),
+    ).rejects.toMatchObject({
+      response: { code: 'HISTORIC_CASH_ACCOUNT' },
+    });
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('rejects a collection into a cash account of another branch or shared', async () => {
+    const sanMiguel = '84e778cc-7616-4792-b6db-d89f100bb6f1';
+    const delViso = '0f7a1f0e-5d0b-4c53-9b0e-2a6f0f6a4d21';
+    const create = jest.fn();
+    const accountFindFirst = jest.fn();
+    const tx = {
+      $executeRaw: jest.fn().mockResolvedValue(1),
+      movimientos_caja: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create,
+      },
+      cuentas_caja: { findFirst: accountFindFirst },
+      ingresos: {
+        findFirst: jest.fn().mockResolvedValue({ sucursal_id: sanMiguel }),
+      },
+    } as unknown as Prisma.TransactionClient;
+    const service = new CashService({} as PrismaService, {} as AuditService);
+    const collect = (idempotencyKey: string) =>
+      service.registerEntityMovement(
+        tx,
+        actor,
+        organizationId,
+        'ARS',
+        {
+          idempotencyKey,
+          accountId: 'ed533c59-526d-45e8-aed4-f909aaaf09f4',
+          amount: '1000.00',
+        },
+        { ingreso_id: '20e42390-db9f-42bf-9db1-634f663e8ed2' },
+        tipo_movimiento_caja_luma.INGRESO,
+        direccion_caja_luma.CREDITO,
+      );
+
+    for (const [key, branchId] of [
+      ['9b1f6f0a-0d3e-4c57-8a55-4d1e2b7f9a01', delViso],
+      ['9b1f6f0a-0d3e-4c57-8a55-4d1e2b7f9a02', null],
+    ] as const) {
+      accountFindFirst.mockResolvedValueOnce({
+        id: 'ed533c59-526d-45e8-aed4-f909aaaf09f4',
+        moneda: 'ARS',
+        sucursal_id: branchId,
+        es_importada: false,
+      });
+      await expect(collect(key)).rejects.toMatchObject({
+        response: { code: 'CASH_ACCOUNT_BRANCH_MISMATCH' },
+      });
+    }
+    expect(create).not.toHaveBeenCalled();
+  });
+
   it('rejects a second reversal of the same append-only movement', async () => {
     const findFirst = jest
       .fn()
