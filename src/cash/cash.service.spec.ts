@@ -214,6 +214,70 @@ describe('CashService', () => {
     expect(create).not.toHaveBeenCalled();
   });
 
+  it('pays a branch expense from that branch and a general one from a shared account', async () => {
+    const sanMiguel = '84e778cc-7616-4792-b6db-d89f100bb6f1';
+    const create = jest.fn().mockResolvedValue(movement());
+    const accountFindFirst = jest.fn();
+    const expenseFindFirst = jest.fn();
+    const tx = {
+      $executeRaw: jest.fn().mockResolvedValue(1),
+      movimientos_caja: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create,
+      },
+      cuentas_caja: { findFirst: accountFindFirst },
+      gastos: { findFirst: expenseFindFirst },
+      personal: {
+        findFirst: jest
+          .fn()
+          .mockResolvedValue({ id: 'f4b6ce19-ce56-4125-b058-e1f087c742bc' }),
+      },
+    } as unknown as Prisma.TransactionClient;
+    const service = new CashService({} as PrismaService, {} as AuditService);
+    const pay = (
+      idempotencyKey: string,
+      accountBranch: string | null,
+      expenseBranch: string | null,
+    ) => {
+      accountFindFirst.mockResolvedValueOnce({
+        id: 'ed533c59-526d-45e8-aed4-f909aaaf09f4',
+        moneda: 'ARS',
+        sucursal_id: accountBranch,
+        es_importada: false,
+      });
+      expenseFindFirst.mockResolvedValueOnce({ sucursal_id: expenseBranch });
+      return service.registerEntityMovement(
+        tx,
+        actor,
+        organizationId,
+        'ARS',
+        {
+          idempotencyKey,
+          accountId: 'ed533c59-526d-45e8-aed4-f909aaaf09f4',
+          amount: '1000.00',
+        },
+        { gasto_id: '5b7f5a52-3d0e-4d0a-8a55-7f7b1d2c9e10' },
+        tipo_movimiento_caja_luma.EGRESO,
+        direccion_caja_luma.DEBITO,
+      );
+    };
+    const mismatch = { response: { code: 'CASH_ACCOUNT_BRANCH_MISMATCH' } };
+
+    // Gasto de San Miguel desde una cuenta compartida: no.
+    await expect(
+      pay('1c9f6f0a-0d3e-4c57-8a55-4d1e2b7f9a01', null, sanMiguel),
+    ).rejects.toMatchObject(mismatch);
+    // Gasto general (sin sucursal) desde una caja de San Miguel: no.
+    await expect(
+      pay('1c9f6f0a-0d3e-4c57-8a55-4d1e2b7f9a02', sanMiguel, null),
+    ).rejects.toMatchObject(mismatch);
+    expect(create).not.toHaveBeenCalled();
+
+    await pay('1c9f6f0a-0d3e-4c57-8a55-4d1e2b7f9a03', sanMiguel, sanMiguel);
+    await pay('1c9f6f0a-0d3e-4c57-8a55-4d1e2b7f9a04', null, null);
+    expect(create).toHaveBeenCalledTimes(2);
+  });
+
   it('rejects a second reversal of the same append-only movement', async () => {
     const findFirst = jest
       .fn()

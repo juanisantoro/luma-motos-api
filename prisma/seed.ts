@@ -414,6 +414,13 @@ const managedPermissions = [
     roles: ['GERENTE', 'ADMINISTRADOR'],
   },
   {
+    codigo: 'caja.retiros.gestionar',
+    modulo: 'caja',
+    descripcion:
+      'Consulta, registra y anula los retiros de socios desde sus cajas.',
+    roles: ['ADMINISTRADOR'],
+  },
+  {
     codigo: 'caja.recibir_rendicion',
     modulo: 'caja',
     descripcion:

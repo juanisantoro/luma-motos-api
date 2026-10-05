@@ -228,6 +228,22 @@ export class ReverseFinancialMovementDto {
   @IsString() @IsNotEmpty() @MaxLength(1000) reason!: string;
 }
 
+export class CreatePartnerWithdrawalDto {
+  @IsUUID() idempotencyKey!: string;
+  @IsUUID() accountId!: string;
+  @IsString() @Matches(MONEY_PATTERN) amount!: string;
+  @IsDateString() @Matches(BUSINESS_DATE_PATTERN) date!: string;
+  @IsString() @IsNotEmpty() @MaxLength(1000) reason!: string;
+}
+
+export class PartnerWithdrawalQueryDto extends FinancialPageDto {
+  @IsOptional() @IsUUID() branchId?: string;
+  @IsOptional() @IsUUID() accountId?: string;
+  @IsOptional() @IsUUID() partnerId?: string;
+  @IsOptional() @IsDateString() @Matches(BUSINESS_DATE_PATTERN) from?: string;
+  @IsOptional() @IsDateString() @Matches(BUSINESS_DATE_PATTERN) to?: string;
+}
+
 export class CashAccountQueryDto extends FinancialPageDto {
   @IsOptional() @IsUUID() organizationId?: string;
   @IsOptional() @IsEnum(tipo_cuenta_caja_luma) type?: tipo_cuenta_caja_luma;

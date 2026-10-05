@@ -16,6 +16,9 @@ const ENTITIES = { nbsp: ' ', amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" }
 export function manualHtmlToText(html) {
   return html
     .replace(/<(style|script|head)[\s\S]*?<\/\1>/gi, '')
+    // Lo marcado `hidden` todavía no se le muestra al usuario (funciones sin
+    // habilitar): tampoco va al asistente.
+    .replace(/<(section|p|li|tr|span)\b[^>]*\shidden\b[^>]*>[\s\S]*?<\/\1>/gi, '')
     .replace(/<h1[^>]*>/gi, '\n\n# ')
     .replace(/<h2[^>]*>/gi, '\n\n## ')
     .replace(/<h3[^>]*>/gi, '\n\n### ')

@@ -91,6 +91,8 @@ export const AUDIT_ACTIONS: Record<string, CatalogEntry> = {
   CASH_ACCOUNT_UPDATED: entry('DINERO', 'Cuenta de caja modificada'),
   CASH_TRANSFER_CREATED: entry('DINERO', 'Transferencia entre cuentas'),
   CASH_TRANSFER_REVERSED: entry('DINERO', 'Transferencia reversada'),
+  PARTNER_WITHDRAWAL_REGISTERED: entry('DINERO', 'Retiro de socio'),
+  PARTNER_WITHDRAWAL_REVERSED: entry('DINERO', 'Retiro de socio anulado'),
 
   // Stock y abastecimiento
   INVENTORY_UNIT_CREATED: entry('STOCK', 'Unidad ingresada al stock'),

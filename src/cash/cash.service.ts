@@ -435,6 +435,12 @@ export class CashService {
           organizationId,
           branchScope,
         );
+        // Se puede sacar plata de una histórica, no meterle.
+        if (destination.es_importada)
+          financialBadRequest(
+            'HISTORIC_CASH_ACCOUNT',
+            'Imported historic cash accounts do not accept new movements',
+          );
         if (source.moneda !== destination.moneda)
           financialBadRequest(
             'CURRENCY_MISMATCH',
@@ -660,20 +666,33 @@ export class CashService {
         'HISTORIC_CASH_ACCOUNT',
         'Imported historic cash accounts do not accept new movements',
       );
-    // Un cobro entra a una caja de la sucursal del ingreso: así el cierre de
-    // cada sucursal sale de sus propias cajas. Las compartidas (sin sucursal)
-    // quedan para pagos y gastos, no para cobros.
-    if ('ingreso_id' in source) {
-      const income = await tx.ingresos.findFirst({
-        where: { id: source.ingreso_id, organizacion_id: organizationId },
-        select: { sucursal_id: true },
-      });
-      if (income && account.sucursal_id !== income.sucursal_id)
-        financialBadRequest(
-          'CASH_ACCOUNT_BRANCH_MISMATCH',
-          'A collection must enter a cash account of the income branch',
-        );
-    }
+    // La plata entra y sale por una caja de la sucursal del registro: así el
+    // cierre de cada sucursal sale de sus propias cajas. Un gasto o una
+    // compra sin sucursal son "Generales" y se pagan desde una cuenta
+    // compartida (sin sucursal).
+    const record =
+      'ingreso_id' in source
+        ? await tx.ingresos.findFirst({
+            where: { id: source.ingreso_id, organizacion_id: organizationId },
+            select: { sucursal_id: true },
+          })
+        : 'gasto_id' in source
+          ? await tx.gastos.findFirst({
+              where: { id: source.gasto_id, organizacion_id: organizationId },
+              select: { sucursal_id: true },
+            })
+          : await tx.compras_proveedor.findFirst({
+              where: {
+                id: source.compra_proveedor_id,
+                organizacion_id: organizationId,
+              },
+              select: { sucursal_id: true },
+            });
+    if (record && account.sucursal_id !== record.sucursal_id)
+      financialBadRequest(
+        'CASH_ACCOUNT_BRANCH_MISMATCH',
+        'The cash account must belong to the branch of the record',
+      );
     if (account.moneda !== currency)
       financialBadRequest(
         'CURRENCY_MISMATCH',

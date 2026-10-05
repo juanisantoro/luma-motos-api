@@ -3,7 +3,6 @@ import { luma_estado_inventario, tipo_vehiculo_luma } from '@prisma/client';
 import { PERMISSION_CODES, ROLE_CODES } from '../auth/auth.constants';
 import type { AuthenticatedUser } from '../auth/auth.types';
 import { BranchScope } from '../branch-scope/branch-scope';
-import { CashService } from '../cash/cash.service';
 import { ClientsService } from '../clients/clients.service';
 import { CommissionsService } from '../commissions/commissions.service';
 import { CreditInquiriesService } from '../credit-inquiries/credit-inquiries.service';
@@ -54,15 +53,12 @@ type ApprovalItem = ApprovalPage['items'][number];
 type SuggestionPage = Awaited<ReturnType<CommissionsService['suggestions']>>;
 type SuggestionItem = SuggestionPage['items'][number];
 type MeResult = Awaited<ReturnType<CommissionsService['me']>>;
-type CashAccountPage = Awaited<ReturnType<CashService['findAccounts']>>;
-type CashAccountItem = CashAccountPage['items'][number];
 
 @Injectable()
 export class DashboardService {
   constructor(
     private readonly sales: SalesService,
     private readonly commissions: CommissionsService,
-    private readonly cash: CashService,
     private readonly creditPlans: CreditPlansService,
     private readonly creditInquiries: CreditInquiriesService,
     private readonly inventory: InventoryService,
@@ -229,7 +225,6 @@ export class DashboardService {
     const period = currentPeriodKey();
     const [
       dueTodayAlert,
-      cashBalanceToday,
       dueThisWeek,
       unconfirmedVehiclePayments,
       payableExpensesThisWeek,
@@ -242,7 +237,6 @@ export class DashboardService {
       has(PERMISSION_CODES.CREDIT_PLANS_READ)
         ? this.creditPlans.dueTodaySummary(actor, branches)
         : null,
-      has(PERMISSION_CODES.CASH_READ) ? this.cashBalance(actor) : null,
       has(PERMISSION_CODES.CREDIT_PLANS_READ)
         ? this.creditPlans.dueInRange(actor, branches, todayUtcStart(), daysAheadUtcEnd(6))
         : null,
@@ -276,7 +270,6 @@ export class DashboardService {
     // por pagar" dropped from this home, no comisiones.* permission).
     return {
       dueTodayAlert,
-      cashBalanceToday,
       dueThisWeek,
       unconfirmedVehiclePayments,
       payableExpensesThisWeek,
@@ -465,20 +458,5 @@ export class DashboardService {
       0,
     );
     return { period, amount };
-  }
-
-  // Branch cash only: findAccounts() already applies the branch scope, and
-  // shared organization accounts (without branch) are left out of the KPI.
-  private async cashBalance(actor: AuthenticatedUser) {
-    const page: CashAccountPage = await this.cash.findAccounts(
-      { active: true, page: 1, limit: 100 },
-      actor,
-    );
-    return page.items
-      .filter((account: CashAccountItem) => account.branch !== null)
-      .reduce(
-        (sum: number, account: CashAccountItem) => sum + Number(account.balance),
-        0,
-      );
   }
 }

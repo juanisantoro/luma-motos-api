@@ -2,6 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import type { AuthenticatedUser } from '../auth/auth.types';
 import { BranchScope } from '../branch-scope/branch-scope';
+import { partnerWithdrawalsReady } from '../cash/partner-withdrawals.flag';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   AUDIT_ACTIONS,
@@ -685,8 +686,9 @@ export class AuditQueryService {
             pendingHandover: row.pending.toString(),
           }));
       }
+      const withdrawals = await this.withdrawalTitles(tx, items);
       return {
-        items: items.map((item) => this.moneyItem(item, actor)),
+        items: items.map((item) => this.moneyItem(item, actor, withdrawals)),
         total,
         page: query.page,
         limit: query.limit,
@@ -696,7 +698,49 @@ export class AuditQueryService {
     });
   }
 
-  private moneyItem(item: MoneyRecord, actor: AuthenticatedUser) {
+  /**
+   * Movimientos que son un retiro de socio: el movimiento no lleva origen,
+   * así que se identifican por la tabla de retiros.
+   */
+  private async withdrawalTitles(tx: Tx, items: MoneyRecord[]) {
+    const ids = items
+      .filter((item) => item.tipo_movimiento === 'AJUSTE')
+      .map((item) => item.id);
+    const titles = new Map<string, { id: string; title: string }>();
+    // Sin la tabla de retiros aplicada, esta consulta rompería el listado.
+    if (ids.length === 0 || !(await partnerWithdrawalsReady(tx))) return titles;
+    const rows = await tx.retiros_socio.findMany({
+      where: { movimiento_caja_id: { in: ids } },
+      select: {
+        id: true,
+        movimiento_caja_id: true,
+        socio_personal_id: true,
+        motivo: true,
+      },
+    });
+    const people = await tx.personal.findMany({
+      where: { id: { in: rows.map((row) => row.socio_personal_id) } },
+      select: { id: true, nombre_completo: true },
+    });
+    for (const row of rows)
+      titles.set(row.movimiento_caja_id, {
+        id: row.id,
+        title: [
+          `Retiro de ${
+            people.find((item) => item.id === row.socio_personal_id)
+              ?.nombre_completo ?? 'socio'
+          }`,
+          row.motivo,
+        ].join(' · '),
+      });
+    return titles;
+  }
+
+  private moneyItem(
+    item: MoneyRecord,
+    actor: AuthenticatedUser,
+    withdrawals?: Map<string, { id: string; title: string }>,
+  ) {
     const sensitivePurchase =
       (Boolean(item.compra_proveedor_id) ||
         Boolean(item.movimientos_caja?.compra_proveedor_id)) &&
@@ -756,7 +800,13 @@ export class AuditQueryService {
         id: transfer.id,
         title: `${transfer.cuentas_caja_transferencias_caja_cuenta_origen_idTocuentas_caja.nombre} → ${transfer.cuentas_caja_transferencias_caja_cuenta_destino_idTocuentas_caja.nombre}`,
       };
-    else source = { kind: 'OTHER', id: null, title: 'Movimiento manual' };
+    else if (withdrawals?.has(item.id)) {
+      const withdrawal = withdrawals.get(item.id) as {
+        id: string;
+        title: string;
+      };
+      source = { kind: 'WITHDRAWAL', ...withdrawal };
+    } else source = { kind: 'OTHER', id: null, title: 'Movimiento manual' };
 
     return {
       id: item.id,
@@ -1316,6 +1366,48 @@ export class AuditQueryService {
       });
       for (const row of rows)
         put('proveedores', row.id, subject(`Proveedor ${row.razon_social}`));
+    });
+    load('retiros_socio', async () => {
+      const rows = await tx.retiros_socio.findMany({
+        where: idIn('retiros_socio'),
+        select: {
+          id: true,
+          importe: true,
+          motivo: true,
+          cuenta_caja_id: true,
+          socio_personal_id: true,
+        },
+      });
+      const [cashAccounts, people] = await Promise.all([
+        tx.cuentas_caja.findMany({
+          where: { id: { in: rows.map((row) => row.cuenta_caja_id) } },
+          select: { id: true, nombre: true, sucursal_id: true },
+        }),
+        tx.personal.findMany({
+          where: { id: { in: rows.map((row) => row.socio_personal_id) } },
+          select: { id: true, nombre_completo: true },
+        }),
+      ]);
+      for (const row of rows) {
+        const account = cashAccounts.find(
+          (item) => item.id === row.cuenta_caja_id,
+        );
+        if (!account || !inScope(account.sucursal_id)) continue;
+        put(
+          'retiros_socio',
+          row.id,
+          subject(
+            `Retiro de ${
+              people.find((item) => item.id === row.socio_personal_id)
+                ?.nombre_completo ?? 'socio'
+            }`,
+            {
+              detail: `${account.nombre} · ${row.motivo}`,
+              amount: money(row.importe),
+            },
+          ),
+        );
+      }
     });
     load('planes_credito', async () => {
       const rows = await tx.planes_credito.findMany({

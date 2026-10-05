@@ -262,6 +262,17 @@ export class SupplierPurchasesService {
           current.organizacion_id,
         );
         const branchId = input.branchId ?? current.sucursal_id;
+        // La plata ya salió por una caja de la sucursal original.
+        if (
+          branchId !== current.sucursal_id &&
+          (await tx.movimientos_caja.count({
+            where: { compra_proveedor_id: id },
+          })) > 0
+        )
+          financialConflict(
+            'BRANCH_LOCKED_BY_MOVEMENTS',
+            'The branch cannot change once the purchase has cash movements',
+          );
         if (!branchId)
           financialBadRequest(
             'INVALID_BRANCH',

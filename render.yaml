@@ -7,7 +7,9 @@ services:
     # one of the several sequential DB calls a single request makes.
     region: ohio
     buildCommand: npm ci --include=dev && npm run render:build
-    preDeployCommand: npm run prisma:migrate:deploy && npm run prisma:seed
+    # Las migraciones NO se aplican en el deploy: se corren a mano con
+    # `npm run prisma:migrate:deploy` apuntando a la base de producción.
+    preDeployCommand: npm run prisma:seed
     startCommand: npm run start:prod
     healthCheckPath: /api/health
     autoDeployTrigger: commit

@@ -611,6 +611,32 @@ model pagos_vehiculo {
   @@index([organizacion_id, fecha(sort: Desc)], map: "pagos_vehiculo_organizacion_fecha_indice")
 }
 
+/// Retiro de un socio desde una caja de la que es responsable. No es un gasto.
+/// Sin relaciones modeladas (como pagos_vehiculo): las FK están en la base.
+model retiros_socio {
+  id                      String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizacion_id         String    @db.Uuid
+  cuenta_caja_id          String    @db.Uuid
+  socio_personal_id       String    @db.Uuid
+  importe                 Decimal   @db.Decimal(18, 2)
+  moneda                  String    @db.Char(3)
+  fecha                   DateTime  @db.Date
+  motivo                  String
+  estado                  String    @default("REGISTRADO") @db.VarChar(20)
+  movimiento_caja_id      String    @unique(map: "retiros_socio_movimiento_unico") @db.Uuid
+  reversa_movimiento_id   String?   @db.Uuid
+  anulado_motivo          String?
+  anulado_en              DateTime? @db.Timestamptz(6)
+  anulado_por_personal_id String?   @db.Uuid
+  creado_por_personal_id  String    @db.Uuid
+  creado_en               DateTime  @default(now()) @db.Timestamptz(6)
+  actualizado_en          DateTime  @default(now()) @db.Timestamptz(6)
+
+  @@unique([id, organizacion_id], map: "retiros_socio_id_organizacion_unico")
+  @@index([organizacion_id, fecha(sort: Desc)], map: "retiros_socio_organizacion_fecha_indice")
+  @@index([cuenta_caja_id], map: "retiros_socio_cuenta_indice")
+}
+
 model modelos_vehiculos {
   id                  String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   marca_id            String                @db.Uuid

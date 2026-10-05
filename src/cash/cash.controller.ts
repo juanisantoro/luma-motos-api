@@ -19,14 +19,20 @@ import {
   CashTransferQueryDto,
   CreateCashAccountDto,
   CreateCashTransferDto,
+  CreatePartnerWithdrawalDto,
+  PartnerWithdrawalQueryDto,
   ReverseFinancialMovementDto,
   UpdateCashAccountDto,
 } from '../finance/finance.dto';
 import { CashService } from './cash.service';
+import { PartnerWithdrawalsService } from './partner-withdrawals.service';
 
 @Controller('cash')
 export class CashController {
-  constructor(private readonly service: CashService) {}
+  constructor(
+    private readonly service: CashService,
+    private readonly withdrawals: PartnerWithdrawalsService,
+  ) {}
 
   @Get('accounts')
   @Permissions(PERMISSION_CODES.CASH_READ)
@@ -113,5 +119,35 @@ export class CashController {
     @CurrentUser() actor: AuthenticatedUser,
   ) {
     return this.service.reverseTransfer(id, input, actor);
+  }
+
+  @Get('withdrawals')
+  @Permissions(PERMISSION_CODES.CASH_WITHDRAWALS)
+  listWithdrawals(
+    @Query() query: PartnerWithdrawalQueryDto,
+    @CurrentUser() actor: AuthenticatedUser,
+  ) {
+    return this.withdrawals.findAll(query, actor);
+  }
+
+  @Post('withdrawals')
+  @Permissions(PERMISSION_CODES.CASH_WITHDRAWALS)
+  @AuditedMutation()
+  createWithdrawal(
+    @Body() input: CreatePartnerWithdrawalDto,
+    @CurrentUser() actor: AuthenticatedUser,
+  ) {
+    return this.withdrawals.create(input, actor);
+  }
+
+  @Post('withdrawals/:id/reverse')
+  @Permissions(PERMISSION_CODES.CASH_WITHDRAWALS)
+  @AuditedMutation()
+  reverseWithdrawal(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() input: ReverseFinancialMovementDto,
+    @CurrentUser() actor: AuthenticatedUser,
+  ) {
+    return this.withdrawals.reverse(id, input, actor);
   }
 }

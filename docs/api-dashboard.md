@@ -139,7 +139,6 @@ aprobaciones →" del panel: la bandeja completa es
   "role": "ADMINISTRATIVA",
   "greeting": { "...": "..." },
   "dueTodayAlert": { "amount": 850000, "clientCount": 6 },
-  "cashBalanceToday": 1240000,
   "dueThisWeek": { "amount": 3100000, "count": 22 },
   "unconfirmedVehiclePayments": { "count": 4, "staleCount": 1 },
   "payableExpensesThisWeek": { "amount": 540000, "count": 7 },
@@ -173,7 +172,6 @@ aprobaciones →" del panel: la bandeja completa es
 | Campo | Permiso | Notas |
 | --- | --- | --- |
 | `dueTodayAlert`, `dueThisWeek` | `creditos.consultar` | `dueThisWeek` es una ventana de 7 días hacia adelante desde hoy |
-| `cashBalanceToday` | `caja.consultar` | Suma de saldos de cuentas de caja activas de la sucursal |
 | `unconfirmedVehiclePayments` | `pagos_vehiculo.consultar` | `staleCount` cuenta los pendientes de más de 5 días |
 | `payableExpensesThisWeek` | `gastos.consultar` | |
 | `collectionsToday` | `creditos.cobrar` | Hasta 10 cuotas que vencen hoy, ordenadas por monto |
@@ -248,4 +246,4 @@ que existía antes de este home por perfil.
 
 ## Alcance por sucursal
 
-Todas las métricas se calculan sobre las sucursales del actor (`user.branchScope`), no sólo sobre `branch`. GERENTE, ADMINISTRATIVA y VENDEDOR/CALLCENTER reciben su pantalla cuando tienen al menos una sucursal en alcance; si en el futuro se les habilitan más sucursales vía `acceso_personal_sucursal`, los KPIs las suman sin cambios. "Saldo de caja" suma sólo cuentas con sucursal. El ranking del equipo (comisiones) sigue consultándose por la sucursal principal. Ver [`api-branch-scope.md`](api-branch-scope.md).
+Todas las métricas se calculan sobre las sucursales del actor (`user.branchScope`), no sólo sobre `branch`. GERENTE, ADMINISTRATIVA y VENDEDOR/CALLCENTER reciben su pantalla cuando tienen al menos una sucursal en alcance; si en el futuro se les habilitan más sucursales vía `acceso_personal_sucursal`, los KPIs las suman sin cambios. El ranking del equipo (comisiones) sigue consultándose por la sucursal principal. Ver [`api-branch-scope.md`](api-branch-scope.md).

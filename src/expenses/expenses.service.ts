@@ -270,6 +270,15 @@ export class ExpensesService {
           input.branchId === undefined ? current.sucursal_id : input.branchId;
         if (branchId)
           await this.cash.branchOr400(tx, branchId, current.organizacion_id);
+        // La plata ya salió por una caja de la sucursal original.
+        if (
+          (branchId ?? null) !== current.sucursal_id &&
+          (await tx.movimientos_caja.count({ where: { gasto_id: id } })) > 0
+        )
+          financialConflict(
+            'BRANCH_LOCKED_BY_MOVEMENTS',
+            'The branch cannot change once the expense has cash movements',
+          );
         const expenseDate = input.expenseDate
           ? businessDate(input.expenseDate)
           : current.fecha_generacion;

@@ -777,3 +777,40 @@ Missing permissions return `403`.
 ## Alcance por sucursal
 
 Compras, ingresos, gastos, cuentas, movimientos y transferencias se acotan a las sucursales del usuario. `branchId` es opcional en el alta de compras e ingresos cuando el usuario tiene una sola sucursal. Las cuentas de caja sin sucursal son compartidas por la organización (visibles y usables para pagos/cobranzas, editables sólo con `sucursales.todas`). Nuevo código de error: `403 BRANCH_OUT_OF_SCOPE` y `400 BRANCH_REQUIRED`. Ver [`api-branch-scope.md`](api-branch-scope.md).
+
+## Cajas por sucursal
+
+La plata entra y sale por una caja de la sucursal del registro, para que el
+cierre de cada sucursal salga de sus propias cajas. `CashService.registerEntityMovement`
+compara la sucursal de la cuenta con la del ingreso, gasto o compra:
+
+- Registro con sucursal: la cuenta tiene que ser de esa sucursal.
+- Registro sin sucursal ("General"): la cuenta tiene que ser compartida
+  (`sucursal_id` nulo).
+- Cualquier otra combinación: `400 CASH_ACCOUNT_BRANCH_MISMATCH`.
+
+Las comisiones se pagan contra un gasto con la sucursal de la liquidación, así
+que siguen la misma regla. Las cuentas históricas importadas no reciben
+movimientos nuevos (`400 HISTORIC_CASH_ACCOUNT`), tampoco como destino de una
+transferencia.
+
+## Retiros de socios
+
+Plata que un socio saca de una caja de la que es responsable. No es un gasto:
+vive en `retiros_socio` y genera un movimiento `AJUSTE` / `DEBITO`. Permiso
+`caja.retiros.gestionar` (sólo ADMINISTRADOR) para los tres endpoints.
+
+- `GET /cash/withdrawals` — `page`, `limit`, `branchId`, `accountId`,
+  `partnerId`, `from`, `to` (días `AAAA-MM-DD`). Devuelve la página y `totals`
+  (importe vigente por moneda; los anulados no suman).
+- `POST /cash/withdrawals` — `{ idempotencyKey, accountId, amount, date, reason }`.
+  El socio es el responsable de la cuenta (`400 WITHDRAWAL_ACCOUNT_WITHOUT_PARTNER`
+  si no tiene). La moneda y la sucursal son las de la cuenta. Repetir la misma
+  clave devuelve el mismo retiro.
+- `POST /cash/withdrawals/:id/reverse` — `{ idempotencyKey, reason }`. Registra
+  el contramovimiento y deja el retiro `ANULADO`; `409 ALREADY_REVERSED` si ya
+  lo estaba.
+
+Auditoría: `PARTNER_WITHDRAWAL_REGISTERED` y `PARTNER_WITHDRAWAL_REVERSED`. En
+el libro de dinero aparecen con `source.kind = WITHDRAWAL`.
+
