@@ -4,7 +4,7 @@ import { AuditService } from '../audit/audit.service';
 import type { AuthenticatedUser } from '../auth/auth.types';
 import { CashService } from '../cash/cash.service';
 import { PrismaService } from '../prisma/prisma.service';
-import { IncomesService } from './incomes.service';
+import { incomeAuditSnapshot, IncomesService } from './incomes.service';
 
 describe('IncomesService', () => {
   const organizationId = '8fa94171-13b3-40b5-8c33-1f7d8ea94c75';
@@ -234,5 +234,34 @@ describe('IncomesService', () => {
         data: { estado_registro: 'COBRADO' },
       }),
     );
+  });
+
+  it('snapshots an income for the audit trail with names instead of ids', () => {
+    const snapshot = incomeAuditSnapshot({
+      ...income,
+      medio_pago: 'EFECTIVO',
+      estado_rendicion: 'PENDIENTE_RENDICION',
+      cobrado_por_original: null,
+      personal: { id: 'p-1', nombre_completo: 'Vera Vendedora' },
+      rendido_a: { id: 'p-2', nombre_completo: 'Carla Caja' },
+      clientes: { nombre_completo: 'Juan Pérez' },
+      operaciones: { numero_operacion: 120n },
+    } as unknown as Parameters<typeof incomeAuditSnapshot>[0]);
+
+    expect(snapshot).toEqual({
+      type: 'VENTA_ACCESORIO',
+      description: 'Casco',
+      amount: '100',
+      incomeDate: '2026-08-20',
+      paymentMethod: 'EFECTIVO',
+      collectedBy: 'Vera Vendedora',
+      handoverTo: 'Carla Caja',
+      handoverStatus: 'PENDIENTE_RENDICION',
+      operationNumber: '120',
+      client: 'Juan Pérez',
+      branch: 'San Miguel',
+      reference: null,
+      notes: null,
+    });
   });
 });

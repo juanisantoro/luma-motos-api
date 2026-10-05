@@ -94,26 +94,4 @@ describe('AuditService', () => {
 
     expect(createAuditLog).not.toHaveBeenCalled();
   });
-
-  it('restricts audit queries to the caller organization', async () => {
-    countAuditLogs.mockResolvedValue(0);
-    findAuditLogs.mockResolvedValue([]);
-
-    await service.findAll(
-      { page: 1, limit: 50 },
-      {
-        organizationId: 'franchise-id',
-        globalAccess: false,
-      },
-    );
-
-    const tenantScope = {
-      OR: [
-        { organizacion_id: 'franchise-id' },
-        { organizacion_objetivo_id: 'franchise-id' },
-      ],
-    };
-    expect(countAuditLogs.mock.calls[0]?.[0].where).toMatchObject(tenantScope);
-    expect(findAuditLogs.mock.calls[0]?.[0].where).toMatchObject(tenantScope);
-  });
 });

@@ -116,6 +116,29 @@ type IncomeRecord = Prisma.ingresosGetPayload<{
 }>;
 
 /**
+ * Foto del ingreso que queda en la auditoría (`datos_anteriores` /
+ * `datos_nuevos`), con nombres en vez de ids para poder leerla después
+ * aunque el registro cambie.
+ */
+export function incomeAuditSnapshot(row: IncomeRecord) {
+  return {
+    type: row.tipo_original,
+    description: row.descripcion,
+    amount: row.importe.toString(),
+    incomeDate: row.fecha_ingreso.toISOString().slice(0, 10),
+    paymentMethod: row.medio_pago,
+    collectedBy: row.personal?.nombre_completo ?? row.cobrado_por_original,
+    handoverTo: row.rendido_a?.nombre_completo ?? null,
+    handoverStatus: row.estado_rendicion,
+    operationNumber: row.operaciones?.numero_operacion.toString() ?? null,
+    client: row.clientes?.nombre_completo ?? null,
+    branch: row.sucursales.nombre,
+    reference: row.referencia,
+    notes: row.observaciones,
+  };
+}
+
+/**
  * Backstop for the database invariants of the income links (trigger
  * luma_validar_vinculos_ingreso and the cash CHECKs). The service validates
  * first; this only keeps a racing request from surfacing as a 500.
@@ -200,7 +223,9 @@ export class IncomesService {
   async types(): Promise<Array<{ id: string; name: string }>> {
     const rows = await this.prisma.$queryRaw<
       Array<{ id: string; nombre: string }>
-    >(Prisma.sql`SELECT id, nombre FROM tipos_ingreso WHERE activo = true ORDER BY nombre ASC`);
+    >(
+      Prisma.sql`SELECT id, nombre FROM tipos_ingreso WHERE activo = true ORDER BY nombre ASC`,
+    );
     return rows.map((row) => ({ id: row.id, name: row.nombre }));
   }
 
@@ -443,6 +468,7 @@ export class IncomesService {
           include: incomeInclude,
         });
         event.entityId = income.id;
+        event.metadata = incomeAuditSnapshot(income);
         return this.income(income);
       },
       undefined,
@@ -477,7 +503,8 @@ export class IncomesService {
           );
         const branchId = input.branchId ?? current.sucursal_id;
         await this.cash.branchOr400(tx, branchId, current.organizacion_id);
-        if (input.type !== undefined) await this.assertValidType(tx, input.type);
+        if (input.type !== undefined)
+          await this.assertValidType(tx, input.type);
         const operationId =
           input.operationId === undefined
             ? (current.operacion_id ?? undefined)
@@ -578,6 +605,8 @@ export class IncomesService {
           },
           include: incomeInclude,
         });
+        event.previousData = incomeAuditSnapshot(current);
+        event.metadata = incomeAuditSnapshot(updated);
         return this.income(updated);
       },
       id,
@@ -818,6 +847,11 @@ export class IncomesService {
             version_fila: { increment: 1 },
           },
         });
+        event.metadata = {
+          amount: collected.toString(),
+          handoverTo: income.rendido_a?.nombre_completo ?? null,
+          collectedBy: income.personal?.nombre_completo ?? null,
+        };
         return this.detail(await this.incomeOr404(tx, id, actor), tx, actor);
       },
       id,

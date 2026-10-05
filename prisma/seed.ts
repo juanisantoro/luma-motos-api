@@ -77,7 +77,8 @@ const managedPermissions = [
     codigo: 'auditoria.consultar',
     modulo: 'auditoria',
     descripcion: 'Consulta el historial de auditoría del sistema.',
-    roles: ['ADMINISTRADOR', 'GERENTE'],
+    // Por ahora sólo Administrador: Gerente no ve la auditoría.
+    roles: ['ADMINISTRADOR'],
   },
   {
     codigo: 'sucursales.todas',
