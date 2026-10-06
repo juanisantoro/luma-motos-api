@@ -7,9 +7,12 @@ import { Prisma, PrismaClient } from '@prisma/client';
  *
  * Los movimientos de caja son inmutables, así que cada cobro se corrige como
  * lo haría una persona desde la pantalla: una reversa en la cuenta histórica
- * y un cobro nuevo, por el mismo importe y la misma fecha, en la caja activa
+ * y un cobro nuevo, por el mismo importe, en la caja activa
  * del mismo socio, de la sucursal y la moneda del ingreso. Queda registrado
  * en la auditoría del ingreso (INCOME_COLLECTION_REASSIGNED).
+ *
+ * De paso corrige la fecha: un cobro registrado al cargar el ingreso había
+ * quedado con la fecha de carga y pasa a tener la fecha del ingreso.
  *
  * Por defecto NO cambia nada: lista qué movería y a dónde.
  *
@@ -41,6 +44,8 @@ type Candidate = {
   income_type: string;
   income_description: string;
   income_account_id: string | null;
+  income_date: Date;
+  income_created_at: Date;
   branch_id: string;
   branch_name: string;
   currency: string;
@@ -159,6 +164,38 @@ export function pickTarget(
   return { reason: 'el responsable no tiene una cuenta del tipo esperado' };
 }
 
+const AT_LOAD_MS = 10 * 60 * 1000;
+
+/**
+ * Fecha con la que entra a caja el cobro reasignado. Un cobro registrado al
+ * cargar el ingreso ("Cobrado") quedó con la fecha y hora de carga; le
+ * corresponde la fecha del ingreso (mediodía de Argentina). Un cobro hecho
+ * después, con "Cobrar", conserva su propia fecha.
+ */
+export function collectionDate(
+  candidate: Pick<
+    Candidate,
+    'created_at' | 'occurred_at' | 'income_date' | 'income_created_at'
+  >,
+): Date {
+  const atLoad =
+    Math.abs(
+      candidate.created_at.getTime() - candidate.income_created_at.getTime(),
+    ) <= AT_LOAD_MS;
+  if (!atLoad) return candidate.occurred_at;
+  const day = candidate.income_date.toISOString().slice(0, 10);
+  return new Date(`${day}T12:00:00.000-03:00`);
+}
+
+function day(value: Date): string {
+  return new Intl.DateTimeFormat('es-AR', {
+    timeZone: 'America/Argentina/Buenos_Aires',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+  }).format(value);
+}
+
 function option(name: string, fallback?: string): string | undefined {
   const index = process.argv.indexOf(`--${name}`);
   return index >= 0 ? process.argv[index + 1] : fallback;
@@ -226,6 +263,7 @@ async function main(): Promise<void> {
           i.id AS income_id, i.tipo_original AS income_type,
           i.descripcion AS income_description,
           i.cuenta_caja_id AS income_account_id,
+          i.fecha_ingreso AS income_date, i.creado_en AS income_created_at,
           s.id AS branch_id, s.nombre AS branch_name, i.moneda AS currency,
           i.medio_pago::text AS payment_method,
           i.rendido_a_personal_id AS handover_to_id
@@ -275,7 +313,8 @@ async function main(): Promise<void> {
       for (const { candidate, target } of plan)
         console.log(
           [
-            candidate.created_at.toISOString(),
+            `cargado ${candidate.created_at.toISOString()}`,
+            `FECHA EN CAJA: ${day(candidate.occurred_at)} -> ${day(collectionDate(candidate))}`,
             money(candidate.amount, candidate.currency),
             candidate.payment_method ?? 'sin medio',
             `${candidate.income_type} · ${candidate.income_description}`,
@@ -338,14 +377,15 @@ async function main(): Promise<void> {
             organizacion_id: organizationId,
           },
         });
-        // 2) El mismo cobro en la caja activa: misma fecha y quien cobró.
+        // 2) El mismo cobro en la caja activa, a nombre de quien cobró y con
+        //    la fecha del ingreso si se había cobrado al cargarlo.
         await tx.movimientos_caja.create({
           data: {
             cuenta_caja_id: target.id,
             tipo_movimiento: 'INGRESO',
             direccion: 'CREDITO',
             importe: candidate.amount,
-            contabilizado_en: candidate.occurred_at,
+            contabilizado_en: collectionDate(candidate),
             ingreso_id: candidate.income_id,
             referencia: candidate.reference,
             notas: [

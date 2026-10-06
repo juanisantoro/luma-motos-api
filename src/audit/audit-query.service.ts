@@ -110,6 +110,7 @@ const moneyInclude = {
     select: {
       id: true,
       sucursal_id: true,
+      fecha_ingreso: true,
       tipo_original: true,
       descripcion: true,
       medio_pago: true,
@@ -125,6 +126,7 @@ const moneyInclude = {
     select: {
       id: true,
       sucursal_id: true,
+      fecha_generacion: true,
       categoria: true,
       detalle: true,
       operaciones: operationRef,
@@ -165,6 +167,63 @@ function range(from?: string, to?: string) {
   return {
     gte: from ? new Date(from) : undefined,
     lte: to ? new Date(to) : undefined,
+  };
+}
+
+const ARGENTINA_OFFSET_MS = 3 * 60 * 60 * 1000;
+
+/** Día de Argentina (`YYYY-MM-DD`) de un instante. */
+function argentinaDay(value: Date): string {
+  return new Date(value.getTime() - ARGENTINA_OFFSET_MS)
+    .toISOString()
+    .slice(0, 10);
+}
+
+/**
+ * Fecha con la que un movimiento figura en la caja: la que se cargó en el
+ * ingreso o el gasto al que corresponde (la misma que muestran esas
+ * pantallas). Lo que no nace de un ingreso ni de un gasto (transferencias,
+ * retiros, compras, comisiones, ajustes) usa la fecha del propio movimiento.
+ */
+function cashDay(item: {
+  contabilizado_en: Date;
+  ingresos_movimientos_caja_ingreso: { fecha_ingreso: Date } | null;
+  gastos: { fecha_generacion: Date } | null;
+}): string {
+  const recordDate =
+    item.ingresos_movimientos_caja_ingreso?.fecha_ingreso ??
+    item.gastos?.fecha_generacion;
+  if (recordDate) return recordDate.toISOString().slice(0, 10);
+  const iso = item.contabilizado_en.toISOString();
+  // Guardado sólo como día (medianoche UTC): vale ese día.
+  return iso.endsWith('T00:00:00.000Z')
+    ? iso.slice(0, 10)
+    : argentinaDay(item.contabilizado_en);
+}
+
+/** Filtro de fechas del libro, con el mismo criterio que `cashDay`. */
+function cashDayFilter(
+  from?: string,
+  to?: string,
+): Prisma.movimientos_cajaWhereInput {
+  if (!from && !to) return {};
+  const days = {
+    gte: from
+      ? new Date(`${argentinaDay(new Date(from))}T00:00:00.000Z`)
+      : undefined,
+    lte: to
+      ? new Date(`${argentinaDay(new Date(to))}T00:00:00.000Z`)
+      : undefined,
+  };
+  return {
+    OR: [
+      {
+        ingreso_id: { not: null },
+        ingresos_movimientos_caja_ingreso: { fecha_ingreso: days },
+      },
+      { gasto_id: { not: null }, gastos: { fecha_generacion: days } },
+      { ingreso_id: null, gasto_id: null, contabilizado_en: range(from, to) },
+    ],
   };
 }
 
@@ -551,21 +610,52 @@ export class AuditQueryService {
         cuenta_caja_id: query.accountId,
         direccion: query.direction,
         tipo_movimiento: query.type,
-        creado_en: range(query.from, query.to),
       };
+      // Por la fecha cargada en el ingreso o el gasto; no por el momento en
+      // que se registró el movimiento.
+      and.push(cashDayFilter(query.from, query.to));
       const canSeePurchases = actor.role.permissions.includes(PURCHASE_COSTS);
       // Totales de lo vigente: ni lo reversado ni sus reversas.
       const active: Prisma.movimientos_cajaWhereInput = {
         AND: [where, { revierte_a_id: null, other_movimientos_caja: null }],
       };
-      const [total, items, sums, pending] = await Promise.all([
-        tx.movimientos_caja.count({ where }),
-        tx.movimientos_caja.findMany({
+      // El orden depende de la fecha del ingreso o gasto, que está en otra
+      // tabla: se ordena con una lectura liviana y se trae sólo la página.
+      const ordered = (
+        await tx.movimientos_caja.findMany({
           where,
+          select: {
+            id: true,
+            contabilizado_en: true,
+            creado_en: true,
+            ingresos_movimientos_caja_ingreso: {
+              select: { fecha_ingreso: true },
+            },
+            gastos: { select: { fecha_generacion: true } },
+          },
+        })
+      )
+        .map((row) => ({
+          id: row.id,
+          day: cashDay(row),
+          occurred: row.contabilizado_en.getTime(),
+          created: row.creado_en.getTime(),
+        }))
+        .sort(
+          (a, b) =>
+            b.day.localeCompare(a.day) ||
+            b.occurred - a.occurred ||
+            b.created - a.created ||
+            b.id.localeCompare(a.id),
+        );
+      const total = ordered.length;
+      const pageIds = ordered
+        .slice((query.page - 1) * query.limit, query.page * query.limit)
+        .map((row) => row.id);
+      const [pageItems, sums, pending] = await Promise.all([
+        tx.movimientos_caja.findMany({
+          where: { id: { in: pageIds } },
           include: moneyInclude,
-          orderBy: [{ creado_en: 'desc' }, { id: 'desc' }],
-          skip: (query.page - 1) * query.limit,
-          take: query.limit,
         }),
         canSeePurchases
           ? tx.movimientos_caja.groupBy({
@@ -686,6 +776,9 @@ export class AuditQueryService {
             pendingHandover: row.pending.toString(),
           }));
       }
+      const items = pageIds
+        .map((id) => pageItems.find((item) => item.id === id))
+        .filter((item): item is MoneyRecord => Boolean(item));
       const withdrawals = await this.withdrawalTitles(tx, items);
       return {
         items: items.map((item) => this.moneyItem(item, actor, withdrawals)),
@@ -812,6 +905,7 @@ export class AuditQueryService {
       id: item.id,
       createdAt: item.creado_en,
       occurredAt: item.contabilizado_en,
+      date: cashDay(item),
       account: {
         id: item.cuentas_caja.id,
         code: item.cuentas_caja.codigo,

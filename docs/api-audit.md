@@ -98,13 +98,17 @@ sucursal.
 
 ## `GET /audit-logs/money-movements`
 
-Libro de `movimientos_caja`, de lo más nuevo a lo más viejo por fecha de
-carga. Respeta el alcance de sucursal igual que `GET /cash/movements`
+Libro de `movimientos_caja`, de lo más nuevo a lo más viejo por la fecha
+con la que figura en caja (`date`): la cargada en el ingreso
+(`fecha_ingreso`) o el gasto (`fecha_generacion`) al que corresponde, que es
+la misma que muestran esas pantallas. Lo que no nace de un ingreso ni de un
+gasto (transferencias, retiros, compras, comisiones, ajustes) usa el día de
+Argentina de `contabilizado_en`. Respeta el alcance de sucursal igual que `GET /cash/movements`
 (cuentas compartidas o de las sucursales del usuario).
 
 | Parámetro | Descripción |
 | --- | --- |
-| `page`, `limit`, `from`, `to` | Como arriba; el rango es sobre `creado_en` (cuándo se cargó), no sobre la fecha contable. |
+| `page`, `limit`, `from`, `to` | Como arriba, pero el rango y el orden son por `date` (ver arriba), no por el momento de carga. Cada ítem trae `date`, `occurredAt` y `createdAt`. |
 | `accountId` | Cuenta de caja. |
 | `branchId` | Sucursal de la cuenta de caja. |
 | `direction` | `CREDITO` (entrada) o `DEBITO` (salida). |
@@ -114,8 +118,9 @@ carga. Respeta el alcance de sucursal igual que `GET /cash/movements`
 | `search` | Referencia, notas, descripción del ingreso, cliente, detalle del gasto o quien registró. |
 | `onlyReversals` | `true`: sólo movimientos reversados y sus reversas. |
 
-Cada ítem trae `createdAt` (fecha y hora de carga), `occurredAt` (fecha
-contable), cuenta y sucursal, tipo, sentido, `amount`, `registeredBy`,
+Cada ítem trae `date` (`YYYY-MM-DD`, la fecha con la que figura en caja),
+`createdAt` (fecha y hora de carga), `occurredAt` (`contabilizado_en` del
+movimiento), cuenta y sucursal, tipo, sentido, `amount`, `registeredBy`,
 `source` (`INCOME`, `EXPENSE`, `PURCHASE`, `COMMISSION`, `TRANSFER`, `OTHER`),
 la venta y el cliente, el medio de pago, `handover` (a quién se rinde el
 efectivo, estado, quién confirmó y cuándo) y `reversal` (quién lo reversó,

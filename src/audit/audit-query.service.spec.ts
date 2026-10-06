@@ -81,6 +81,8 @@ function movement(overrides: Record<string, unknown> = {}) {
     movimientos_caja: null,
     ingresos_movimientos_caja_ingreso: {
       id: INCOME,
+      // Cargado el 4/10 con fecha del 3/10: en la caja vale el 3/10.
+      fecha_ingreso: new Date('2026-10-03T00:00:00.000Z'),
       tipo_original: 'SEÑA',
       descripcion: 'Seña Honda Wave',
       medio_pago: 'EFECTIVO',
@@ -482,6 +484,7 @@ describe('AuditQueryService', () => {
     ]);
     expect(page.items[0]).toMatchObject({
       createdAt: new Date('2026-10-04T15:30:12.000Z'),
+      date: '2026-10-03',
       amount: '150000.5',
       direction: 'CREDITO',
       account: { name: 'Efectivo San Miguel', currency: 'ARS' },
@@ -500,6 +503,59 @@ describe('AuditQueryService', () => {
     const where = firstArg(tx.movimientos_caja.findMany).where;
     expect(where.organizacion_id).toBe(ORG);
     expect(where.cuentas_caja).toEqual({ AND: [{}, {}] });
+  });
+
+  it('orders money movements by the date loaded on the income or expense', async () => {
+    const late = movement({
+      id: 'mov-late',
+      // Se cargó último, pero el ingreso es del 1/10.
+      creado_en: new Date('2026-10-06T15:00:00.000Z'),
+      contabilizado_en: new Date('2026-10-06T15:00:00.000Z'),
+      ingresos_movimientos_caja_ingreso: {
+        ...movement().ingresos_movimientos_caja_ingreso,
+        fecha_ingreso: new Date('2026-10-01T00:00:00.000Z'),
+      },
+    });
+    const expense = movement({
+      id: 'mov-expense',
+      tipo_movimiento: 'EGRESO',
+      direccion: 'DEBITO',
+      ingresos_movimientos_caja_ingreso: null,
+      gastos: {
+        id: 'expense-1',
+        sucursal_id: BRANCH,
+        fecha_generacion: new Date('2026-10-05T00:00:00.000Z'),
+        categoria: 'Alquiler',
+        detalle: null,
+        operaciones: null,
+      },
+    });
+    // Sin ingreso ni gasto: vale el día de Argentina del movimiento (2/10).
+    const manual = movement({
+      id: 'mov-manual',
+      contabilizado_en: new Date('2026-10-03T01:00:00.000Z'),
+      ingresos_movimientos_caja_ingreso: null,
+    });
+    tx.movimientos_caja.findMany.mockImplementation(
+      (args: { where: { id?: { in: string[] } } }) => {
+        const all = [late, manual, movement(), expense];
+        const ids = args.where.id?.in;
+        return Promise.resolve(
+          ids ? all.filter((item) => ids.includes(item.id)) : all,
+        );
+      },
+    );
+    tx.movimientos_caja.groupBy.mockResolvedValue([]);
+    tx.cuentas_caja.findMany.mockResolvedValue([]);
+
+    const page = await service.moneyMovements({ page: 1, limit: 3 }, actor());
+
+    expect(page.total).toBe(4);
+    expect(page.items.map((item) => [item.id, item.date])).toEqual([
+      ['mov-expense', '2026-10-05'],
+      ['mov-1', '2026-10-03'],
+      ['mov-manual', '2026-10-02'],
+    ]);
   });
 
   it('scopes money movements to the branches of the user and hides purchase amounts', async () => {
@@ -538,9 +594,41 @@ describe('AuditQueryService', () => {
     ]);
 
     const page = await service.moneyMovements(
-      { page: 1, limit: 50, branchId: BRANCH },
+      {
+        page: 1,
+        limit: 50,
+        branchId: BRANCH,
+        from: '2026-10-01T03:00:00.000Z',
+        to: '2026-11-01T02:59:59.999Z',
+      },
       scoped,
     );
+    // El período es por la fecha cargada en el ingreso o el gasto; lo que no
+    // nace de uno de ellos, por la fecha del movimiento.
+    const filtered = firstArg(tx.movimientos_caja.findMany).where;
+    const days = {
+      gte: new Date('2026-10-01T00:00:00.000Z'),
+      lte: new Date('2026-10-31T00:00:00.000Z'),
+    };
+    expect(filtered.AND).toContainEqual({
+      OR: [
+        {
+          ingreso_id: { not: null },
+          ingresos_movimientos_caja_ingreso: { fecha_ingreso: days },
+        },
+        { gasto_id: { not: null }, gastos: { fecha_generacion: days } },
+        {
+          ingreso_id: null,
+          gasto_id: null,
+          contabilizado_en: {
+            gte: new Date('2026-10-01T03:00:00.000Z'),
+            lte: new Date('2026-11-01T02:59:59.999Z'),
+          },
+        },
+      ],
+    });
+    expect(filtered.contabilizado_en).toBeUndefined();
+    expect(filtered.creado_en).toBeUndefined();
 
     // Alcance del usuario y, además, la sucursal pedida en el filtro.
     expect(firstArg(tx.movimientos_caja.findMany).where.cuentas_caja).toEqual({
