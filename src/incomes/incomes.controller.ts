@@ -3,11 +3,13 @@ import {
   Controller,
   Get,
   Param,
+  ParseEnumPipe,
   ParseUUIDPipe,
   Patch,
   Post,
   Query,
 } from '@nestjs/common';
+import { tipo_vehiculo_luma } from '@prisma/client';
 import { AuditedMutation } from '../audit/decorators/audited-mutation.decorator';
 import { PERMISSION_CODES } from '../auth/auth.constants';
 import type { AuthenticatedUser } from '../auth/auth.types';
@@ -38,8 +40,13 @@ export class IncomesController {
     @CurrentUser() actor: AuthenticatedUser,
     @Query('organizationId', new ParseUUIDPipe({ optional: true }))
     organizationId?: string,
+    @Query(
+      'vehicleType',
+      new ParseEnumPipe(tipo_vehiculo_luma, { optional: true }),
+    )
+    vehicleType?: tipo_vehiculo_luma,
   ) {
-    return this.service.handoverRecipients(actor, organizationId);
+    return this.service.handoverRecipients(actor, organizationId, vehicleType);
   }
 
   @Get()

@@ -10,6 +10,7 @@ import {
   metodo_cobranza_luma,
   Prisma,
   tipo_movimiento_caja_luma,
+  tipo_vehiculo_luma,
 } from '@prisma/client';
 import { AuditService, AuthenticatedAuditEvent } from '../audit/audit.service';
 import type { AuthenticatedUser } from '../auth/auth.types';
@@ -208,6 +209,50 @@ export async function reopenInstallment(
   `);
 }
 
+// Ingresos que pertenecen a la grilla de un tipo de vehículo: los de una
+// unidad u operación de ese tipo y, sin ninguna de las dos, los cargados en
+// ese circuito. Lo usan el listado y el conteo de rendiciones pendientes,
+// para que el aviso y la grilla hablen de los mismos ingresos.
+function vehicleTypeWhere(
+  vehicleType: tipo_vehiculo_luma,
+): Prisma.ingresosWhereInput[] {
+  return [
+    {
+      OR: [
+        { unidad_vehiculo_id: null },
+        {
+          unidades_vehiculos: {
+            versiones_vehiculos: {
+              modelos_vehiculos: { tipo_vehiculo: vehicleType },
+            },
+          },
+        },
+      ],
+    },
+    {
+      OR: [
+        { operacion_id: null },
+        {
+          operaciones: {
+            versiones_vehiculos: {
+              modelos_vehiculos: { tipo_vehiculo: vehicleType },
+            },
+          },
+        },
+      ],
+    },
+    // Sin unidad ni operación se clasifica por el circuito donde se
+    // cargó; sin ese dato no pertenece a ninguna grilla por tipo.
+    {
+      OR: [
+        { unidad_vehiculo_id: { not: null } },
+        { operacion_id: { not: null } },
+        { tipo_vehiculo: vehicleType },
+      ],
+    },
+  ];
+}
+
 @Injectable()
 export class IncomesService {
   constructor(
@@ -271,47 +316,7 @@ export class IncomesService {
             },
           }
         : undefined,
-      AND: query.vehicleType
-        ? [
-            {
-              OR: [
-                { unidad_vehiculo_id: null },
-                {
-                  unidades_vehiculos: {
-                    versiones_vehiculos: {
-                      modelos_vehiculos: {
-                        tipo_vehiculo: query.vehicleType,
-                      },
-                    },
-                  },
-                },
-              ],
-            },
-            {
-              OR: [
-                { operacion_id: null },
-                {
-                  operaciones: {
-                    versiones_vehiculos: {
-                      modelos_vehiculos: {
-                        tipo_vehiculo: query.vehicleType,
-                      },
-                    },
-                  },
-                },
-              ],
-            },
-            // Sin unidad ni operación se clasifica por el circuito donde se
-            // cargó; sin ese dato no pertenece a ninguna grilla por tipo.
-            {
-              OR: [
-                { unidad_vehiculo_id: { not: null } },
-                { operacion_id: { not: null } },
-                { tipo_vehiculo: query.vehicleType },
-              ],
-            },
-          ]
-        : undefined,
+      AND: query.vehicleType ? vehicleTypeWhere(query.vehicleType) : undefined,
       fecha_ingreso:
         query.from || query.to
           ? {
@@ -739,7 +744,14 @@ export class IncomesService {
    * with an active user whose role has `caja.recibir_rendicion`, with what is
    * still pending to be handed to each of them.
    */
-  async handoverRecipients(actor: AuthenticatedUser, organizationId?: string) {
+  // `vehicleType` acota los pendientes a los que muestra la grilla de ese
+  // tipo (Ingresos de motos / de autos), para que el aviso de cada pantalla
+  // cuente sólo lo que esa pantalla lista. Sin él, cuenta todo.
+  async handoverRecipients(
+    actor: AuthenticatedUser,
+    organizationId?: string,
+    vehicleType?: tipo_vehiculo_luma,
+  ) {
     assertOrganization(actor, organizationId);
     const targetOrganizationId = organizationId ?? actor.organization.id;
     return this.prisma.withTenant(scope(actor), async (tx) => {
@@ -757,6 +769,12 @@ export class IncomesService {
               rendido_a_personal_id: {
                 in: recipients.map((recipient) => recipient.id),
               },
+              ...(vehicleType
+                ? {
+                    es_transferencia: false,
+                    AND: vehicleTypeWhere(vehicleType),
+                  }
+                : {}),
             },
             _count: { _all: true },
             _sum: { importe: true },

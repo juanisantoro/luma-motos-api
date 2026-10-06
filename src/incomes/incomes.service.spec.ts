@@ -148,6 +148,63 @@ describe('IncomesService', () => {
     });
   });
 
+  it('counts pending handovers only for the vehicle type of the screen', async () => {
+    const personalFindMany = jest
+      .fn()
+      .mockResolvedValue([
+        { id: 'p1', nombre_completo: 'Juan', usuario_id: actor.id },
+      ]);
+    const groupBy = jest.fn().mockResolvedValue([
+      {
+        rendido_a_personal_id: 'p1',
+        _count: { _all: 3 },
+        _sum: { importe: new Prisma.Decimal('3114000') },
+      },
+    ]);
+    Object.assign(transaction, {
+      personal: { findMany: personalFindMany },
+    });
+    Object.assign(transaction.ingresos, { groupBy });
+
+    const recipients = await service.handoverRecipients(
+      actor,
+      undefined,
+      'AUTO',
+    );
+
+    expect(recipients).toEqual([
+      {
+        id: 'p1',
+        fullName: 'Juan',
+        isCurrentUser: true,
+        pendingCount: 3,
+        pendingAmount: '3114000',
+      },
+    ]);
+    const where = (
+      groupBy.mock.calls[0] as [{ where: Prisma.ingresosWhereInput }]
+    )[0].where;
+    // The same incomes the AUTO list shows: not transfers, of that type.
+    expect(where.es_transferencia).toBe(false);
+    const clauses = where.AND as Prisma.ingresosWhereInput[];
+    expect(clauses).toHaveLength(3);
+    expect(clauses[2]).toEqual({
+      OR: [
+        { unidad_vehiculo_id: { not: null } },
+        { operacion_id: { not: null } },
+        { tipo_vehiculo: 'AUTO' },
+      ],
+    });
+
+    // Without a vehicle type (forms that only need the names) nothing changes.
+    await service.handoverRecipients(actor);
+    const all = (
+      groupBy.mock.calls[1] as [{ where: Prisma.ingresosWhereInput }]
+    )[0].where;
+    expect(all.AND).toBeUndefined();
+    expect(all.es_transferencia).toBeUndefined();
+  });
+
   it('does not filter by vehicle type when it is not requested', async () => {
     await service.findAll({ page: 1, limit: 20 }, actor);
 

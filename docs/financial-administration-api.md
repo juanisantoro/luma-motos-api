@@ -255,7 +255,12 @@ DESEMBOLSO_FINANCIERA|PAGARE|OTRO`. For `EFECTIVO`:
   (`409 HANDOVER_ALREADY_CONFIRMED`).
 
 `GET /incomes/cash-handover/recipients` (`ingresos.consultar`, optional
-`organizationId` for global access) lists valid recipients:
+`organizationId` for global access) lists valid recipients. With
+`vehicleType` (`MOTO|AUTO`), `pendingCount` and `pendingAmount` only count the
+incomes that the list of that vehicle type shows (same rule as the
+`vehicleType` filter above), so the notice in "Ingresos de motos" and the one
+in "Ingresos de autos" never mix. Without it they count every pending
+handover:
 
 ```json
 [
