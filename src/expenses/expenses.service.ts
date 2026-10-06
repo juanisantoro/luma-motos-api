@@ -103,6 +103,49 @@ export class ExpensesService {
     });
   }
 
+  // Total de gastos en pesos generados en [from, to] para un alcance de
+  // sucursales (inicio del ADMINISTRADOR, por sucursal). No incluye los
+  // cancelados ni los cargados en otra moneda: sumar dólares con pesos da un
+  // número que no significa nada.
+  async totalInRange(
+    actor: AuthenticatedUser,
+    branches: BranchScope,
+    from: Date,
+    to: Date,
+  ) {
+    return this.prisma.withTenant(scope(actor), async (tx) => {
+      const result = await tx.gastos.aggregate({
+        where: {
+          organizacion_id: actor.organization.id,
+          sucursal_id: branches.where(),
+          moneda: 'ARS',
+          estado_pago: { not: 'CANCELADA' },
+          fecha_generacion: { gte: from, lte: to },
+        },
+        _sum: { importe: true },
+        _count: { _all: true },
+      });
+      return {
+        amount: Number(result._sum.importe ?? 0),
+        count: result._count._all,
+      };
+    });
+  }
+
+  // Inicio: gastos cargados que todavía no se pagaron del todo. No mira la
+  // fecha de vencimiento porque el formulario de gastos no la carga.
+  async pendingPaymentCount(actor: AuthenticatedUser, branches: BranchScope) {
+    return this.prisma.withTenant(scope(actor), (tx) =>
+      tx.gastos.count({
+        where: {
+          organizacion_id: actor.organization.id,
+          sucursal_id: branches.where(),
+          estado_pago: { in: ['PENDIENTE', 'PAGO_PARCIAL', 'VENCIDO'] },
+        },
+      }),
+    );
+  }
+
   async findAll(query: ExpenseQueryDto, actor: AuthenticatedUser) {
     assertOrganization(actor, query.organizationId);
     const organizationId =

@@ -233,6 +233,14 @@ describe('BranchScope', () => {
     expect(BranchScope.all().whereSharedOrInScope()).toBeUndefined();
   });
 
+  it('narrows to one branch without leaving the scope', () => {
+    expect(BranchScope.all().only('b2').branchIds).toEqual(['b2']);
+    expect(BranchScope.forActor(actor()).only('b1').allBranches).toBe(false);
+    expect(() => BranchScope.forActor(actor()).only('b2')).toThrow(
+      HttpException,
+    );
+  });
+
   it('renders raw SQL predicates', () => {
     const column = Prisma.sql`o.sucursal_id`;
     expect(BranchScope.all().sql(column).sql).toBe('TRUE');

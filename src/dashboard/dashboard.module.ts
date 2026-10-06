@@ -11,6 +11,7 @@ import { SupplierPurchasesModule } from '../supplier-purchases/supplier-purchase
 import { VehiclePaymentsModule } from '../vehicle-payments/vehicle-payments.module';
 import { DashboardController } from './dashboard.controller';
 import { DashboardService } from './dashboard.service';
+import { PendingTasksService } from './pending-tasks.service';
 
 // This module orchestrates the home-screen aggregations only - it injects
 // and reuses the business services below rather than re-implementing their
@@ -29,6 +30,6 @@ import { DashboardService } from './dashboard.service';
     ExpensesModule,
   ],
   controllers: [DashboardController],
-  providers: [DashboardService],
+  providers: [DashboardService, PendingTasksService],
 })
 export class DashboardModule {}

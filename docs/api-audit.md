@@ -153,5 +153,11 @@ lo mismo con `--apply`. Reversa cada cobro en la histórica y lo vuelve a
 registrar en la caja del mismo socio, sucursal y moneda; lo deja en la
 auditoría como `INCOME_COLLECTION_REASSIGNED`.
 
+Lo mismo para los pagos (y recuperaciones) de gastos que quedaron en una
+histórica: `npm run caja:reasignar-egresos-historicos -- --actor-email <correo>`
+(simulación) y con `--apply`. Queda en la auditoría del gasto como
+`EXPENSE_PAYMENT_REASSIGNED`. Un gasto general (sin sucursal) sólo se pasa a
+una caja compartida del mismo socio; si no hay, lo lista en "NO SE MUEVEN".
+
 En una cuenta compartida, un usuario acotado ve el movimiento pero no la
 venta ni el cliente cuando el ingreso o el gasto es de otra sucursal.

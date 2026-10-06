@@ -78,6 +78,10 @@ export const AUDIT_ACTIONS: Record<string, CatalogEntry> = {
   EXPENSE_CREATED: entry('DINERO', 'Gasto cargado'),
   EXPENSE_UPDATED: entry('DINERO', 'Gasto modificado'),
   EXPENSE_PAYMENT_REGISTERED: entry('DINERO', 'Pago de un gasto'),
+  EXPENSE_PAYMENT_REASSIGNED: entry(
+    'DINERO',
+    'Pago de gasto reasignado de caja',
+  ),
   EXPENSE_RECOVERY_REGISTERED: entry('DINERO', 'Recuperación de un gasto'),
   EXPENSE_MOVEMENT_REVERSED: entry('DINERO', 'Movimiento de gasto reversado'),
   SUPPLIER_PURCHASE_CREATED: entry('DINERO', 'Compra cargada'),

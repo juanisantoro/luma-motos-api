@@ -44,6 +44,51 @@ y el mismo componente en el frontend (`SellerDashboard`).
 `branchName` es `null` para un actor sin sucursal (por ejemplo,
 ADMINISTRADOR con acceso a toda la organización).
 
+## Tareas pendientes de administración (`pendingTasks`)
+
+Presente en las respuestas de `ADMINISTRADOR`, `GERENTE` y `ADMINISTRATIVA`.
+Es el trabajo pendiente de administración contado sucursal por sucursal:
+
+- `ADMINISTRATIVA`: las sucursales de su alcance (normalmente la suya).
+- `GERENTE`: las sucursales que tiene asignadas; todas si tiene
+  `sucursales.todas`.
+- `ADMINISTRADOR`: todas las sucursales activas de la organización.
+
+```json
+{
+  "pendingTasks": {
+    "branches": [
+      {
+        "branchId": "uuid",
+        "branchName": "San Miguel",
+        "total": 23,
+        "tasks": [
+          { "key": "INSTALLMENTS_OVERDUE", "count": 9, "amount": 1250000 },
+          { "key": "INCOMES_PENDING_COLLECTION", "count": 4, "amount": null }
+        ]
+      }
+    ]
+  }
+}
+```
+
+| `key` | Qué cuenta | Permiso |
+| --- | --- | --- |
+| `INSTALLMENTS_DUE_TODAY` | Cuotas de crédito propio que vencen hoy, sin cobrar (con `amount`). | `creditos.consultar` |
+| `INSTALLMENTS_OVERDUE` | Cuotas con vencimiento pasado, `PENDIENTE` o `PARCIAL` (con `amount`). | `creditos.consultar` |
+| `INCOMES_PENDING_COLLECTION` | Ingresos `PENDIENTE` o `PAGO_PARCIAL` que no esperan conciliación. | `ingresos.consultar` |
+| `CASH_PENDING_HANDOVER` | Ingresos en efectivo con `estado_rendicion = PENDIENTE_RENDICION`. | `ingresos.consultar` |
+| `VEHICLE_PAYMENTS_UNCONFIRMED` | Pagos de vehículo en `PENDIENTE`. | `pagos_vehiculo.consultar` |
+| `LICENSING_OVERDUE` | Patentes con la fecha estimada vencida y sin cargar. | `ventas.patentamiento.gestionar` |
+| `LICENSING_PENDING_COLLECTION` | Patentes recibidas con el cobro al cliente pendiente. | `ventas.patentamiento.gestionar` |
+| `EXPENSES_PENDING_PAYMENT` | Gastos `PENDIENTE`, `PAGO_PARCIAL` o `VENCIDO`. | `gastos.consultar` |
+
+Cada tarea aparece sólo si el actor tiene su permiso (nunca por nombre de
+rol); `pendingTasks` es `null` si no tiene ninguno. `amount` sólo viene en las
+cuotas, que son siempre en pesos. Cada número sale de la misma consulta que
+usa la pantalla donde la tarea se resuelve, acotada a una sucursal
+(`BranchScope.only`). Implementación: `src/dashboard/pending-tasks.service.ts`.
+
 ## ADMINISTRADOR — toda la organización
 
 ```json
@@ -77,6 +122,25 @@ ADMINISTRADOR con acceso a toda la organización).
       "units": 8,
       "amount": 20000000
     }
+  ],
+  "branches": [
+    {
+      "branchId": "uuid",
+      "branchName": "San Miguel",
+      "monthlySales": { "...": "misma forma, sólo esta sucursal" },
+      "collection": {
+        "agreedAmount": 62000000,
+        "collectedAmount": 50800000,
+        "pendingAmount": 11200000,
+        "pendingOperations": 9
+      },
+      "expensesThisMonth": { "amount": 9800000, "count": 31 },
+      "stockUnits": 58,
+      "creditPortfolio": { "...": "misma forma, sólo esta sucursal" },
+      "pendingApprovals": 3,
+      "sellers": [{ "sellerId": "uuid", "sellerName": "Vendedor Demo", "units": 12 }],
+      "topModels": [{ "...": "misma forma que topModels, sólo esta sucursal" }]
+    }
   ]
 }
 ```
@@ -88,6 +152,23 @@ ADMINISTRADOR con acceso a toda la organización).
 | `stockUnitsTotal` | `inventario.consultar` | Suma unidades `EN_STOCK` de MOTO + AUTO |
 | `creditPortfolio` | `creditos.consultar` | Cartera de créditos personales de toda la organización |
 | `pendingPurchases` | `compras.consultar` | Compras a proveedor pendientes de recepción |
+| `branches` | `ventas.consultar` | Una entrada por sucursal activa (las mismas de `salesByBranch`), cada una con sus propios números. Es lo que arma la vista por sucursal del inicio |
+
+Dentro de cada entrada de `branches`, cada dato respeta su permiso y vuelve en
+`null` si el rol no lo tiene:
+
+| Campo | Permiso | Notas |
+| --- | --- | --- |
+| `monthlySales`, `topModels` | `ventas.consultar` | Mes en curso contra el anterior; `topModels` trae hasta 5 |
+| `collection` | `ventas.consultar` + `ingresos.consultar` | Cobranza de las ventas computables **del mes** de esa sucursal, con las reglas de Seguimiento de cobros: no cuenta patente ni cuotas de crédito propio. `pendingAmount` suma sólo los saldos positivos y `pendingOperations` cuenta esas ventas. Se atribuye por la sucursal de la venta, no por la de la caja |
+| `expensesThisMonth` | `gastos.consultar` | Gastos en pesos generados en el mes para esa sucursal. No incluye cancelados, ni los de otra moneda, ni los generales (sin sucursal) |
+| `stockUnits` | `inventario.consultar` | Unidades `EN_STOCK` de MOTO + AUTO |
+| `creditPortfolio` | `creditos.consultar` | Créditos personales de las ventas de esa sucursal |
+| `pendingApprovals` | `ventas.aprobar` | Ventas esperando aprobación, MOTO + AUTO |
+| `sellers` | `comisiones.consultar` | Hasta 5 vendedores por unidades computables del mes |
+
+Lo pendiente de administración de cada sucursal (patentes, efectivo sin
+rendir, cuotas vencidas) no se repite acá: el inicio lo toma de `pendingTasks`.
 
 Este home **no** incluye comisiones ni caja consolidada, ni "alertas de
 gestión": se sacaron a pedido del cliente durante la revisión de los

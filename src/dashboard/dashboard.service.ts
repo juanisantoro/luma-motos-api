@@ -9,6 +9,7 @@ import { CreditInquiriesService } from '../credit-inquiries/credit-inquiries.ser
 import { CreditPlansService } from '../credit-plans/credit-plans.service';
 import { ExpensesService } from '../expenses/expenses.service';
 import { InventoryService } from '../inventory/inventory.service';
+import { PendingTasksService } from './pending-tasks.service';
 import { SalesService } from '../sales/sales.service';
 import { SupplierPurchasesService } from '../supplier-purchases/supplier-purchases.service';
 import { VehiclePaymentsService } from '../vehicle-payments/vehicle-payments.service';
@@ -24,6 +25,19 @@ function currentPeriodKey(): string {
 // today (UTC), not a Mon-Sun calendar week - simpler to reason about and
 // avoids a timezone-dependent week boundary. Backward-looking for "loaded
 // this week" counts, forward-looking for "due this week" amounts.
+// Primer y último día (UTC) del mes de un período "AAAA-MM", para columnas
+// de fecha sin hora.
+function periodRange(period: string): { from: Date; to: Date } {
+  const [year, month] = period.split('-').map(Number);
+  return {
+    from: new Date(Date.UTC(year, month - 1, 1)),
+    to: new Date(Date.UTC(year, month, 0)),
+  };
+}
+
+// Vendedores y modelos que se muestran por sucursal.
+const BRANCH_RANKING_LIMIT = 5;
+
 function daysAgoUtcStart(days: number): Date {
   const now = new Date();
   return new Date(
@@ -66,6 +80,7 @@ export class DashboardService {
     private readonly supplierPurchases: SupplierPurchasesService,
     private readonly vehiclePayments: VehiclePaymentsService,
     private readonly expenses: ExpensesService,
+    private readonly pendingTasks: PendingTasksService,
   ) {}
 
   async getHome(actor: AuthenticatedUser) {
@@ -131,6 +146,7 @@ export class DashboardService {
     has: (code: string) => boolean,
   ) {
     const period = currentPeriodKey();
+    const allBranches = BranchScope.forActor(actor);
     const [
       monthlySales,
       salesByBranch,
@@ -139,6 +155,7 @@ export class DashboardService {
       stockUnitsTotal,
       creditPortfolio,
       pendingPurchases,
+      pendingTasks,
     ] = await Promise.all([
       has(PERMISSION_CODES.SALES_READ) ? this.sales.monthlyPerformance(actor) : null,
       has(PERMISSION_CODES.SALES_READ) ? this.sales.salesByBranch(actor, period) : null,
@@ -157,14 +174,111 @@ export class DashboardService {
       has(PERMISSION_CODES.PURCHASES_READ)
         ? this.supplierPurchases.pendingReceiptCount(actor)
         : null,
+      // Tareas de las administrativas, sucursal por sucursal.
+      this.pendingTasks.byBranch(actor),
     ]);
+    // Una entrada por sucursal activa (las de salesByBranch), cada una con
+    // sus propios números: es lo que arma la vista por sucursal del inicio.
+    const branches = salesByBranch
+      ? await Promise.all(
+          salesByBranch.map((branch) =>
+            this.buildAdminBranch(
+              actor,
+              allBranches.only(branch.branchId),
+              branch,
+              period,
+              has,
+            ),
+          ),
+        )
+      : null;
     return {
+      pendingTasks,
       monthlySales,
       newClientsThisWeek,
       stockUnitsTotal,
       creditPortfolio,
       pendingPurchases,
       salesByBranch,
+      topModels,
+      branches,
+    };
+  }
+
+  // Los números de UNA sucursal para el inicio del ADMINISTRADOR. Cada dato
+  // respeta su permiso, igual que en la vista consolidada; el que el rol no
+  // tiene vuelve en null. Lo pendiente de administración de cada sucursal no
+  // va acá: sale de `pendingTasks`.
+  private async buildAdminBranch(
+    actor: AuthenticatedUser,
+    scope: BranchScope,
+    branch: { branchId: string; branchName: string },
+    period: string,
+    has: (code: string) => boolean,
+  ) {
+    const branchId = branch.branchId;
+    const month = periodRange(period);
+    const canSell = has(PERMISSION_CODES.SALES_READ);
+    const [
+      monthlySales,
+      collection,
+      expensesThisMonth,
+      stockUnits,
+      creditPortfolio,
+      pendingApprovals,
+      sellers,
+      topModels,
+    ] = await Promise.all([
+      canSell ? this.sales.monthlyPerformance(actor, { branchId }) : null,
+      canSell && has(PERMISSION_CODES.INCOMES_READ)
+        ? this.sales.collectionSummary(actor, { branchId, period })
+        : null,
+      has(PERMISSION_CODES.EXPENSES_READ)
+        ? this.expenses.totalInRange(actor, scope, month.from, month.to)
+        : null,
+      has(PERMISSION_CODES.INVENTORY_READ)
+        ? this.sumAcrossVehicleTypes((vehicleType) =>
+            this.stockCount(actor, vehicleType, branchId),
+          )
+        : null,
+      has(PERMISSION_CODES.CREDIT_PLANS_READ)
+        ? this.creditPlans.personalCreditPortfolio(actor, scope)
+        : null,
+      has(PERMISSION_CODES.SALES_APPROVE)
+        ? this.sumAcrossVehicleTypes(async (vehicleType) => {
+            const page: ApprovalPage = await this.sales.pendingApprovals(
+              { vehicleType, branchId, page: 1, limit: 1 },
+              actor,
+            );
+            return page.total;
+          })
+        : null,
+      has(PERMISSION_CODES.COMMISSIONS_READ)
+        ? this.teamRanking(actor, branchId, period)
+        : null,
+      canSell
+        ? this.sales.topModels(actor, {
+            branchId,
+            period,
+            limit: BRANCH_RANKING_LIMIT,
+          })
+        : null,
+    ]);
+    return {
+      branchId,
+      branchName: branch.branchName,
+      monthlySales,
+      collection,
+      expensesThisMonth,
+      stockUnits,
+      creditPortfolio,
+      pendingApprovals,
+      sellers:
+        sellers?.slice(0, BRANCH_RANKING_LIMIT).map((seller) => ({
+          sellerId: seller.sellerId,
+          sellerName: seller.sellerName,
+          units: seller.units,
+        })) ?? null,
       topModels,
     };
   }
@@ -181,8 +295,15 @@ export class DashboardService {
     // Commission suggestions are queried per branch; with several allowed
     // branches the ranking uses the user's main branch.
     const rankingBranchId = actor.branch?.id ?? branches.singleBranchId;
-    const [monthlySales, ownCommission, creditOverdue, approvals, teamRanking, topModels] =
-      await Promise.all([
+    const [
+      monthlySales,
+      ownCommission,
+      creditOverdue,
+      approvals,
+      teamRanking,
+      topModels,
+      pendingTasks,
+    ] = await Promise.all([
         has(PERMISSION_CODES.SALES_READ)
           ? this.sales.monthlyPerformance(actor)
           : null,
@@ -201,8 +322,11 @@ export class DashboardService {
         has(PERMISSION_CODES.SALES_READ)
           ? this.sales.topModels(actor, { period, limit: 5 })
           : null,
+        // Tareas de administración de las sucursales que tiene asignadas.
+        this.pendingTasks.byBranch(actor),
       ]);
     return {
+      pendingTasks,
       pendingApprovalsCount: approvals?.total ?? null,
       monthlySales,
       ownCommission,
@@ -233,6 +357,7 @@ export class DashboardService {
       managementAlerts,
       topModels,
       licensingAlerts,
+      pendingTasks,
     ] = await Promise.all([
       has(PERMISSION_CODES.CREDIT_PLANS_READ)
         ? this.creditPlans.dueTodaySummary(actor, branches)
@@ -265,10 +390,13 @@ export class DashboardService {
       has(PERMISSION_CODES.SALES_LICENSING_MANAGE)
         ? this.sales.licensingAlerts(actor, branches)
         : null,
+      // Sus tareas pendientes, de su sucursal.
+      this.pendingTasks.byBranch(actor),
     ]);
     // Decided: ADMINISTRATIVA does not see commissions for now ("comisiones
     // por pagar" dropped from this home, no comisiones.* permission).
     return {
+      pendingTasks,
       dueTodayAlert,
       dueThisWeek,
       unconfirmedVehiclePayments,
@@ -361,9 +489,19 @@ export class DashboardService {
     return values.reduce((sum, value) => sum + value, 0);
   }
 
-  private async stockCount(actor: AuthenticatedUser, vehicleType: tipo_vehiculo_luma) {
+  private async stockCount(
+    actor: AuthenticatedUser,
+    vehicleType: tipo_vehiculo_luma,
+    branchId?: string,
+  ) {
     const page = await this.inventory.findAll(
-      { vehicleType, inventoryStatus: luma_estado_inventario.EN_STOCK, page: 1, limit: 1 },
+      {
+        vehicleType,
+        inventoryStatus: luma_estado_inventario.EN_STOCK,
+        branchId,
+        page: 1,
+        limit: 1,
+      },
       actor,
     );
     return page.total;

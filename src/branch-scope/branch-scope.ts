@@ -126,6 +126,15 @@ export class BranchScope {
     return new BranchScope(true, []);
   }
 
+  /**
+   * Same scope reduced to one of its branches, to break a figure down by
+   * branch with the queries that already take a scope.
+   */
+  only(branchId: string): BranchScope {
+    this.assert(branchId);
+    return new BranchScope(false, [branchId]);
+  }
+
   /** `null` means "every branch of the organization". */
   get allowedBranchIds(): string[] | null {
     return this.allBranches ? null : [...this.branchIds];

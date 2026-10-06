@@ -26,7 +26,8 @@
     "prisma:seed": "prisma db seed",
     "user:create-admin": "tsx scripts/create-first-admin.ts",
     "financieras:add": "tsx scripts/add-financieras.ts",
-    "caja:reasignar-historicas": "tsx scripts/reassign-historic-collections.ts"
+    "caja:reasignar-historicas": "tsx scripts/reassign-historic-collections.ts",
+    "caja:reasignar-egresos-historicos": "tsx scripts/reassign-historic-expense-payments.ts"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.1",

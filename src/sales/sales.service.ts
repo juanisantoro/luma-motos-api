@@ -1106,6 +1106,71 @@ export class SalesService {
     });
   }
 
+  // Cobranza de las ventas computables del mes de una sucursal (inicio del
+  // ADMINISTRADOR, por sucursal): lo acordado, lo cobrado y lo que falta
+  // cobrar, con las mismas reglas que Seguimiento de cobros (no cuenta la
+  // patente ni las cuotas de crédito propio; lo financiado ya informado no
+  // es saldo).
+  async collectionSummary(
+    actor: AuthenticatedUser,
+    opts: { branchId: string; period: string },
+  ) {
+    const range = commissionPeriod(opts.period);
+    return this.prisma.withTenant(this.scope(actor), async (tx) => {
+      const rows = await tx.operaciones.findMany({
+        where: {
+          organizacion_id: actor.organization.id,
+          sucursal_id: BranchScope.forActor(actor).where(opts.branchId),
+          fecha_operacion: { gte: range.from, lte: range.to },
+        },
+        select: {
+          id: true,
+          estado_operacion: true,
+          precio_acordado: true,
+          componentes_pago_operacion: { select: trackingComponentSelect },
+        },
+      });
+      const eligible = rows.filter(
+        (row) =>
+          commissionOperationEligibility(row.estado_operacion).computable,
+      );
+      const incomes = await this.trackingIncomes(
+        tx,
+        eligible.map((row) => row.id),
+      );
+      const byOperation = new Map<string, TrackingIncomeRecord[]>();
+      for (const income of incomes) {
+        if (!income.operacion_id) continue;
+        const list = byOperation.get(income.operacion_id) ?? [];
+        list.push(income);
+        byOperation.set(income.operacion_id, list);
+      }
+      let agreed = new Prisma.Decimal(0);
+      let collected = new Prisma.Decimal(0);
+      let pending = new Prisma.Decimal(0);
+      let pendingOperations = 0;
+      for (const row of eligible) {
+        const totals = trackingTotals(
+          row.precio_acordado,
+          byOperation.get(row.id) ?? [],
+          row.componentes_pago_operacion,
+        );
+        agreed = agreed.plus(row.precio_acordado);
+        collected = collected.plus(totals.collected);
+        if (totals.balance.greaterThan(0)) {
+          pending = pending.plus(totals.balance);
+          pendingOperations += 1;
+        }
+      }
+      return {
+        agreedAmount: Number(agreed),
+        collectedAmount: Number(collected),
+        pendingAmount: Number(pending),
+        pendingOperations,
+      };
+    });
+  }
+
   // Top selling models by units for the current month, scoped to a branch
   // and/or a single seller when given ("Modelos más vendidos" /
   // "Tus modelos más vendidos" panels across all four homes).
