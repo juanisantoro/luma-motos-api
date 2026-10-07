@@ -30,8 +30,10 @@ import {
   assertOrganization,
   businessDate,
   COMPUTED_FILTER_SCAN_LIMIT,
+  currencyTotals,
   databasePaymentStatus,
   decimal,
+  groupedCurrencyTotals,
   paymentStatus,
   scope,
   targetOrganization,
@@ -188,7 +190,7 @@ export class ExpensesService {
         { id: 'desc' as const },
       ];
       if (query.status === undefined && query.recovered === undefined) {
-        const [total, rows] = await Promise.all([
+        const [total, rows, sums] = await Promise.all([
           tx.gastos.count({ where }),
           tx.gastos.findMany({
             where,
@@ -197,10 +199,16 @@ export class ExpensesService {
             skip: (query.page - 1) * query.limit,
             take: query.limit,
           }),
+          tx.gastos.groupBy({
+            by: ['moneda'],
+            where,
+            _sum: { importe: true },
+          }),
         ]);
         return {
           items: rows.map((row) => this.expense(row)),
           total,
+          totals: groupedCurrencyTotals(sums),
           page: query.page,
           limit: query.limit,
         };
@@ -213,17 +221,20 @@ export class ExpensesService {
       });
       assertComputedFilterScanLimit(rows.length);
       const filtered = rows
-        .map((row) => this.expense(row))
+        .map((row) => ({ row, item: this.expense(row) }))
         .filter(
-          (row) =>
+          ({ item }) =>
             (query.recovered === undefined ||
-              row.recovered === query.recovered) &&
-            (query.status === undefined || row.paymentStatus === query.status),
+              item.recovered === query.recovered) &&
+            (query.status === undefined || item.paymentStatus === query.status),
         );
       const start = (query.page - 1) * query.limit;
       return {
-        items: filtered.slice(start, start + query.limit),
+        items: filtered
+          .slice(start, start + query.limit)
+          .map(({ item }) => item),
         total: filtered.length,
+        totals: currencyTotals(filtered.map(({ row }) => row)),
         page: query.page,
         limit: query.limit,
       };

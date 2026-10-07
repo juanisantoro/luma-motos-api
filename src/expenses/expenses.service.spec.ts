@@ -82,8 +82,13 @@ describe('ExpensesService', () => {
       },
     ]);
   const count = jest.fn().mockResolvedValue(2);
+  const groupBy = jest
+    .fn<Promise<unknown[]>, [Prisma.gastosGroupByArgs]>()
+    .mockResolvedValue([
+      { moneda: 'ARS', _sum: { importe: new Prisma.Decimal('90000') } },
+    ]);
   const transaction = {
-    gastos: { findMany, count },
+    gastos: { findMany, count, groupBy },
   } as unknown as Prisma.TransactionClient;
   const withTenant = jest.fn(
     (
@@ -114,6 +119,10 @@ describe('ExpensesService', () => {
     expect(findMany.mock.calls[0]?.[0].where).not.toHaveProperty('estado_pago');
     expect(findMany.mock.calls[0]?.[0]).toHaveProperty('take', 10_001);
     expect(count).not.toHaveBeenCalled();
+    expect(result.totals).toEqual([
+      { currency: expense.moneda, amount: expense.importe.toFixed(2) },
+    ]);
+    expect(groupBy).not.toHaveBeenCalled();
   });
 
   it('uses database pagination when no computed filter is requested', async () => {
@@ -122,6 +131,12 @@ describe('ExpensesService', () => {
     const result = await service.findAll({ page: 2, limit: 1 }, actor);
 
     expect(result).toMatchObject({ total: 2, page: 2, limit: 1 });
+    // El total es el de todo el filtro, no el de la página devuelta.
+    expect(result.totals).toEqual([{ currency: 'ARS', amount: '90000.00' }]);
+    expect(groupBy.mock.calls[0]?.[0]).toMatchObject({
+      by: ['moneda'],
+      where: findMany.mock.calls[0]?.[0].where,
+    });
     expect(findMany.mock.calls[0]?.[0]).toMatchObject({
       skip: 1,
       take: 1,

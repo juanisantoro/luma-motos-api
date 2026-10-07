@@ -99,9 +99,13 @@ describe('SupplierPurchasesService', () => {
   const update = jest.fn();
   const queryRaw = jest.fn();
   const movementFindMany = jest.fn();
+  const groupBy = jest.fn<
+    Promise<unknown[]>,
+    [Prisma.compras_proveedorGroupByArgs]
+  >();
   const transaction = {
     $queryRaw: queryRaw,
-    compras_proveedor: { count, findMany, findFirst, update },
+    compras_proveedor: { count, findMany, findFirst, update, groupBy },
     movimientos_caja: { findMany: movementFindMany },
   } as unknown as Prisma.TransactionClient;
   const withTenant = jest.fn(
@@ -132,6 +136,9 @@ describe('SupplierPurchasesService', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     count.mockResolvedValue(1);
+    groupBy.mockResolvedValue([
+      { moneda: 'ARS', _sum: { importe_total: new Prisma.Decimal('4800') } },
+    ]);
     findMany.mockResolvedValue([purchase]);
     findFirst.mockResolvedValue(purchase);
     update.mockResolvedValue(purchase);
@@ -160,6 +167,9 @@ describe('SupplierPurchasesService', () => {
     expect(result.items[0]).not.toHaveProperty('totalAmount');
     expect(result.items[0]).not.toHaveProperty('paidAmount');
     expect(result.items[0]).not.toHaveProperty('balanceAmount');
+    // El total del filtro también es un costo.
+    expect(result).not.toHaveProperty('totals');
+    expect(groupBy).not.toHaveBeenCalled();
   });
 
   it('exposes Decimal costs only with the sensitive permission', async () => {
@@ -180,6 +190,12 @@ describe('SupplierPurchasesService', () => {
       totalAmount: '120',
       paidAmount: '0',
       balanceAmount: '120',
+    });
+    // Total de todo lo que trae el filtro, no sólo de la página.
+    expect(result.totals).toEqual([{ currency: 'ARS', amount: '4800.00' }]);
+    expect(groupBy.mock.calls[0]?.[0]).toMatchObject({
+      by: ['moneda'],
+      where: findMany.mock.calls[0]?.[0].where,
     });
   });
 

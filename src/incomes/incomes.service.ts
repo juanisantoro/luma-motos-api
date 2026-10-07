@@ -34,7 +34,9 @@ import {
   assertOrganization,
   businessDate,
   COMPUTED_FILTER_SCAN_LIMIT,
+  currencyTotals,
   decimal,
+  groupedCurrencyTotals,
   paymentStatus,
   scope,
   targetOrganization,
@@ -370,15 +372,15 @@ export class IncomesService {
           ]
         : undefined,
     };
-    const [total, rows] = await this.prisma.withTenant(
+    const [total, rows, totals] = await this.prisma.withTenant(
       scope(actor),
       async (tx) => {
         const orderBy = [
           { fecha_ingreso: 'desc' as const },
           { id: 'desc' as const },
         ];
-        if (!query.status)
-          return Promise.all([
+        if (!query.status) {
+          const [count, page, sums] = await Promise.all([
             tx.ingresos.count({ where }),
             tx.ingresos.findMany({
               where,
@@ -387,7 +389,14 @@ export class IncomesService {
               skip: (query.page - 1) * query.limit,
               take: query.limit,
             }),
+            tx.ingresos.groupBy({
+              by: ['moneda'],
+              where,
+              _sum: { importe: true },
+            }),
           ]);
+          return [count, page, groupedCurrencyTotals(sums)] as const;
+        }
         const matching = await tx.ingresos.findMany({
           where,
           include: incomeInclude,
@@ -402,11 +411,12 @@ export class IncomesService {
         return [
           filtered.length,
           filtered.slice(start, start + query.limit),
+          currencyTotals(filtered),
         ] as const;
       },
     );
     const items = rows.map((row) => this.income(row));
-    return { items, total, page: query.page, limit: query.limit };
+    return { items, total, totals, page: query.page, limit: query.limit };
   }
 
   async findOne(id: string, actor: AuthenticatedUser) {

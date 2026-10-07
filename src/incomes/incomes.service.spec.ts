@@ -77,9 +77,10 @@ describe('IncomesService', () => {
   const findMany = jest.fn<Promise<unknown[]>, [Prisma.ingresosFindManyArgs]>();
   const count = jest.fn();
   const findFirst = jest.fn();
+  const groupBy = jest.fn();
   const transaction = {
     $queryRaw: jest.fn().mockResolvedValue([{ id: income.id }]),
-    ingresos: { findMany, count, findFirst, update: jest.fn() },
+    ingresos: { findMany, count, findFirst, groupBy, update: jest.fn() },
   } as unknown as Prisma.TransactionClient;
   const withTenant = jest.fn(
     (
@@ -102,6 +103,9 @@ describe('IncomesService', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    groupBy.mockResolvedValue([]);
+    // Algún test reemplaza el groupBy de la transacción: se repone acá.
+    Object.assign(transaction.ingresos, { groupBy });
     findMany.mockResolvedValue([
       income,
       {
@@ -203,6 +207,38 @@ describe('IncomesService', () => {
     )[0].where;
     expect(all.AND).toBeUndefined();
     expect(all.es_transferencia).toBeUndefined();
+  });
+
+  it('totals every income the filter matches, not just the returned page', async () => {
+    count.mockResolvedValue(45);
+    groupBy.mockResolvedValue([
+      { moneda: 'USD', _sum: { importe: new Prisma.Decimal('300') } },
+      { moneda: 'ARS', _sum: { importe: new Prisma.Decimal('1250000.5') } },
+    ]);
+
+    const result = await service.findAll({ page: 2, limit: 20 }, actor);
+
+    expect(result.total).toBe(45);
+    expect(result.totals).toEqual([
+      { currency: 'ARS', amount: '1250000.50' },
+      { currency: 'USD', amount: '300.00' },
+    ]);
+    const [args] = groupBy.mock.calls[0] as [Prisma.ingresosGroupByArgs];
+    expect(args.where).toBe(findMany.mock.calls[0]?.[0].where);
+    expect(args).not.toHaveProperty('skip');
+    expect(args).not.toHaveProperty('take');
+  });
+
+  it('totals only the incomes left by a computed status filter', async () => {
+    const result = await service.findAll(
+      { page: 1, limit: 20, status: 'PARCIAL' },
+      actor,
+    );
+
+    expect(result.totals).toEqual([
+      { currency: income.moneda, amount: income.importe.toFixed(2) },
+    ]);
+    expect(groupBy).not.toHaveBeenCalled();
   });
 
   it('does not filter by vehicle type when it is not requested', async () => {

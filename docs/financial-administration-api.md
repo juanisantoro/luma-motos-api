@@ -11,6 +11,11 @@ accounts, movements, and internal transfers.
   never serialize money as a JSON number.
 - Business dates use `YYYY-MM-DD`. Timestamps use ISO 8601.
 - List responses use `{ "items": [], "total": 0, "page": 1, "limit": 50 }`.
+- `GET /incomes`, `GET /expenses` and `GET /supplier-purchases` also return
+  `totals`: the sum of the amounts of every record matching the filter (not
+  only the returned page), one entry per currency:
+  `[{ "currency": "ARS", "amount": "1250000.50" }]`. Currencies are never
+  added together. Purchases only include it with `compras.costos.consultar`.
 - `organizationId` may only be supplied by users with global access. All reads
   and writes also run under PostgreSQL RLS.
 - A missing or cross-tenant entity returns `404`.

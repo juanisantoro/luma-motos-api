@@ -85,3 +85,36 @@ export function targetOrganization(
     ? organizationId
     : undefined;
 }
+
+export interface CurrencyTotal {
+  currency: string;
+  amount: string;
+}
+
+// Suma de los importes de un listado, una entrada por moneda: pesos y
+// dólares no se suman entre sí. Es el total de todo lo que trae el filtro,
+// no sólo el de la página que se devuelve.
+export function currencyTotals(
+  rows: Array<{ moneda: string; importe: Prisma.Decimal | null }>,
+): CurrencyTotal[] {
+  const totals = new Map<string, Prisma.Decimal>();
+  for (const row of rows)
+    totals.set(
+      row.moneda,
+      (totals.get(row.moneda) ?? new Prisma.Decimal(0)).plus(row.importe ?? 0),
+    );
+  return [...totals]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([currency, amount]) => ({ currency, amount: amount.toFixed(2) }));
+}
+
+export function groupedCurrencyTotals(
+  groups: Array<{ moneda: string; _sum: { importe: Prisma.Decimal | null } }>,
+): CurrencyTotal[] {
+  return currencyTotals(
+    groups.map((group) => ({
+      moneda: group.moneda,
+      importe: group._sum.importe,
+    })),
+  );
+}

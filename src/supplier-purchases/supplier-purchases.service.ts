@@ -27,6 +27,7 @@ import {
 import {
   assertOrganization,
   businessDate,
+  currencyTotals,
   databasePaymentStatus,
   nonNegativeDecimal,
   paymentStatus,
@@ -138,15 +139,30 @@ export class SupplierPurchasesService {
           ]
         : undefined,
     };
-    const [total, items] = await this.prisma.withTenant(
+    // El total de todo el filtro es un costo: sólo para quien puede verlos.
+    const canViewCosts = actor.role.permissions.includes(
+      'compras.costos.consultar',
+    );
+    const totalsOf = (
+      rows: Array<{ moneda: string; importe_total: Prisma.Decimal | null }>,
+    ) =>
+      canViewCosts
+        ? currencyTotals(
+            rows.map((row) => ({
+              moneda: row.moneda,
+              importe: row.importe_total,
+            })),
+          )
+        : undefined;
+    const [total, items, totals] = await this.prisma.withTenant(
       scope(actor),
       async (tx) => {
         const orderBy = [
           { fecha_compra: 'desc' as const },
           { id: 'desc' as const },
         ];
-        if (!query.status)
-          return Promise.all([
+        if (!query.status) {
+          const [count, page, sums] = await Promise.all([
             tx.compras_proveedor.count({ where }),
             tx.compras_proveedor.findMany({
               where,
@@ -155,7 +171,25 @@ export class SupplierPurchasesService {
               skip: (query.page - 1) * query.limit,
               take: query.limit,
             }),
+            canViewCosts
+              ? tx.compras_proveedor.groupBy({
+                  by: ['moneda'],
+                  where,
+                  _sum: { importe_total: true },
+                })
+              : [],
           ]);
+          return [
+            count,
+            page,
+            totalsOf(
+              sums.map((sum) => ({
+                moneda: sum.moneda,
+                importe_total: sum._sum.importe_total,
+              })),
+            ),
+          ] as const;
+        }
         const matching = (
           await tx.compras_proveedor.findMany({
             where,
@@ -169,12 +203,14 @@ export class SupplierPurchasesService {
         return [
           matching.length,
           matching.slice(start, start + query.limit),
+          totalsOf(matching),
         ] as const;
       },
     );
     return {
       items: items.map((item) => this.purchase(item, actor)),
       total,
+      ...(totals ? { totals } : {}),
       page: query.page,
       limit: query.limit,
     };
