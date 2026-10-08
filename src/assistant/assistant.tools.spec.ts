@@ -113,7 +113,7 @@ describe('AssistantToolsService', () => {
       'buscar_clientes',
       'buscar_operaciones',
       'seguimiento_cobros',
-      'pagos_patentes_seguros',
+      'gastos_de_vehiculos',
       'consultar_stock',
     ]);
     expect(names(actor('CALLCENTER', []))).toEqual([]);

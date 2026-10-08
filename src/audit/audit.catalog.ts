@@ -54,8 +54,8 @@ export const AUDIT_ACTIONS: Record<string, CatalogEntry> = {
   SALES_OPERATION_LICENSE_PLATE_RECEIVED: entry('VENTAS', 'Patente cargada'),
   STOCK_RESERVATION_CREATED: entry('VENTAS', 'Unidad reservada'),
   STOCK_RESERVATION_RELEASED: entry('VENTAS', 'Reserva liberada'),
-  VEHICLE_PAYMENT_CREATED: entry('VENTAS', 'Pago de patente/seguro cargado'),
-  VEHICLE_PAYMENT_UPDATED: entry('VENTAS', 'Pago de patente/seguro modificado'),
+  VEHICLE_PAYMENT_CREATED: entry('VENTAS', 'Gasto de moto o auto cargado'),
+  VEHICLE_PAYMENT_UPDATED: entry('VENTAS', 'Gasto de moto o auto modificado'),
 
   // Dinero y caja
   SALES_PAYMENT_COMPONENT_COLLECTED: entry('DINERO', 'Cobro de una venta'),

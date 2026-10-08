@@ -1,5 +1,7 @@
 import { Transform, Type } from 'class-transformer';
 import {
+  ArrayMaxSize,
+  IsArray,
   IsBoolean,
   IsDateString,
   IsEnum,
@@ -54,12 +56,36 @@ export class SupplierPurchaseQueryDto extends FinancialQueryDto {
   @IsOptional() @IsUUID() versionId?: string;
 }
 
+/**
+ * Varias cuentas en un solo filtro (`accountIds=a,b,c`): todas las cajas de un
+ * socio, por ejemplo. Acepta la lista separada por comas o el parámetro
+ * repetido.
+ */
+function AccountIdList(): PropertyDecorator {
+  const decorators = [
+    Transform(({ value }: { value: unknown }) =>
+      typeof value === 'string'
+        ? value
+            .split(',')
+            .map((item) => item.trim())
+            .filter(Boolean)
+        : value,
+    ),
+    IsOptional(),
+    IsArray(),
+    ArrayMaxSize(50),
+    IsUUID('all', { each: true }),
+  ];
+  return (target, key) => decorators.forEach((apply) => apply(target, key));
+}
+
 export class IncomeQueryDto extends FinancialQueryDto {
   @IsOptional() @IsEnum(tipo_vehiculo_luma) vehicleType?: tipo_vehiculo_luma;
   @IsOptional() @IsString() @MaxLength(120) type?: string;
   @IsOptional() @IsUUID() unitId?: string;
   @IsOptional() @IsUUID() operationId?: string;
   @IsOptional() @IsUUID() accountId?: string;
+  @AccountIdList() accountIds?: string[];
   @IsOptional() @IsUUID() collectorId?: string;
   // Fase 4: doble asociación y rendición de efectivo.
   @IsOptional() @IsUUID() clientId?: string;
@@ -76,6 +102,7 @@ export class IncomeQueryDto extends FinancialQueryDto {
 export class ExpenseQueryDto extends FinancialQueryDto {
   @IsOptional() @IsString() @MaxLength(100) category?: string;
   @IsOptional() @IsUUID() accountId?: string;
+  @AccountIdList() accountIds?: string[];
   @IsOptional()
   @Transform(({ value }: { value: unknown }) =>
     value === 'true' ? true : value === 'false' ? false : value,

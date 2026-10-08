@@ -78,7 +78,7 @@ Es el trabajo pendiente de administración contado sucursal por sucursal:
 | `INSTALLMENTS_OVERDUE` | Cuotas con vencimiento pasado, `PENDIENTE` o `PARCIAL` (con `amount`). | `creditos.consultar` |
 | `INCOMES_PENDING_COLLECTION` | Ingresos `PENDIENTE` o `PAGO_PARCIAL` que no esperan conciliación. | `ingresos.consultar` |
 | `CASH_PENDING_HANDOVER` | Ingresos en efectivo con `estado_rendicion = PENDIENTE_RENDICION`. | `ingresos.consultar` |
-| `VEHICLE_PAYMENTS_UNCONFIRMED` | Pagos de vehículo en `PENDIENTE`. | `pagos_vehiculo.consultar` |
+| `VEHICLE_PAYMENTS_UNCONFIRMED` | Gastos de motos y autos (`pagos_vehiculo`) en `PENDIENTE`, por la sucursal del gasto. | `pagos_vehiculo.consultar` |
 | `LICENSING_OVERDUE` | Patentes con la fecha estimada vencida y sin cargar. | `ventas.patentamiento.gestionar` |
 | `LICENSING_PENDING_COLLECTION` | Patentes recibidas con el cobro al cliente pendiente. | `ventas.patentamiento.gestionar` |
 | `EXPENSES_PENDING_PAYMENT` | Gastos `PENDIENTE`, `PAGO_PARCIAL` o `VENCIDO`. | `gastos.consultar` |

@@ -327,10 +327,12 @@ export class IncomesService {
             }
           : undefined,
       movimientos_caja:
-        query.accountId || query.collectorId
+        query.accountId || query.accountIds?.length || query.collectorId
           ? {
               some: {
-                cuenta_caja_id: query.accountId,
+                cuenta_caja_id: query.accountIds?.length
+                  ? { in: query.accountIds }
+                  : query.accountId,
                 registrado_por_personal_id: query.collectorId,
                 tipo_movimiento: tipo_movimiento_caja_luma.INGRESO,
                 revierte_a_id: null,

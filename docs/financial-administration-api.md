@@ -190,6 +190,9 @@ belongs to no vehicle-type list.
 Common filters plus `type`, `unitId`, `operationId`, `accountId`,
 `collectorId`, `clientId`, `ticketNumber`, `paymentMethod`,
 `handoverStatus` (`PENDIENTE_RENDICION|RENDIDO`) and `handoverToId`.
+`accountIds` takes several cash accounts at once (comma separated or the
+parameter repeated, up to 50): the screen uses it for "every account of a
+partner". When it is present it replaces `accountId`.
 `search` also matches the operation ticket number and the client name or
 document number.
 
@@ -549,7 +552,8 @@ recipient's confirmation.
 
 ### Filters
 
-Common filters plus `category`, `accountId`, `recoverable`, `recovered`.
+Common filters plus `category`, `accountId`, `accountIds` (several
+accounts, same format as in incomes), `recoverable`, `recovered`.
 General expenses never accept, query, or return an inventory unit/VIN.
 
 `category` is a trimmed business string up to 100 characters. It is not a
@@ -824,3 +828,40 @@ vive en `retiros_socio` y genera un movimiento `AJUSTE` / `DEBITO`. Permiso
 Auditoría: `PARTNER_WITHDRAWAL_REGISTERED` y `PARTNER_WITHDRAWAL_REVERSED`. En
 el libro de dinero aparecen con `source.kind = WITHDRAWAL`.
 
+## Gastos de motos y gastos de autos (`/vehicle-payments`)
+
+Antes "Pagos/patentes". Tabla `pagos_vehiculo` (migración
+`20261008000000_vehicle_expenses`, se aplica a mano antes de desplegar).
+
+- `GET /vehicle-payments?vehicleType=MOTO|AUTO` — listado paginado (`limit`
+  máx. 100). Filtros: `conceptId`, `providerId`, `accountId`, `branchId`,
+  `status`, `month`, `year`, `search` (concepto, proveedor, detalle, VIN,
+  patente, marca, modelo, operación, boleto). La sucursal es la del gasto.
+- `GET /vehicle-payments/accounts` — cajas de administradores: activas, no
+  importadas, cuyo responsable tiene rol `ADMINISTRADOR` y dentro del alcance
+  de sucursal del usuario (las compartidas siempre). `own: true` marca las del
+  usuario: sólo desde esas puede pagar.
+- `POST /vehicle-payments` — `conceptId`, `vehicleType`, `amount`,
+  `paymentDate` obligatorios. `accountId` (una caja propia), `unitId`,
+  `providerId`, `operationId` opcionales. Sin caja, el gasto no mueve plata. Sin unidad, `branchId` (obligatorio si el usuario opera más de
+  una sucursal). Con unidad, su tipo tiene que coincidir con `vehicleType` y la
+  sucursal sale de la unidad. La moneda es la de la caja.
+- `PATCH /vehicle-payments/:id` — `status`, `accountId`, `amount`,
+  `paymentDate`, `conceptId`, `providerId` (null lo quita), `operationId`,
+  `notes`.
+
+Caja:
+- `PAGADO` con caja registra un débito en esa caja (`movimientos_caja`
+  AJUSTE / DEBITO, vinculado por `pagos_vehiculo.movimiento_caja_id`).
+  `PENDIENTE` o sin caja no toca ninguna caja.
+- Debitar o devolver en una caja es sólo de su dueño (el responsable de la
+  caja es el usuario): para el resto responde `403`.
+- Volver a `PENDIENTE`, o cambiar caja, importe o fecha de un gasto pagado,
+  registra el contramovimiento (INGRESO / CREDITO con `revierte_a_id`) y, si
+  sigue pagado, un débito nuevo. Cada débito revalida la caja.
+- Cambiar a una caja de otra moneda exige `amount`. No se aceptan fechas de
+  pago futuras ni débitos con importe 0.
+- Un gasto `PAGADO` sin caja (cargado así o antes de la migración) no se
+  debita después: para asignarle caja hay que volverlo a `PENDIENTE` y
+  marcarlo pagado con la caja.
+- En Auditoría → Dinero el débito figura con origen `VEHICLE_EXPENSE`.

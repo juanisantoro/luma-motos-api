@@ -50,6 +50,13 @@ export class VehiclePaymentsController {
     return this.service.addProvider(input);
   }
 
+  // Cajas desde las que se puede pagar un gasto de vehículo: las de los
+  // administradores, activas y no importadas.
+  @Get('accounts')
+  accounts(@CurrentUser() actor: AuthenticatedUser) {
+    return this.service.accounts(actor);
+  }
+
   @Get()
   findAll(
     @Query() query: VehiclePaymentQueryDto,

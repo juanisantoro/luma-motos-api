@@ -56,7 +56,7 @@ ejecuta y le devuelve el resultado para que redacte la respuesta.
 | `buscar_clientes_en_rojo` | `CreditInquiriesService.findRejected` | `consultas_crediticias.consultar` |
 | `buscar_operaciones` | `SalesService.findAll` | `ventas.consultar` |
 | `seguimiento_cobros` | `SalesService.tracking` | `ventas.consultar` + `ingresos.consultar` |
-| `pagos_patentes_seguros` | `VehiclePaymentsService.findAll` | `pagos_vehiculo.consultar` |
+| `gastos_de_vehiculos` | `VehiclePaymentsService.findAll` | `pagos_vehiculo.consultar` |
 | `consultar_stock` | `InventoryService.findAll` | `inventario.consultar` |
 
 Reglas de seguridad (valen para cualquier consulta que se agregue):

@@ -166,15 +166,18 @@ export class ExpensesService {
               lte: query.to ? businessDate(query.to) : undefined,
             }
           : undefined,
-      movimientos_caja: query.accountId
-        ? {
-            some: {
-              cuenta_caja_id: query.accountId,
-              revierte_a_id: null,
-              other_movimientos_caja: null,
-            },
-          }
-        : undefined,
+      movimientos_caja:
+        query.accountId || query.accountIds?.length
+          ? {
+              some: {
+                cuenta_caja_id: query.accountIds?.length
+                  ? { in: query.accountIds }
+                  : query.accountId,
+                revierte_a_id: null,
+                other_movimientos_caja: null,
+              },
+            }
+          : undefined,
       OR: search
         ? [
             { categoria: { contains: search, mode: 'insensitive' } },

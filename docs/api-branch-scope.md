@@ -117,7 +117,7 @@ hacerlo en esta fase**:
   políticas de precio por sucursal. Con RLS por sucursal cada una necesita
   una excepción en la política, y las políticas se vuelven más difíciles de
   auditar que el filtro en servicio.
-- Las tablas sin `sucursal_id` propio (`pagos_vehiculo`, `cuotas_credito`,
+- Las tablas sin `sucursal_id` propio (`cuotas_credito`,
   `movimientos_caja`, `transferencias_caja`) necesitarían políticas con joins
   (`EXISTS` sobre la unidad, la operación o la cuenta), con costo en cada
   consulta y riesgo de recursión de políticas.

@@ -166,10 +166,14 @@ interface VehiclePaymentView {
   date: string;
   status: string;
   amount: number;
+  currency: string;
   concept: { name: string };
-  provider: { name: string };
-  unit: { vin: string; licensePlate: string | null };
-  vehicle: { brand: string; model: string; version: string };
+  provider: { name: string } | null;
+  account: { name: string; responsible: string | null } | null;
+  branch: { name: string };
+  notes: string | null;
+  unit: { vin: string; licensePlate: string | null } | null;
+  vehicle: { brand: string; model: string; version: string } | null;
   operation: { number: string; ticketNumber: string | null } | null;
 }
 
@@ -518,14 +522,14 @@ export class AssistantToolsService {
         },
       },
       {
-        name: 'pagos_patentes_seguros',
+        name: 'gastos_de_vehiculos',
         description:
-          'Pagos de documentación de vehículos (patente, seguro, formularios) que el usuario puede ver en la pantalla Patentes/seguros: lo que la agencia le paga a la gestoría o aseguradora, y si está pendiente o pagado.',
+          'Gastos de motos y gastos de autos que el usuario puede ver en esas pantallas (patentes, seguros, formularios y otros gastos de vehículos): lo que paga la agencia, desde qué caja de administrador, a qué proveedor si lo hay, y si está pendiente o pagado.',
         permissions: [PERMISSION_CODES.VEHICLE_PAYMENTS_READ],
         properties: {
           tipoVehiculo: vehicleTypeProperty,
           busqueda: searchProperty(
-            'chasis, patente, marca, modelo, número de operación o número de boleto',
+            'concepto, proveedor, detalle, chasis, patente, marca, modelo, número de operación o número de boleto',
           ),
           estado: { type: 'string', enum: PAYMENT_STATUSES },
         },
@@ -544,12 +548,19 @@ export class AssistantToolsService {
           return page(result, (row) => ({
             fecha: row.date,
             concepto: row.concept.name,
-            proveedor: row.provider.name,
+            proveedor: row.provider?.name ?? null,
             importe: row.amount,
+            moneda: row.currency,
             estado: row.status,
-            vehiculo: `${row.vehicle.brand} ${row.vehicle.model} ${row.vehicle.version}`,
-            chasis: row.unit.vin,
-            patente: row.unit.licensePlate,
+            caja: row.account?.name ?? null,
+            pagadoPor: row.account?.responsible ?? null,
+            sucursal: row.branch.name,
+            detalle: row.notes,
+            vehiculo: row.vehicle
+              ? `${row.vehicle.brand} ${row.vehicle.model} ${row.vehicle.version}`
+              : null,
+            chasis: row.unit?.vin ?? null,
+            patente: row.unit?.licensePlate ?? null,
             operacion: row.operation?.number ?? null,
             boleto: row.operation?.ticketNumber ?? null,
           }));

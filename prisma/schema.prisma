@@ -596,9 +596,9 @@ model pagos_vehiculo {
   id                     String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   organizacion_id        String    @db.Uuid
   concepto_id            String    @db.Uuid
-  unidad_vehiculo_id     String    @db.Uuid
+  unidad_vehiculo_id     String?   @db.Uuid
   operacion_id           String?   @db.Uuid
-  proveedor_id           String    @db.Uuid
+  proveedor_id           String?   @db.Uuid
   importe                Decimal   @db.Decimal(18, 2)
   estado                 String    @default("PENDIENTE") @db.VarChar(20)
   fecha                  DateTime  @db.Date
@@ -606,6 +606,14 @@ model pagos_vehiculo {
   creado_por_personal_id String    @db.Uuid
   creado_en              DateTime  @default(now()) @db.Timestamptz(6)
   actualizado_en         DateTime  @default(now()) @db.Timestamptz(6)
+  /// Gastos de motos / autos: sucursal y tipo propios (la unidad es opcional).
+  sucursal_id            String    @db.Uuid
+  tipo_vehiculo          tipo_vehiculo_luma
+  /// Caja de quien paga; null sólo en los cargados antes de exigirla.
+  cuenta_caja_id         String?   @db.Uuid
+  /// Débito en la caja mientras está PAGADO.
+  movimiento_caja_id     String?   @db.Uuid
+  moneda                 String    @default("ARS") @db.Char(3)
 
   @@unique([id, organizacion_id], map: "pagos_vehiculo_id_organizacion_unico")
   @@index([organizacion_id, fecha(sort: Desc)], map: "pagos_vehiculo_organizacion_fecha_indice")

@@ -792,16 +792,46 @@ export class AuditQueryService {
   }
 
   /**
-   * Movimientos que son un retiro de socio: el movimiento no lleva origen,
-   * así que se identifican por la tabla de retiros.
+   * Movimientos AJUSTE que no llevan origen propio: retiros de socios y
+   * débitos de gastos de motos / autos. Se identifican por su tabla.
    */
   private async withdrawalTitles(tx: Tx, items: MoneyRecord[]) {
     const ids = items
       .filter((item) => item.tipo_movimiento === 'AJUSTE')
       .map((item) => item.id);
-    const titles = new Map<string, { id: string; title: string }>();
+    const titles = new Map<
+      string,
+      { id: string; title: string; kind?: string }
+    >();
+    if (ids.length === 0) return titles;
+    const expenses = await tx.$queryRaw<
+      Array<{
+        id: string;
+        movimiento_caja_id: string;
+        tipo_vehiculo: string;
+        concepto: string;
+        observaciones: string | null;
+      }>
+    >`
+      SELECT p.id, p.movimiento_caja_id, p.tipo_vehiculo::text AS tipo_vehiculo,
+        c.nombre AS concepto, p.observaciones
+      FROM pagos_vehiculo p
+      JOIN conceptos_pago_vehiculo c ON c.id = p.concepto_id
+      WHERE p.movimiento_caja_id = ANY(${ids}::uuid[])
+    `;
+    for (const row of expenses)
+      titles.set(row.movimiento_caja_id, {
+        id: row.id,
+        kind: 'VEHICLE_EXPENSE',
+        title: [
+          `Gasto de ${row.tipo_vehiculo === 'AUTO' ? 'autos' : 'motos'}: ${row.concepto}`,
+          row.observaciones,
+        ]
+          .filter(Boolean)
+          .join(' · '),
+      });
     // Sin la tabla de retiros aplicada, esta consulta rompería el listado.
-    if (ids.length === 0 || !(await partnerWithdrawalsReady(tx))) return titles;
+    if (!(await partnerWithdrawalsReady(tx))) return titles;
     const rows = await tx.retiros_socio.findMany({
       where: { movimiento_caja_id: { in: ids } },
       select: {
@@ -832,7 +862,7 @@ export class AuditQueryService {
   private moneyItem(
     item: MoneyRecord,
     actor: AuthenticatedUser,
-    withdrawals?: Map<string, { id: string; title: string }>,
+    withdrawals?: Map<string, { id: string; title: string; kind?: string }>,
   ) {
     const sensitivePurchase =
       (Boolean(item.compra_proveedor_id) ||
@@ -897,8 +927,13 @@ export class AuditQueryService {
       const withdrawal = withdrawals.get(item.id) as {
         id: string;
         title: string;
+        kind?: string;
       };
-      source = { kind: 'WITHDRAWAL', ...withdrawal };
+      source = {
+        kind: withdrawal.kind ?? 'WITHDRAWAL',
+        id: withdrawal.id,
+        title: withdrawal.title,
+      };
     } else source = { kind: 'OTHER', id: null, title: 'Movimiento manual' };
 
     return {
@@ -1237,41 +1272,50 @@ export class AuditQueryService {
         );
     });
     load('pagos_vehiculo', async () => {
+      // Gastos de motos / autos: la sucursal es la del gasto; la unidad es
+      // opcional.
       const rows = await tx.pagos_vehiculo.findMany({
-        where: idIn('pagos_vehiculo'),
+        where: { ...idIn('pagos_vehiculo'), ...branch },
         select: {
           id: true,
           importe: true,
           estado: true,
           operacion_id: true,
           unidad_vehiculo_id: true,
+          tipo_vehiculo: true,
         },
       });
+      const unitIds = rows.flatMap((row) =>
+        row.unidad_vehiculo_id ? [row.unidad_vehiculo_id] : [],
+      );
       const [operations, units] = await Promise.all([
         visibleOperations(
           rows.flatMap((row) => (row.operacion_id ? [row.operacion_id] : [])),
         ),
-        tx.unidades_vehiculos.findMany({
-          where: {
-            id: { in: rows.map((row) => row.unidad_vehiculo_id) },
-            ...branch,
-          },
-          select: { id: true, vin_mostrado: true },
-        }),
+        unitIds.length
+          ? tx.unidades_vehiculos.findMany({
+              where: { id: { in: unitIds } },
+              select: { id: true, vin_mostrado: true },
+            })
+          : [],
       ]);
       for (const row of rows) {
         const unit = units.find((item) => item.id === row.unidad_vehiculo_id);
-        if (!unit) continue;
         put(
           'pagos_vehiculo',
           row.id,
-          subject('Pago de patente/seguro', {
-            detail: `${unit.vin_mostrado} · ${row.estado}`,
-            amount: money(row.importe),
-            ...opFields(
-              operations.find((item) => item.id === row.operacion_id) ?? null,
-            ),
-          }),
+          subject(
+            row.tipo_vehiculo === 'AUTO' ? 'Gasto de autos' : 'Gasto de motos',
+            {
+              detail: unit
+                ? `${unit.vin_mostrado} · ${row.estado}`
+                : row.estado,
+              amount: money(row.importe),
+              ...opFields(
+                operations.find((item) => item.id === row.operacion_id) ?? null,
+              ),
+            },
+          ),
         );
       }
     });

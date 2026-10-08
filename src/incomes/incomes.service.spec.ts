@@ -241,6 +241,28 @@ describe('IncomesService', () => {
     expect(groupBy).not.toHaveBeenCalled();
   });
 
+  it('filters by several cash accounts at once (all the cajas of a partner)', async () => {
+    const accounts = [
+      '3f0d7a8e-1b2c-4d5e-8f90-1a2b3c4d5e6f',
+      '4a1e8b9f-2c3d-4e5f-9a01-2b3c4d5e6f70',
+    ];
+    await service.findAll(
+      {
+        page: 1,
+        limit: 20,
+        accountIds: accounts,
+        paymentMethod: 'EFECTIVO',
+      },
+      actor,
+    );
+
+    const where = findMany.mock.calls[0]?.[0].where;
+    expect(where?.medio_pago).toBe('EFECTIVO');
+    expect(where?.movimientos_caja).toMatchObject({
+      some: { cuenta_caja_id: { in: accounts } },
+    });
+  });
+
   it('does not filter by vehicle type when it is not requested', async () => {
     await service.findAll({ page: 1, limit: 20 }, actor);
 
