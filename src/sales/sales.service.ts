@@ -1037,22 +1037,24 @@ export class SalesService {
     });
   }
 
-  // Current vs. previous calendar month units/amount, scoped to a branch
+  // Units/amount of a calendar month (the current one unless `period`
+  // "AAAA-MM" says otherwise) vs. the month before it, scoped to a branch
   // and/or a single seller (assigned as VENDEDOR/CALLCENTER) when given.
   // Used by every home's "ventas del mes" KPI.
   async monthlyPerformance(
     actor: AuthenticatedUser,
-    opts: { branchId?: string; sellerId?: string } = {},
+    opts: { branchId?: string; sellerId?: string; period?: string } = {},
   ) {
-    const now = new Date();
-    const currentPeriod = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
-    const previousDate = new Date(
-      Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1),
-    );
+    const { period, ...scope } = opts;
+    const [year, month] = period
+      ? period.split('-').map(Number)
+      : [new Date().getUTCFullYear(), new Date().getUTCMonth() + 1];
+    const currentPeriod = `${year}-${String(month).padStart(2, '0')}`;
+    const previousDate = new Date(Date.UTC(year, month - 2, 1));
     const previousPeriod = `${previousDate.getUTCFullYear()}-${String(previousDate.getUTCMonth() + 1).padStart(2, '0')}`;
     const [currentMonth, previousMonth] = await Promise.all([
-      this.periodPerformance(actor, currentPeriod, opts),
-      this.periodPerformance(actor, previousPeriod, opts),
+      this.periodPerformance(actor, currentPeriod, scope),
+      this.periodPerformance(actor, previousPeriod, scope),
     ]);
     return { period: currentPeriod, currentMonth, previousMonth };
   }

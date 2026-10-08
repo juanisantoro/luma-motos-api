@@ -144,6 +144,7 @@ describe('DashboardService - ADMINISTRADOR por sucursal', () => {
 
     expect(sales.monthlyPerformance).toHaveBeenCalledWith(expect.anything(), {
       branchId: 'b2',
+      period: expect.stringMatching(/^\d{4}-\d{2}$/) as unknown,
     });
     expect(sales.collectionSummary).toHaveBeenCalledWith(expect.anything(), {
       branchId: 'b1',
@@ -180,5 +181,70 @@ describe('DashboardService - ADMINISTRADOR por sucursal', () => {
 
     const noSales = (await service.getHome(admin([]))) as unknown as Home;
     expect(noSales.branches).toBeNull();
+  });
+
+  describe('mes del inicio', () => {
+    const periodKey = (offset: number) => {
+      const now = new Date();
+      const date = new Date(
+        Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + offset, 1),
+      );
+      return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`;
+    };
+
+    it('uses the current month by default', async () => {
+      const home = (await service.getHome(admin(ALL))) as unknown as Record<
+        string,
+        unknown
+      >;
+
+      expect(home).toMatchObject({ month: 'current', period: periodKey(0) });
+      expect(sales.salesByBranch).toHaveBeenCalledWith(
+        expect.anything(),
+        periodKey(0),
+      );
+    });
+
+    it('moves every monthly number to the previous month', async () => {
+      const previous = periodKey(-1);
+      const [year, month] = previous.split('-').map(Number);
+      const home = (await service.getHome(
+        admin(ALL),
+        'previous',
+      )) as unknown as Record<string, unknown>;
+
+      expect(home).toMatchObject({ month: 'previous', period: previous });
+      expect(sales.monthlyPerformance).toHaveBeenCalledWith(expect.anything(), {
+        period: previous,
+      });
+      expect(sales.monthlyPerformance).toHaveBeenCalledWith(expect.anything(), {
+        branchId: 'b1',
+        period: previous,
+      });
+      expect(sales.salesByBranch).toHaveBeenCalledWith(
+        expect.anything(),
+        previous,
+      );
+      expect(sales.topModels).toHaveBeenCalledWith(expect.anything(), {
+        period: previous,
+        limit: 5,
+      });
+      expect(sales.collectionSummary).toHaveBeenCalledWith(expect.anything(), {
+        branchId: 'b1',
+        period: previous,
+      });
+      expect(expenses.totalInRange).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        new Date(Date.UTC(year, month - 1, 1)),
+        new Date(Date.UTC(year, month, 0)),
+      );
+      expect(commissions.suggestions).toHaveBeenCalledWith(
+        expect.objectContaining({ period: previous }),
+        expect.anything(),
+      );
+      // Lo que es una foto de hoy no depende del mes elegido.
+      expect(pendingTasks.byBranch).toHaveBeenCalledTimes(1);
+    });
   });
 });

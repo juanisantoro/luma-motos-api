@@ -91,10 +91,21 @@ usa la pantalla donde la tarea se resuelve, acotada a una sucursal
 
 ## ADMINISTRADOR — toda la organización
 
+Acepta el query opcional `month=current|previous` (por defecto `current`).
+Con `previous`, todo lo que es "del mes" pasa al mes anterior: `monthlySales`
+(que compara ese mes contra el previo a él), `salesByBranch`, `topModels` y,
+dentro de cada sucursal, `monthlySales`, `collection`, `expensesThisMonth`,
+`sellers` y `topModels`. Lo que es una foto de hoy no cambia: `pendingTasks`,
+`newClientsThisWeek`, stock, cartera de créditos, compras pendientes y
+aprobaciones pendientes. Otro valor responde `400`. Los demás roles ignoran
+el parámetro y siempre ven el mes en curso.
+
 ```json
 {
   "role": "ADMINISTRADOR",
   "greeting": { "...": "..." },
+  "month": "current",
+  "period": "2026-08",
   "monthlySales": {
     "period": "2026-08",
     "currentMonth": { "units": 42, "amount": 105000000 },
@@ -147,6 +158,7 @@ usa la pantalla donde la tarea se resuelve, acotada a una sucursal
 
 | Campo | Permiso | Notas |
 | --- | --- | --- |
+| `month`, `period` | — | Mes elegido (`current`/`previous`) y su período `AAAA-MM` |
 | `monthlySales`, `salesByBranch`, `topModels` | `ventas.consultar` | `salesByBranch` siempre lista todas las sucursales activas, incluidas las que tuvieron cero ventas en el mes |
 | `newClientsThisWeek` | `clientes.consultar` | Ventana rodante de 7 días (hoy incluido), no semana calendario |
 | `stockUnitsTotal` | `inventario.consultar` | Suma unidades `EN_STOCK` de MOTO + AUTO |
@@ -159,9 +171,9 @@ Dentro de cada entrada de `branches`, cada dato respeta su permiso y vuelve en
 
 | Campo | Permiso | Notas |
 | --- | --- | --- |
-| `monthlySales`, `topModels` | `ventas.consultar` | Mes en curso contra el anterior; `topModels` trae hasta 5 |
+| `monthlySales`, `topModels` | `ventas.consultar` | Mes elegido contra el anterior a él; `topModels` trae hasta 5 |
 | `collection` | `ventas.consultar` + `ingresos.consultar` | Cobranza de las ventas computables **del mes** de esa sucursal, con las reglas de Seguimiento de cobros: no cuenta patente ni cuotas de crédito propio. `pendingAmount` suma sólo los saldos positivos y `pendingOperations` cuenta esas ventas. Se atribuye por la sucursal de la venta, no por la de la caja |
-| `expensesThisMonth` | `gastos.consultar` | Gastos en pesos generados en el mes para esa sucursal. No incluye cancelados, ni los de otra moneda, ni los generales (sin sucursal) |
+| `expensesThisMonth` | `gastos.consultar` | Gastos en pesos generados en el mes elegido para esa sucursal. No incluye cancelados, ni los de otra moneda, ni los generales (sin sucursal) |
 | `stockUnits` | `inventario.consultar` | Unidades `EN_STOCK` de MOTO + AUTO |
 | `creditPortfolio` | `creditos.consultar` | Créditos personales de las ventas de esa sucursal |
 | `pendingApprovals` | `ventas.aprobar` | Ventas esperando aprobación, MOTO + AUTO |

@@ -21,6 +21,18 @@ function currentPeriodKey(): string {
   return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
 }
 
+// Período "AAAA-MM" del mes anterior al actual (UTC).
+function previousPeriodKey(): string {
+  const now = new Date();
+  const previous = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1),
+  );
+  return `${previous.getUTCFullYear()}-${String(previous.getUTCMonth() + 1).padStart(2, '0')}`;
+}
+
+export const DASHBOARD_MONTHS = ['current', 'previous'] as const;
+export type DashboardMonth = (typeof DASHBOARD_MONTHS)[number];
+
 // "Esta semana" throughout this module is a rolling window anchored on
 // today (UTC), not a Mon-Sun calendar week - simpler to reason about and
 // avoids a timezone-dependent week boundary. Backward-looking for "loaded
@@ -83,7 +95,10 @@ export class DashboardService {
     private readonly pendingTasks: PendingTasksService,
   ) {}
 
-  async getHome(actor: AuthenticatedUser) {
+  // `month` sólo cambia el inicio del ADMINISTRADOR: elige si los números
+  // del mes (ventas, cobrado, gastos, vendedores y modelos) son del mes en
+  // curso o del anterior. Los demás roles siempre ven el mes en curso.
+  async getHome(actor: AuthenticatedUser, month: DashboardMonth = 'current') {
     const permissions = new Set(actor.role.permissions);
     const has = (code: string) => permissions.has(code);
     const greeting = {
@@ -104,7 +119,7 @@ export class DashboardService {
         return {
           role: 'ADMINISTRADOR' as const,
           greeting,
-          ...(await this.buildAdminHome(actor, has)),
+          ...(await this.buildAdminHome(actor, has, month)),
         };
       case ROLE_CODES.GERENTE:
         return hasBranches
@@ -144,8 +159,10 @@ export class DashboardService {
   private async buildAdminHome(
     actor: AuthenticatedUser,
     has: (code: string) => boolean,
+    month: DashboardMonth,
   ) {
-    const period = currentPeriodKey();
+    const period =
+      month === 'previous' ? previousPeriodKey() : currentPeriodKey();
     const allBranches = BranchScope.forActor(actor);
     const [
       monthlySales,
@@ -157,7 +174,9 @@ export class DashboardService {
       pendingPurchases,
       pendingTasks,
     ] = await Promise.all([
-      has(PERMISSION_CODES.SALES_READ) ? this.sales.monthlyPerformance(actor) : null,
+      has(PERMISSION_CODES.SALES_READ)
+        ? this.sales.monthlyPerformance(actor, { period })
+        : null,
       has(PERMISSION_CODES.SALES_READ) ? this.sales.salesByBranch(actor, period) : null,
       has(PERMISSION_CODES.SALES_READ)
         ? this.sales.topModels(actor, { period, limit: 5 })
@@ -193,6 +212,8 @@ export class DashboardService {
         )
       : null;
     return {
+      month,
+      period,
       pendingTasks,
       monthlySales,
       newClientsThisWeek,
@@ -229,7 +250,9 @@ export class DashboardService {
       sellers,
       topModels,
     ] = await Promise.all([
-      canSell ? this.sales.monthlyPerformance(actor, { branchId }) : null,
+      canSell
+        ? this.sales.monthlyPerformance(actor, { branchId, period })
+        : null,
       canSell && has(PERMISSION_CODES.INCOMES_READ)
         ? this.sales.collectionSummary(actor, { branchId, period })
         : null,

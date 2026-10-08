@@ -1,6 +1,7 @@
-import { Controller, Get } from '@nestjs/common';
+import { Controller, Get, Query } from '@nestjs/common';
 import type { AuthenticatedUser } from '../auth/auth.types';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { DashboardHomeQueryDto } from './dashboard.dto';
 import { DashboardService } from './dashboard.service';
 
 // No @Permissions() here on purpose: this single endpoint serves all five
@@ -14,7 +15,10 @@ export class DashboardController {
   constructor(private readonly service: DashboardService) {}
 
   @Get('inicio')
-  home(@CurrentUser() actor: AuthenticatedUser) {
-    return this.service.getHome(actor);
+  home(
+    @CurrentUser() actor: AuthenticatedUser,
+    @Query() query: DashboardHomeQueryDto,
+  ) {
+    return this.service.getHome(actor, query.month);
   }
 }
