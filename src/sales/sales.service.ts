@@ -562,9 +562,10 @@ export class SalesService {
     const organizationId =
       query.organizationId ??
       (actor.globalAccess ? undefined : actor.organization.id);
+    const ownSales = Boolean(query.mine || sellerRestricted);
     const branchFilter = BranchScope.forActor(actor).where(query.branchId);
     const sellerId =
-      query.mine || sellerRestricted
+      ownSales
         ? await this.prisma.withTenant(this.scope(actor), (tx) =>
             this.actorPersonnelId(
               tx,
@@ -596,7 +597,11 @@ export class SalesService {
         query.licensingMode === 'SIN_DEFINIR' ? null : query.licensingMode,
       organizacion_id: organizationId,
       estado_operacion: query.status,
-      sucursal_id: branchFilter,
+      // Las ventas propias se ven aunque sean de una sucursal que ya no es
+      // del usuario (un vendedor que cambió de sucursal): la venta sigue
+      // siendo de la sucursal donde se hizo. Sólo para leer: modificarla
+      // sigue pidiendo esa sucursal (operationOr404 con lock).
+      sucursal_id: ownSales && !query.branchId ? undefined : branchFilter,
       cliente_id: query.clientId,
       version_id: query.versionId,
       versiones_vehiculos: {
@@ -666,7 +671,7 @@ export class SalesService {
       },
     );
     return {
-      items,
+      items: this.withAccess(items, actor),
       total,
       page: query.page,
       limit: query.limit,
@@ -786,14 +791,16 @@ export class SalesService {
         tx,
         rows.map((row) => row.id),
       );
-      const items = rows.map((row, index) =>
-        this.trackingRow(
+      const branches = BranchScope.forActor(actor);
+      const items = rows.map((row, index) => ({
+        ...this.trackingRow(
           row,
           presented[index],
           incomes.filter((income) => income.operacion_id === row.id),
           ownCredits.get(row.id) ?? null,
         ),
-      );
+        readOnly: !branches.includes(row.sucursal_id),
+      }));
       return { items, total, page: query.page, limit: query.limit };
     });
   }
@@ -1448,9 +1455,27 @@ export class SalesService {
   }
 
   async findOne(id: string, actor: AuthenticatedUser) {
-    return this.prisma.withTenant(this.scope(actor), async (tx) =>
-      this.present(tx, await this.operationOr404(tx, id, actor)),
+    const operation = await this.prisma.withTenant(
+      this.scope(actor),
+      async (tx) => this.present(tx, await this.operationOr404(tx, id, actor)),
     );
+    return this.withAccess([operation], actor)[0];
+  }
+
+  /**
+   * `readOnly`: la operación es de una sucursal fuera del alcance del
+   * usuario (sus ventas de antes de cambiar de sucursal). Se puede ver pero
+   * no modificar; la pantalla esconde las acciones.
+   */
+  private withAccess<T extends { branch: { id: string } }>(
+    items: T[],
+    actor: AuthenticatedUser,
+  ): Array<T & { readOnly: boolean }> {
+    const branches = BranchScope.forActor(actor);
+    return items.map((item) => ({
+      ...item,
+      readOnly: !branches.includes(item.branch.id),
+    }));
   }
 
   async sellers(query: SalesSellerQueryDto, actor: AuthenticatedUser) {
@@ -4781,20 +4806,26 @@ export class SalesService {
       if (!rows.length)
         throw new NotFoundException('Sales operation not found');
     }
+    const ownSale: Prisma.operacionesWhereInput = {
+      asignaciones_personal_operacion: {
+        some: {
+          rol_asignacion: { in: SELLER_ASSIGNMENT_ROLES },
+          personal: { usuario_id: actor.id },
+        },
+      },
+    };
+    const branchWhere = branchScope.where();
     const operation = await tx.operaciones.findFirst({
       relationLoadStrategy: 'join',
       where: {
         id,
         organizacion_id: actor.globalAccess ? undefined : actor.organization.id,
-        sucursal_id: branchScope.where(),
-        asignaciones_personal_operacion: isSellerLikeActor
-          ? {
-              some: {
-                rol_asignacion: { in: SELLER_ASSIGNMENT_ROLES },
-                personal: { usuario_id: actor.id },
-              },
-            }
-          : undefined,
+        // Para modificar (lock) sólo las sucursales del usuario. Para leer,
+        // también sus propias ventas de otra sucursal.
+        ...(lock || branchWhere === undefined
+          ? { sucursal_id: branchWhere }
+          : { OR: [{ sucursal_id: branchWhere }, ownSale] }),
+        ...(isSellerLikeActor ? ownSale : {}),
       },
       include: operationInclude,
     });

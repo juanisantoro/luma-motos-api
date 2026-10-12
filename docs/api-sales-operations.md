@@ -27,6 +27,13 @@ no en frontend. VENDEDOR siempre queda restringido server-side a operaciones
 asignadas a su propio `personal.id`, incluso si omite `mine` o intenta acceder
 por id; `sellerId` está prohibido para ese rol.
 
+Las ventas propias (`mine=true`, o VENDEDOR/CALLCENTER siempre) no se limitan
+a las sucursales del usuario: un vendedor que cambió de sucursal sigue viendo
+las que hizo en la anterior, en el listado, en `GET /sales/operations/:id` y en
+Seguimiento de cobros. Esas vienen con `readOnly: true` y no se pueden
+modificar: toda modificación sigue pidiendo la sucursal de la operación. Un
+`branchId` explícito sigue validándose contra el alcance del usuario.
+
 Compras e ingresos aceptan el mismo filtro opcional en
 `GET /supplier-purchases?vehicleType=` y `GET /incomes?vehicleType=`. Catálogo,
 inventario, disponibilidad de proveedor y abastecimiento ya filtran por

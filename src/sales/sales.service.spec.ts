@@ -1042,6 +1042,98 @@ describe('SalesService', () => {
       },
     });
   });
+
+  describe('ventas propias de otra sucursal', () => {
+    const personnelId = '11b5de9b-9bc2-4777-bb78-9c7267b73aca';
+    const newBranch = 'a5e778cc-7616-4792-b6db-d89f100bb6f2';
+    const seller: AuthenticatedUser = {
+      ...actor,
+      role: { ...actor.role, code: 'VENDEDOR', permissions: [] },
+      branch: { id: newBranch, code: 'DV', name: 'Del Viso' },
+    };
+
+    function listTransaction(rows: unknown[] = []) {
+      return {
+        personal: {
+          findFirst: jest.fn().mockResolvedValue({ id: personnelId }),
+        },
+        operaciones: {
+          count: jest.fn().mockResolvedValue(rows.length),
+          findMany: jest
+            .fn<Promise<unknown[]>, [Prisma.operacionesFindManyArgs]>()
+            .mockResolvedValue(rows),
+          findFirst: jest.fn().mockResolvedValue(null),
+        },
+      };
+    }
+
+    it('lists the seller own operations of any branch, marked read-only outside the scope', async () => {
+      const transaction = listTransaction([completeOperation('APROBADA')]);
+      const result = await queryService(
+        transaction as unknown as Prisma.TransactionClient,
+      ).findAll({ mine: true, page: 1, limit: 50 }, seller);
+
+      const where = transaction.operaciones.findMany.mock.calls[0]?.[0].where;
+      expect(where?.sucursal_id).toBeUndefined();
+      expect(where?.asignaciones_personal_operacion).toEqual({
+        some: {
+          personal_id: personnelId,
+          rol_asignacion: { in: ['VENDEDOR', 'CALLCENTER'] },
+        },
+      });
+      expect(result.items[0]).toMatchObject({ readOnly: true });
+    });
+
+    it('keeps the branch scope when the list is not limited to own sales', async () => {
+      const transaction = listTransaction();
+      const manager: AuthenticatedUser = {
+        ...seller,
+        role: { ...seller.role, code: 'GERENTE' },
+      };
+      await queryService(
+        transaction as unknown as Prisma.TransactionClient,
+      ).findAll({ page: 1, limit: 50 }, manager);
+
+      expect(
+        transaction.operaciones.findMany.mock.calls[0]?.[0].where?.sucursal_id,
+      ).toEqual({ in: [newBranch] });
+    });
+
+    it('does not mark operations read-only for users with every branch', async () => {
+      const transaction = listTransaction([completeOperation('APROBADA')]);
+      const result = await queryService(
+        transaction as unknown as Prisma.TransactionClient,
+      ).findAll({ mine: true, page: 1, limit: 50 }, actor);
+      expect(result.items[0]).toMatchObject({ readOnly: false });
+    });
+
+    it('opens an own operation of another branch to read but not to change', async () => {
+      const transaction = listTransaction();
+      const query = queryService(
+        transaction as unknown as Prisma.TransactionClient,
+      );
+      await expect(
+        query.findOne('84e778cc-7616-4792-b6db-d89f100bb6f9', seller),
+      ).rejects.toThrow('Sales operation not found');
+
+      const where = (
+        transaction.operaciones.findFirst.mock.calls[0] as [
+          Prisma.operacionesFindFirstArgs,
+        ]
+      )[0].where;
+      expect(where?.OR).toEqual([
+        { sucursal_id: { in: [newBranch] } },
+        {
+          asignaciones_personal_operacion: {
+            some: {
+              rol_asignacion: { in: ['VENDEDOR', 'CALLCENTER'] },
+              personal: { usuario_id: seller.id },
+            },
+          },
+        },
+      ]);
+    });
+  });
   describe('helmet and licensing', () => {
     function licensedOperation(status: string, overrides = {}) {
       return {
