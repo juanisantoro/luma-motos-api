@@ -61,6 +61,9 @@ describe('PendingTasksService', () => {
   const expenses = {
     pendingPaymentCount: jest.fn<Promise<number>, ScopedArgs>(),
   };
+  const serviceOrders = {
+    readyToDeliverCount: jest.fn<Promise<number>, ScopedArgs>(),
+  };
   let service: PendingTasksService;
 
   beforeEach(() => {
@@ -83,6 +86,7 @@ describe('PendingTasksService', () => {
       vehiclePayments as never,
       sales as never,
       expenses as never,
+      serviceOrders as never,
     );
   });
 
@@ -198,6 +202,28 @@ describe('PendingTasksService', () => {
     ]);
     expect(creditPlans.overdueAlert).not.toHaveBeenCalled();
     expect(tx.ingresos.count).not.toHaveBeenCalled();
+  });
+
+  it('counts the services ready to deliver for whoever collects them', async () => {
+    serviceOrders.readyToDeliverCount.mockResolvedValue(2);
+
+    const result = await service.byBranch(
+      actor({
+        role: {
+          id: 'role-id',
+          code: 'ADMINISTRATIVA',
+          name: 'Administrativa',
+          system: true,
+          permissions: ['service.cobrar'],
+        },
+      }),
+    );
+
+    expect(result?.branches[0]?.tasks).toEqual([
+      { key: 'SERVICE_READY_TO_DELIVER', count: 2, amount: null },
+    ]);
+    const call = serviceOrders.readyToDeliverCount.mock.calls[0];
+    expect(call?.[1].branchIds).toEqual([SM]);
   });
 
   it('returns nothing when the user cannot see any task', async () => {

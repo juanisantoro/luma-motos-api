@@ -645,6 +645,75 @@ model retiros_socio {
   @@index([cuenta_caja_id], map: "retiros_socio_cuenta_indice")
 }
 
+/// Tipos de service (1º, 2º, 3º…): tareas que lleva cada uno y precio
+/// sugerido. Sin relaciones modeladas (como pagos_vehiculo): las FK están en
+/// la base.
+model tipos_service {
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizacion_id String   @db.Uuid
+  nombre          String   @db.VarChar(80)
+  orden           Int      @default(0)
+  tareas          String[] @default([])
+  precio_sugerido Decimal? @db.Decimal(18, 2)
+  moneda          String   @default("ARS") @db.Char(3)
+  activo          Boolean  @default(true)
+  creado_en       DateTime @default(now()) @db.Timestamptz(6)
+  actualizado_en  DateTime @default(now()) @db.Timestamptz(6)
+
+  @@unique([id, organizacion_id], map: "tipos_service_id_organizacion_unico")
+}
+
+/// Orden de trabajo de una moto que entra a service. Sin relaciones
+/// modeladas: las FK (con la organización) están en la base.
+model ordenes_service {
+  id                        String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizacion_id           String    @db.Uuid
+  sucursal_id               String    @db.Uuid
+  numero                    Int
+  estado                    String    @default("RECIBIDA") @db.VarChar(20)
+  fecha_recepcion           DateTime  @db.Date
+  cliente_id                String?   @db.Uuid
+  cliente_nombre            String    @db.VarChar(160)
+  cliente_telefono          String?   @db.VarChar(40)
+  cliente_correo            String?   @db.VarChar(160)
+  cliente_documento         String?   @db.VarChar(20)
+  cliente_direccion         String?   @db.VarChar(240)
+  cliente_localidad         String?   @db.VarChar(120)
+  unidad_vehiculo_id        String?   @db.Uuid
+  moto_dominio              String?   @db.VarChar(20)
+  moto_chasis               String?   @db.VarChar(40)
+  moto_motor                String?   @db.VarChar(40)
+  moto_modelo               String?   @db.VarChar(120)
+  moto_anio                 Int?
+  km_actual                 Int
+  km_proximo_service        Int?
+  tipo_service_id           String?   @db.Uuid
+  tipo_service_nombre       String    @db.VarChar(80)
+  observaciones_recepcion   String?
+  tareas                    Json      @default("[]")
+  aceite                    Json      @default("{}")
+  repuestos                 Json      @default("[]")
+  diagnostico               String?
+  mecanico_personal_id      String?   @db.Uuid
+  terminada_en              DateTime? @db.Timestamptz(6)
+  importe                   Decimal?  @db.Decimal(18, 2)
+  ingreso_id                String?   @db.Uuid
+  entregada_en              DateTime? @db.Timestamptz(6)
+  entregada_por_personal_id String?   @db.Uuid
+  estado_entrega            String?   @db.VarChar(10)
+  observaciones_entrega     String?
+  cancelada_motivo          String?
+  cancelada_en              DateTime? @db.Timestamptz(6)
+  version_fila              Int       @default(0)
+  creado_por_personal_id    String    @db.Uuid
+  creado_en                 DateTime  @default(now()) @db.Timestamptz(6)
+  actualizado_en            DateTime  @default(now()) @db.Timestamptz(6)
+
+  @@unique([id, organizacion_id], map: "ordenes_service_id_organizacion_unico")
+  @@unique([organizacion_id, numero], map: "ordenes_service_organizacion_numero_unico")
+  @@index([organizacion_id, sucursal_id, estado], map: "ordenes_service_sucursal_estado_indice")
+}
+
 model modelos_vehiculos {
   id                  String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   marca_id            String                @db.Uuid

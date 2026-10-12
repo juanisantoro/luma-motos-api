@@ -8,6 +8,7 @@ import { ExpensesService } from '../expenses/expenses.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { argentinaToday } from '../sales/licensing';
 import { SalesService } from '../sales/sales.service';
+import { ServiceOrdersService } from '../service-orders/service-orders.service';
 import { VehiclePaymentsService } from '../vehicle-payments/vehicle-payments.service';
 
 /** Tareas de administración que se cuentan, en el orden en que se muestran. */
@@ -20,6 +21,7 @@ export const PENDING_TASK_KEYS = [
   'LICENSING_OVERDUE',
   'LICENSING_PENDING_COLLECTION',
   'EXPENSES_PENDING_PAYMENT',
+  'SERVICE_READY_TO_DELIVER',
 ] as const;
 
 export type PendingTaskKey = (typeof PENDING_TASK_KEYS)[number];
@@ -54,6 +56,7 @@ export class PendingTasksService {
     private readonly vehiclePayments: VehiclePaymentsService,
     private readonly sales: SalesService,
     private readonly expenses: ExpensesService,
+    private readonly serviceOrders: ServiceOrdersService,
   ) {}
 
   /** `null` cuando el usuario no puede ver ninguna de las tareas. */
@@ -67,6 +70,7 @@ export class PendingTasksService {
       vehiclePayments: permissions.has(PERMISSION_CODES.VEHICLE_PAYMENTS_READ),
       licensing: permissions.has(PERMISSION_CODES.SALES_LICENSING_MANAGE),
       expenses: permissions.has(PERMISSION_CODES.EXPENSES_READ),
+      service: permissions.has(PERMISSION_CODES.SERVICE_COLLECT),
     };
     if (!Object.values(can).some(Boolean)) return null;
 
@@ -117,24 +121,39 @@ export class PendingTasksService {
     actor: AuthenticatedUser,
     branch: BranchScope,
     can: Record<
-      'credits' | 'incomes' | 'vehiclePayments' | 'licensing' | 'expenses',
+      | 'credits'
+      | 'incomes'
+      | 'vehiclePayments'
+      | 'licensing'
+      | 'expenses'
+      | 'service',
       boolean
     >,
   ): Promise<PendingTask[]> {
     const today = argentinaToday();
-    const [dueToday, overdue, incomes, vehiclePayments, licensing, expenses] =
-      await Promise.all([
-        can.credits
-          ? this.creditPlans.dueInRange(actor, branch, today, today)
-          : null,
-        can.credits ? this.creditPlans.overdueAlert(actor, branch, 0) : null,
-        can.incomes ? this.incomes(actor, branch) : null,
-        can.vehiclePayments
-          ? this.vehiclePayments.unconfirmedSummary(actor, branch)
-          : null,
-        can.licensing ? this.sales.licensingAlerts(actor, branch) : null,
-        can.expenses ? this.expenses.pendingPaymentCount(actor, branch) : null,
-      ]);
+    const [
+      dueToday,
+      overdue,
+      incomes,
+      vehiclePayments,
+      licensing,
+      expenses,
+      service,
+    ] = await Promise.all([
+      can.credits
+        ? this.creditPlans.dueInRange(actor, branch, today, today)
+        : null,
+      can.credits ? this.creditPlans.overdueAlert(actor, branch, 0) : null,
+      can.incomes ? this.incomes(actor, branch) : null,
+      can.vehiclePayments
+        ? this.vehiclePayments.unconfirmedSummary(actor, branch)
+        : null,
+      can.licensing ? this.sales.licensingAlerts(actor, branch) : null,
+      can.expenses ? this.expenses.pendingPaymentCount(actor, branch) : null,
+      can.service
+        ? this.serviceOrders.readyToDeliverCount(actor, branch)
+        : null,
+    ]);
     const tasks: PendingTask[] = [];
     const add = (key: PendingTaskKey, count: number, amount?: number) =>
       tasks.push({ key, count, amount: amount ?? null });
@@ -152,6 +171,7 @@ export class PendingTasksService {
       add('LICENSING_PENDING_COLLECTION', licensing.receivedPendingCollection);
     }
     if (expenses !== null) add('EXPENSES_PENDING_PAYMENT', expenses);
+    if (service !== null) add('SERVICE_READY_TO_DELIVER', service);
     return tasks;
   }
 

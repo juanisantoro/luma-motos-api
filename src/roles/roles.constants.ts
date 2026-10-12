@@ -11,6 +11,7 @@ export const SYSTEM_ROLE_CODES = [
   'ADMINISTRATIVA',
   'VENDEDOR',
   'CALLCENTER',
+  'MECANICO',
 ] as const;
 
 export const ADMINISTRATOR_REQUIRED_PERMISSIONS = [
@@ -34,6 +35,7 @@ export const PERMISSION_MODULE_LABELS: Record<string, string> = {
   ingresos: 'Ingresos',
   inventario: 'Stock e inventario',
   meses_trabajo: 'Meses de trabajo',
+  service: 'Service (taller)',
   proveedores: 'Proveedores',
   reportes: 'Reportes',
   reservas_stock: 'Reservas de stock',

@@ -24,6 +24,7 @@ import { SalesModule } from './sales/sales.module';
 import { UsersModule } from './users/users.module';
 import { CashModule } from './cash/cash.module';
 import { ExpensesModule } from './expenses/expenses.module';
+import { ServiceOrdersModule } from './service-orders/service-orders.module';
 import { VehiclePaymentsModule } from './vehicle-payments/vehicle-payments.module';
 import { WorkMonthsModule } from './work-months/work-months.module';
 import { BalanceModule } from './balance/balance.module';
@@ -67,6 +68,7 @@ import { DashboardModule } from './dashboard/dashboard.module';
     IncomesModule,
     ExpensesModule,
     VehiclePaymentsModule,
+    ServiceOrdersModule,
     WorkMonthsModule,
     BalanceModule,
     CommissionsModule,

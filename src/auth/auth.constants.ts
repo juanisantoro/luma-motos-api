@@ -7,6 +7,7 @@ export const ROLE_CODES = {
   ADMINISTRATIVA: 'ADMINISTRATIVA',
   ADMINISTRADOR: 'ADMINISTRADOR',
   GERENTE: 'GERENTE',
+  MECANICO: 'MECANICO',
 } as const;
 
 export type RoleCode = (typeof ROLE_CODES)[keyof typeof ROLE_CODES];
@@ -77,6 +78,11 @@ export const PERMISSION_CODES = {
   CATALOG_COST_READ: 'catalogo.costos.consultar',
   CATALOG_COST_MANAGE: 'catalogo.costos.gestionar',
   WORK_MONTHS_MANAGE: 'meses_trabajo.gestionar',
+  SERVICE_READ: 'service.consultar',
+  SERVICE_MANAGE: 'service.gestionar',
+  SERVICE_WORK: 'service.trabajar',
+  SERVICE_COLLECT: 'service.cobrar',
+  SERVICE_TYPES_MANAGE: 'service.tipos.gestionar',
 } as const;
 
 export const AUDIT_ACTIONS = {

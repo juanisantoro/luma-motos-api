@@ -7,6 +7,7 @@ import { CreditPlansModule } from '../credit-plans/credit-plans.module';
 import { ExpensesModule } from '../expenses/expenses.module';
 import { InventoryModule } from '../inventory/inventory.module';
 import { SalesModule } from '../sales/sales.module';
+import { ServiceOrdersModule } from '../service-orders/service-orders.module';
 import { SupplierPurchasesModule } from '../supplier-purchases/supplier-purchases.module';
 import { VehiclePaymentsModule } from '../vehicle-payments/vehicle-payments.module';
 import { DashboardController } from './dashboard.controller';
@@ -19,6 +20,7 @@ import { PendingTasksService } from './pending-tasks.service';
 @Module({
   imports: [
     SalesModule,
+    ServiceOrdersModule,
     CommissionsModule,
     CashModule,
     CreditPlansModule,

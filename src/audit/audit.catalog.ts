@@ -11,6 +11,7 @@ export type AuditCategory =
   | 'COMISIONES'
   | 'CATALOGO'
   | 'USUARIOS'
+  | 'SERVICE'
   | 'ACCESOS'
   | 'OTROS';
 
@@ -23,6 +24,7 @@ export const AUDIT_CATEGORY_LABELS: Record<AuditCategory, string> = {
   COMISIONES: 'Comisiones',
   CATALOGO: 'Catálogo y precios',
   USUARIOS: 'Usuarios y roles',
+  SERVICE: 'Service (taller)',
   ACCESOS: 'Ingresos al sistema',
   OTROS: 'Otros',
 };
@@ -75,6 +77,18 @@ export const AUDIT_ACTIONS: Record<string, CatalogEntry> = {
     'DINERO',
     'Rendición de efectivo confirmada',
   ),
+  SERVICE_ORDER_CREATED: entry('SERVICE', 'Moto recibida para service'),
+  SERVICE_ORDER_UPDATED: entry('SERVICE', 'Orden de service corregida'),
+  SERVICE_ORDER_WORK_SAVED: entry('SERVICE', 'Avance del service guardado'),
+  SERVICE_ORDER_FINISHED: entry('SERVICE', 'Service terminado y firmado'),
+  SERVICE_ORDER_REOPENED: entry('SERVICE', 'Orden de service reabierta'),
+  SERVICE_ORDER_DELIVERED: entry(
+    'SERVICE',
+    'Moto de service cobrada y entregada',
+  ),
+  SERVICE_ORDER_CANCELLED: entry('SERVICE', 'Orden de service cancelada'),
+  SERVICE_TYPE_CREATED: entry('SERVICE', 'Tipo de service creado'),
+  SERVICE_TYPE_UPDATED: entry('SERVICE', 'Tipo de service modificado'),
   EXPENSE_CREATED: entry('DINERO', 'Gasto cargado'),
   EXPENSE_UPDATED: entry('DINERO', 'Gasto modificado'),
   EXPENSE_PAYMENT_REGISTERED: entry('DINERO', 'Pago de un gasto'),

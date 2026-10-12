@@ -7,6 +7,7 @@ import { ADMINISTRADOR_MANUAL } from './manuals/administrador.manual';
 import { ADMINISTRATIVA_MANUAL } from './manuals/administrativa.manual';
 import { CALLCENTER_MANUAL } from './manuals/callcenter.manual';
 import { GERENTE_MANUAL } from './manuals/gerente.manual';
+import { MECANICO_MANUAL } from './manuals/mecanico.manual';
 import { VENDEDOR_MANUAL } from './manuals/vendedor.manual';
 
 // Manual de uso por código de rol. Los textos se generan desde los HTML del
@@ -17,6 +18,7 @@ const MANUALS: Record<string, { profile: string; text: string }> = {
   VENDEDOR: { profile: 'Vendedor', text: VENDEDOR_MANUAL },
   CALLCENTER: { profile: 'Call Center', text: CALLCENTER_MANUAL },
   GERENTE: { profile: 'Gerente', text: GERENTE_MANUAL },
+  MECANICO: { profile: 'Mecánico', text: MECANICO_MANUAL },
 };
 
 // Roles que ven todo el sistema: el asistente les responde con su manual

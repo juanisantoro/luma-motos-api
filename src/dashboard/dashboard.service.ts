@@ -11,6 +11,7 @@ import { ExpensesService } from '../expenses/expenses.service';
 import { InventoryService } from '../inventory/inventory.service';
 import { PendingTasksService } from './pending-tasks.service';
 import { SalesService } from '../sales/sales.service';
+import { ServiceOrdersService } from '../service-orders/service-orders.service';
 import { SupplierPurchasesService } from '../supplier-purchases/supplier-purchases.service';
 import { VehiclePaymentsService } from '../vehicle-payments/vehicle-payments.service';
 import {
@@ -76,6 +77,7 @@ export class DashboardService {
     private readonly expenses: ExpensesService,
     private readonly pendingTasks: PendingTasksService,
     private readonly workMonths: WorkMonthsService,
+    private readonly serviceOrders: ServiceOrdersService,
   ) {}
 
   // `month` sólo cambia el inicio del ADMINISTRADOR: elige si los números
@@ -138,6 +140,15 @@ export class DashboardService {
               ...(await this.buildSellerHome(actor, has, period)),
             }
           : { role: 'VENDEDOR' as const, greeting };
+      case ROLE_CODES.MECANICO:
+        // Taller: las motos que esperan service en sus sucursales.
+        return hasBranches && has(PERMISSION_CODES.SERVICE_WORK)
+          ? {
+              role: 'MECANICO' as const,
+              greeting,
+              workshop: await this.serviceOrders.workshop(actor),
+            }
+          : { role: 'MECANICO' as const, greeting };
       default:
         // A custom role (created via the roles module) that isn't one of
         // the five system roles: the greeting is all we can render without

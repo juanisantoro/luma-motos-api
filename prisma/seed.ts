@@ -1,4 +1,5 @@
 import { Prisma, PrismaClient } from '@prisma/client';
+import { DEFAULT_SERVICE_TASKS } from '../src/service-orders/service-tasks';
 
 const prisma = new PrismaClient();
 
@@ -70,6 +71,12 @@ const roles = [
     nombre: 'Gerente',
     descripcion: 'Supervisa la operación integral y sus reportes.',
   },
+  {
+    codigo: 'MECANICO',
+    nombre: 'Mecánico',
+    descripcion:
+      'Trabaja las órdenes de service de su sucursal: checklist, aceite, repuestos y firma.',
+  },
 ] as const;
 
 const managedPermissions = [
@@ -116,33 +123,63 @@ const managedPermissions = [
     codigo: 'clientes.consultar',
     modulo: 'clientes',
     descripcion: 'Consulta clientes de las organizaciones habilitadas.',
-    roles: ['VENDEDOR', 'CALLCENTER', 'ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+    roles: [
+      'VENDEDOR',
+      'CALLCENTER',
+      'ADMINISTRATIVA',
+      'GERENTE',
+      'ADMINISTRADOR',
+    ],
   },
   {
     codigo: 'clientes.gestionar',
     modulo: 'clientes',
     descripcion: 'Crea, actualiza, activa y desactiva clientes.',
-    roles: ['VENDEDOR', 'CALLCENTER', 'ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+    roles: [
+      'VENDEDOR',
+      'CALLCENTER',
+      'ADMINISTRATIVA',
+      'GERENTE',
+      'ADMINISTRADOR',
+    ],
   },
   {
     codigo: 'consultas_crediticias.consultar',
     modulo: 'consultas_crediticias',
     descripcion:
       'Consulta el consolidado de rechazos y el historial crediticio.',
-    roles: ['VENDEDOR', 'CALLCENTER', 'ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+    roles: [
+      'VENDEDOR',
+      'CALLCENTER',
+      'ADMINISTRATIVA',
+      'GERENTE',
+      'ADMINISTRADOR',
+    ],
   },
   {
     codigo: 'consultas_crediticias.verificar',
     modulo: 'consultas_crediticias',
     descripcion:
       'Verifica antecedentes crediticios por documento antes de una operación.',
-    roles: ['VENDEDOR', 'CALLCENTER', 'ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+    roles: [
+      'VENDEDOR',
+      'CALLCENTER',
+      'ADMINISTRATIVA',
+      'GERENTE',
+      'ADMINISTRADOR',
+    ],
   },
   {
     codigo: 'consultas_crediticias.registrar',
     modulo: 'consultas_crediticias',
     descripcion: 'Registra intentos de consulta crediticia.',
-    roles: ['VENDEDOR', 'CALLCENTER', 'ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+    roles: [
+      'VENDEDOR',
+      'CALLCENTER',
+      'ADMINISTRATIVA',
+      'GERENTE',
+      'ADMINISTRADOR',
+    ],
   },
   {
     codigo: 'financieras.gestionar',
@@ -154,7 +191,13 @@ const managedPermissions = [
     codigo: 'catalogo.consultar',
     modulo: 'catalogo',
     descripcion: 'Consulta marcas, modelos, versiones y políticas de precios.',
-    roles: ['VENDEDOR', 'CALLCENTER', 'ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+    roles: [
+      'VENDEDOR',
+      'CALLCENTER',
+      'ADMINISTRATIVA',
+      'GERENTE',
+      'ADMINISTRADOR',
+    ],
   },
   {
     codigo: 'catalogo.gestionar',
@@ -172,14 +215,21 @@ const managedPermissions = [
   {
     codigo: 'catalogo.costos.gestionar',
     modulo: 'catalogo',
-    descripcion: 'Carga y actualiza el precio de costo de un modelo de catálogo.',
+    descripcion:
+      'Carga y actualiza el precio de costo de un modelo de catálogo.',
     roles: ['GERENTE', 'ADMINISTRADOR'],
   },
   {
     codigo: 'inventario.consultar',
     modulo: 'inventario',
     descripcion: 'Consulta unidades y sus movimientos de inventario.',
-    roles: ['VENDEDOR', 'CALLCENTER', 'ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+    roles: [
+      'VENDEDOR',
+      'CALLCENTER',
+      'ADMINISTRATIVA',
+      'GERENTE',
+      'ADMINISTRADOR',
+    ],
   },
   {
     codigo: 'inventario.gestionar',
@@ -197,7 +247,13 @@ const managedPermissions = [
     codigo: 'proveedores.consultar',
     modulo: 'proveedores',
     descripcion: 'Consulta proveedores y disponibilidades informadas.',
-    roles: ['VENDEDOR', 'CALLCENTER', 'ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+    roles: [
+      'VENDEDOR',
+      'CALLCENTER',
+      'ADMINISTRATIVA',
+      'GERENTE',
+      'ADMINISTRADOR',
+    ],
   },
   {
     codigo: 'proveedores.gestionar',
@@ -209,7 +265,13 @@ const managedPermissions = [
     codigo: 'abastecimiento.consultar',
     modulo: 'abastecimiento',
     descripcion: 'Consulta solicitudes de abastecimiento.',
-    roles: ['VENDEDOR', 'CALLCENTER', 'ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+    roles: [
+      'VENDEDOR',
+      'CALLCENTER',
+      'ADMINISTRATIVA',
+      'GERENTE',
+      'ADMINISTRADOR',
+    ],
   },
   {
     codigo: 'abastecimiento.gestionar',
@@ -227,13 +289,25 @@ const managedPermissions = [
     codigo: 'ventas.consultar',
     modulo: 'ventas',
     descripcion: 'Consulta operaciones comerciales y sus reservas.',
-    roles: ['VENDEDOR', 'CALLCENTER', 'ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+    roles: [
+      'VENDEDOR',
+      'CALLCENTER',
+      'ADMINISTRATIVA',
+      'GERENTE',
+      'ADMINISTRADOR',
+    ],
   },
   {
     codigo: 'ventas.gestionar',
     modulo: 'ventas',
     descripcion: 'Crea y edita borradores y envía operaciones a aprobación.',
-    roles: ['VENDEDOR', 'CALLCENTER', 'ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+    roles: [
+      'VENDEDOR',
+      'CALLCENTER',
+      'ADMINISTRATIVA',
+      'GERENTE',
+      'ADMINISTRADOR',
+    ],
   },
   {
     codigo: 'ventas.aprobar',
@@ -278,7 +352,13 @@ const managedPermissions = [
     codigo: 'reservas_stock.gestionar',
     modulo: 'reservas_stock',
     descripcion: 'Reserva y libera unidades para operaciones comerciales.',
-    roles: ['VENDEDOR', 'CALLCENTER', 'ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+    roles: [
+      'VENDEDOR',
+      'CALLCENTER',
+      'ADMINISTRATIVA',
+      'GERENTE',
+      'ADMINISTRADOR',
+    ],
   },
   {
     codigo: 'compras.consultar',
@@ -349,7 +429,8 @@ const managedPermissions = [
   {
     codigo: 'pagos_vehiculo.consultar',
     modulo: 'pagos_vehiculo',
-    descripcion: 'Consulta pagos de documentación de vehículos (patentes, seguros, formularios).',
+    descripcion:
+      'Consulta pagos de documentación de vehículos (patentes, seguros, formularios).',
     roles: ['ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
   },
   {
@@ -361,8 +442,15 @@ const managedPermissions = [
   {
     codigo: 'creditos.consultar',
     modulo: 'creditos',
-    descripcion: 'Consulta planes de crédito personal, simula cuotas y ve el cronograma de una operación.',
-    roles: ['VENDEDOR', 'CALLCENTER', 'ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+    descripcion:
+      'Consulta planes de crédito personal, simula cuotas y ve el cronograma de una operación.',
+    roles: [
+      'VENDEDOR',
+      'CALLCENTER',
+      'ADMINISTRATIVA',
+      'GERENTE',
+      'ADMINISTRADOR',
+    ],
   },
   {
     codigo: 'creditos.gestionar',
@@ -379,7 +467,8 @@ const managedPermissions = [
   {
     codigo: 'creditos.bcra.detalle',
     modulo: 'creditos',
-    descripcion: 'Ve el detalle completo (todas las entidades y períodos) de una consulta de situación crediticia BCRA. Sin este permiso solo se ve el resumen tipo semáforo.',
+    descripcion:
+      'Ve el detalle completo (todas las entidades y períodos) de una consulta de situación crediticia BCRA. Sin este permiso solo se ve el resumen tipo semáforo.',
     roles: ['GERENTE', 'ADMINISTRADOR'],
   },
   {
@@ -437,6 +526,38 @@ const managedPermissions = [
     codigo: 'comisiones.configurar',
     modulo: 'comisiones',
     descripcion: 'Configura políticas y escalas de comisiones.',
+    roles: ['ADMINISTRADOR'],
+  },
+  {
+    codigo: 'service.consultar',
+    modulo: 'service',
+    descripcion: 'Consulta las órdenes de service de sus sucursales.',
+    roles: ['MECANICO', 'ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+  },
+  {
+    codigo: 'service.gestionar',
+    modulo: 'service',
+    descripcion:
+      'Recibe motos para service: carga, corrige, reabre y cancela órdenes.',
+    roles: ['ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+  },
+  {
+    codigo: 'service.trabajar',
+    modulo: 'service',
+    descripcion:
+      'Trabaja una orden de service: checklist, aceite, repuestos, diagnóstico y firma.',
+    roles: ['MECANICO', 'ADMINISTRADOR'],
+  },
+  {
+    codigo: 'service.cobrar',
+    modulo: 'service',
+    descripcion: 'Cobra y entrega las motos con el service terminado.',
+    roles: ['ADMINISTRATIVA', 'GERENTE', 'ADMINISTRADOR'],
+  },
+  {
+    codigo: 'service.tipos.gestionar',
+    modulo: 'service',
+    descripcion: 'Configura los tipos de service: tareas y precio sugerido.',
     roles: ['ADMINISTRADOR'],
   },
   {
@@ -645,6 +766,24 @@ async function main(): Promise<void> {
           },
         });
       }
+
+      // Tipos de service iniciales (los mismos que agrega la migración
+      // 20261012000000 a las organizaciones que ya existían).
+      if (
+        (await transaction.tipos_service.count({
+          where: { organizacion_id: organization.id },
+        })) === 0
+      )
+        await transaction.tipos_service.createMany({
+          data: ['1º service', '2º service', '3º service', '4º service'].map(
+            (nombre, index) => ({
+              organizacion_id: organization.id,
+              nombre,
+              orden: index + 1,
+              tareas: [...DEFAULT_SERVICE_TASKS],
+            }),
+          ),
+        });
 
       let commissionSeedActor = await transaction.personal.findFirst({
         where: {

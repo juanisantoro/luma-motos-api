@@ -23,6 +23,7 @@ payload:
 | `GERENTE` | Rol GERENTE | Necesita sucursal asignada; sin sucursal responde sólo el saludo |
 | `ADMINISTRATIVA` | Rol ADMINISTRATIVA | Necesita sucursal asignada; sin sucursal responde sólo el saludo |
 | `VENDEDOR` | Roles VENDEDOR **y** CALLCENTER | Necesita sucursal asignada; sin sucursal responde sólo el saludo |
+| `MECANICO` | Rol MECANICO | Necesita sucursal asignada y `service.trabajar`; si no, sólo el saludo |
 | `OTRO` | Cualquier rol personalizado (creado vía el módulo de roles) | Sólo saludo: no hay heurística para adivinar a cuál de las cuatro pantallas debería parecerse |
 
 VENDEDOR y CALLCENTER comparten el mismo `role: "VENDEDOR"` en la respuesta
@@ -82,6 +83,7 @@ Es el trabajo pendiente de administración contado sucursal por sucursal:
 | `LICENSING_OVERDUE` | Patentes con la fecha estimada vencida y sin cargar. | `ventas.patentamiento.gestionar` |
 | `LICENSING_PENDING_COLLECTION` | Patentes recibidas con el cobro al cliente pendiente. | `ventas.patentamiento.gestionar` |
 | `EXPENSES_PENDING_PAYMENT` | Gastos `PENDIENTE`, `PAGO_PARCIAL` o `VENCIDO`. | `gastos.consultar` |
+| `SERVICE_READY_TO_DELIVER` | Órdenes de service `TERMINADA`: firmadas por el mecánico, esperan cobro y entrega. | `service.cobrar` |
 
 Cada tarea aparece sólo si el actor tiene su permiso (nunca por nombre de
 rol); `pendingTasks` es `null` si no tiene ninguno. `amount` sólo viene en las
@@ -349,3 +351,23 @@ que existía antes de este home por perfil.
 ## Alcance por sucursal
 
 Todas las métricas se calculan sobre las sucursales del actor (`user.branchScope`), no sólo sobre `branch`. GERENTE, ADMINISTRATIVA y VENDEDOR/CALLCENTER reciben su pantalla cuando tienen al menos una sucursal en alcance; si en el futuro se les habilitan más sucursales vía `acceso_personal_sucursal`, los KPIs las suman sin cambios. El ranking del equipo (comisiones) sigue consultándose por la sucursal principal. Ver [`api-branch-scope.md`](api-branch-scope.md).
+
+## MECANICO — el taller de sus sucursales
+
+```json
+{
+  "role": "MECANICO",
+  "greeting": { "...": "..." },
+  "workshop": {
+    "waiting": 3,
+    "inProgress": 1,
+    "finishedToday": 2,
+    "orders": [{ "id": "uuid", "number": 12, "status": "EN_TALLER", "...": "orden como en GET /service-orders/:id" }]
+  }
+}
+```
+
+`waiting` son las órdenes RECIBIDA, `inProgress` las EN_TALLER y
+`finishedToday` las que se firmaron hoy (día de Argentina). `orders` trae las
+20 más viejas abiertas (RECIBIDA y EN_TALLER), por número ascendente.
+Implementación: `ServiceOrdersService.workshop`.
