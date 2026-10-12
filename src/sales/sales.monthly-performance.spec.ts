@@ -2,17 +2,27 @@ import type { AuditService } from '../audit/audit.service';
 import type { AuthenticatedUser } from '../auth/auth.types';
 import type { CashService } from '../cash/cash.service';
 import type { PrismaService } from '../prisma/prisma.service';
+import { argentinaToday } from './licensing';
 import { SalesService } from './sales.service';
 
 // "Ventas del mes": el mes pedido contra el anterior a ese.
 describe('SalesService monthlyPerformance', () => {
+  // Sin cortes de mes cargados: meses de almanaque.
+  const prisma = {
+    withTenant: jest.fn((_scope: unknown, work: (tx: unknown) => unknown) =>
+      work({ $queryRaw: jest.fn().mockResolvedValue([]) }),
+    ),
+  };
   const service = new SalesService(
-    {} as PrismaService,
+    prisma as unknown as PrismaService,
     {} as AuditService,
     {} as CashService,
   );
   const periodPerformance = jest.fn();
-  const actor = {} as AuthenticatedUser;
+  const actor = {
+    organization: { id: 'o1' },
+    globalAccess: false,
+  } as AuthenticatedUser;
 
   beforeEach(() => {
     periodPerformance.mockReset();
@@ -49,8 +59,8 @@ describe('SalesService monthlyPerformance', () => {
   });
 
   it('uses the current month when no period is given', async () => {
-    const now = new Date();
-    const current = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
+    const today = argentinaToday();
+    const current = `${today.getUTCFullYear()}-${String(today.getUTCMonth() + 1).padStart(2, '0')}`;
 
     const result = await service.monthlyPerformance(actor);
 

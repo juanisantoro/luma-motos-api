@@ -1,5 +1,7 @@
 import type { AuthenticatedUser } from '../auth/auth.types';
 import type { BranchScope } from '../branch-scope/branch-scope';
+import { argentinaToday } from '../sales/licensing';
+import { WorkCalendar, shiftPeriod } from '../work-months/work-months.calendar';
 import { DashboardService } from './dashboard.service';
 
 // Inicio del ADMINISTRADOR por sucursal: cada sucursal activa trae sus
@@ -60,6 +62,7 @@ describe('DashboardService - ADMINISTRADOR por sucursal', () => {
   const clients = { countCreatedSince: jest.fn() };
   const supplierPurchases = { pendingReceiptCount: jest.fn() };
   const pendingTasks = { byBranch: jest.fn() };
+  const workMonths = { calendar: jest.fn() };
 
   const service = new DashboardService(
     sales as never,
@@ -72,6 +75,7 @@ describe('DashboardService - ADMINISTRADOR por sucursal', () => {
     {} as never,
     expenses as never,
     pendingTasks as never,
+    workMonths as never,
   );
 
   beforeEach(() => {
@@ -113,6 +117,8 @@ describe('DashboardService - ADMINISTRADOR por sucursal', () => {
     clients.countCreatedSince.mockResolvedValue(0);
     supplierPurchases.pendingReceiptCount.mockResolvedValue(0);
     pendingTasks.byBranch.mockResolvedValue(null);
+    // Sin cortes cargados: meses de almanaque.
+    workMonths.calendar.mockResolvedValue(new WorkCalendar());
   });
 
   type Home = { branches: Array<Record<string, unknown>> | null };
@@ -185,9 +191,9 @@ describe('DashboardService - ADMINISTRADOR por sucursal', () => {
 
   describe('mes del inicio', () => {
     const periodKey = (offset: number) => {
-      const now = new Date();
+      const today = argentinaToday();
       const date = new Date(
-        Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + offset, 1),
+        Date.UTC(today.getUTCFullYear(), today.getUTCMonth() + offset, 1),
       );
       return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`;
     };
@@ -245,6 +251,45 @@ describe('DashboardService - ADMINISTRADOR por sucursal', () => {
       );
       // Lo que es una foto de hoy no depende del mes elegido.
       expect(pendingTasks.byBranch).toHaveBeenCalledTimes(1);
+    });
+
+    it('follows the cuts the organization set', async () => {
+      const current = periodKey(0);
+      const previous = shiftPeriod(current, -1);
+      const [year, month] = previous.split('-').map(Number);
+      // El mes anterior cerró el 25 y el de antes, el 27.
+      const previousCut = new Date(Date.UTC(year, month - 1, 25));
+      const beforeCut = new Date(Date.UTC(year, month - 2, 27));
+      workMonths.calendar.mockResolvedValue(
+        new WorkCalendar(
+          new Map([
+            [previous, previousCut],
+            [shiftPeriod(previous, -1), beforeCut],
+          ]),
+        ),
+      );
+
+      const home = (await service.getHome(
+        admin(ALL),
+        'previous',
+      )) as unknown as {
+        months: Array<{ month: string; from: string; to: string }>;
+      };
+
+      const iso = (date: Date) => date.toISOString().slice(0, 10);
+      const from = new Date(beforeCut.getTime() + 24 * 60 * 60 * 1000);
+      expect(home.months[1]).toEqual({
+        month: 'previous',
+        period: previous,
+        from: iso(from),
+        to: iso(previousCut),
+      });
+      expect(expenses.totalInRange).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        from,
+        previousCut,
+      );
     });
   });
 });

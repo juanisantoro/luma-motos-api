@@ -61,7 +61,30 @@ describe('CommissionsService', () => {
     };
   }
 
+  // Los cortes de mes se leen con SQL crudo: sin cortes cargados (los meses
+  // son los del almanaque). El resto de las consultas crudas siguen yendo al
+  // mock de cada test.
+  function withWorkCalendar(transaction: object) {
+    const original = (transaction as { $queryRaw?: jest.Mock }).$queryRaw;
+    return {
+      ...transaction,
+      $queryRaw: jest.fn((query: Prisma.Sql | string[], ...rest: unknown[]) =>
+        (Array.isArray(query) ? query.join('') : query.sql).includes(
+          'meses_trabajo',
+        )
+          ? Promise.resolve([])
+          : original
+            ? (original(query, ...rest) as Promise<unknown>)
+            : Promise.resolve([]),
+      ),
+      $executeRaw:
+        (transaction as { $executeRaw?: jest.Mock }).$executeRaw ??
+        jest.fn().mockResolvedValue(1),
+    };
+  }
+
   function queryService(transaction: object) {
+    transaction = withWorkCalendar(transaction);
     return new CommissionsService(
       {
         withTenant: jest
@@ -274,6 +297,9 @@ describe('CommissionsService', () => {
         data: expect.objectContaining({
           cantidad_ventas: 1,
           importe_sugerido: '35000.00',
+          // Sin cortes cargados, el mes de almanaque.
+          periodo_desde: new Date('2026-08-01T00:00:00.000Z'),
+          periodo_hasta: new Date('2026-08-31T00:00:00.000Z'),
           politica_snapshot: expect.objectContaining({ id: policy.id }),
           escala_snapshot: expect.objectContaining({
             fixedAmount: '35000.00',
@@ -338,6 +364,7 @@ describe('CommissionsService', () => {
   }
 
   function mutationService(transaction: object, cash: object) {
+    transaction = withWorkCalendar(transaction);
     const audit = {
       execute: jest
         .fn()

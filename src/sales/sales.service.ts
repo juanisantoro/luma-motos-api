@@ -56,6 +56,10 @@ import {
 } from '../incomes/component-collections';
 import { PrismaService } from '../prisma/prisma.service';
 import {
+  loadWorkCalendar,
+  shiftPeriod,
+} from '../work-months/work-months.calendar';
+import {
   argentinaToday,
   LICENSING_INCOME_TYPE,
   LICENSING_PAYMENT_CONCEPT,
@@ -994,7 +998,7 @@ export class SalesService {
   }
 
   // --- Dashboard support. All four reuse commissionOperationEligibility()
-  // and commissionPeriod() from the commissions module so "a computable
+  // from the commissions module and the work-month calendar so "a computable
   // sale" and "the current/previous month" stay exactly the definitions the
   // rest of the app (commission calculations) already uses - these are
   // plain functions, not services, so importing them here does not create
@@ -1005,8 +1009,8 @@ export class SalesService {
     period: string,
     opts: { branchId?: string; sellerId?: string },
   ) {
-    const range = commissionPeriod(period);
     return this.prisma.withTenant(this.scope(actor), async (tx) => {
+      const range = await this.workRange(tx, actor, period);
       const rows = await tx.operaciones.findMany({
         where: {
           organizacion_id: actor.organization.id,
@@ -1037,21 +1041,24 @@ export class SalesService {
     });
   }
 
-  // Units/amount of a calendar month (the current one unless `period`
-  // "AAAA-MM" says otherwise) vs. the month before it, scoped to a branch
-  // and/or a single seller (assigned as VENDEDOR/CALLCENTER) when given.
-  // Used by every home's "ventas del mes" KPI.
+  // Units/amount of a work month (the current one unless `period` "AAAA-MM"
+  // says otherwise) vs. the month before it, scoped to a branch and/or a
+  // single seller (assigned as VENDEDOR/CALLCENTER) when given. Months follow
+  // the organization's cuts (work-months). Used by every home's "ventas del
+  // mes" KPI.
   async monthlyPerformance(
     actor: AuthenticatedUser,
     opts: { branchId?: string; sellerId?: string; period?: string } = {},
   ) {
     const { period, ...scope } = opts;
-    const [year, month] = period
-      ? period.split('-').map(Number)
-      : [new Date().getUTCFullYear(), new Date().getUTCMonth() + 1];
-    const currentPeriod = `${year}-${String(month).padStart(2, '0')}`;
-    const previousDate = new Date(Date.UTC(year, month - 2, 1));
-    const previousPeriod = `${previousDate.getUTCFullYear()}-${String(previousDate.getUTCMonth() + 1).padStart(2, '0')}`;
+    const currentPeriod =
+      period ??
+      (
+        await this.prisma.withTenant(this.scope(actor), (tx) =>
+          loadWorkCalendar(tx, actor.organization.id),
+        )
+      ).current();
+    const previousPeriod = shiftPeriod(currentPeriod, -1);
     const [currentMonth, previousMonth] = await Promise.all([
       this.periodPerformance(actor, currentPeriod, scope),
       this.periodPerformance(actor, previousPeriod, scope),
@@ -1064,9 +1071,9 @@ export class SalesService {
   // returns every active branch, including ones with zero sales, so it
   // reads correctly whether the organization has one branch or many.
   async salesByBranch(actor: AuthenticatedUser, period: string) {
-    const range = commissionPeriod(period);
     const branchFilter = BranchScope.forActor(actor).where();
     return this.prisma.withTenant(this.scope(actor), async (tx) => {
+      const range = await this.workRange(tx, actor, period);
       const [rows, branches] = await Promise.all([
         tx.operaciones.findMany({
           where: {
@@ -1117,8 +1124,8 @@ export class SalesService {
     actor: AuthenticatedUser,
     opts: { branchId: string; period: string },
   ) {
-    const range = commissionPeriod(opts.period);
     return this.prisma.withTenant(this.scope(actor), async (tx) => {
+      const range = await this.workRange(tx, actor, opts.period);
       const rows = await tx.operaciones.findMany({
         where: {
           organizacion_id: actor.organization.id,
@@ -1185,9 +1192,9 @@ export class SalesService {
       limit?: number;
     },
   ) {
-    const range = commissionPeriod(opts.period);
     const limit = opts.limit ?? 5;
     return this.prisma.withTenant(this.scope(actor), async (tx) => {
+      const range = await this.workRange(tx, actor, opts.period);
       const rows = await tx.operaciones.findMany({
         where: {
           organizacion_id: actor.organization.id,
@@ -5164,6 +5171,16 @@ export class SalesService {
       throw new ForbiddenException(
         'Only users with global access can select an organization',
       );
+  }
+
+  // Rango de un mes de trabajo de la organización del actor.
+  private async workRange(
+    tx: Prisma.TransactionClient,
+    actor: AuthenticatedUser,
+    period: string,
+  ) {
+    commissionPeriod(period);
+    return (await loadWorkCalendar(tx, actor.organization.id)).range(period);
   }
 
   private scope(actor: AuthenticatedUser) {

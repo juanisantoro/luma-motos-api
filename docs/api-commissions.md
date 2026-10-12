@@ -5,6 +5,17 @@ aislamiento por organización mediante RLS forzado. Los importes se serializan
 como `string` decimal, las fechas comerciales como `YYYY-MM-DD` y los períodos
 como `YYYY-MM`.
 
+Un período es un **mes de trabajo** (ver `docs/api-work-months.md`): va del
+día siguiente al corte del mes anterior hasta su propio corte. Sin cortes
+cargados es el mes de almanaque. Las ventas que cuentan para un período son
+las de ese rango, y la liquidación guarda ese rango en `periodo_desde` /
+`periodo_hasta`. Para encontrar las liquidaciones de un período se busca por
+`periodo_hasta` entre el 15 del mes y el 14 del siguiente (donde puede caer su
+corte), así que siguen apareciendo aunque se cambien los cortes de otros meses.
+Un corte no se puede mover si ya hay liquidaciones de ese mes o del siguiente,
+y mientras se acuerda una comisión el corte de la organización queda
+bloqueado.
+
 `vehicleType` es obligatorio en las consultas y sólo admite `MOTO` o `AUTO`.
 Los tipos nunca comparten operaciones, políticas, escalas ni liquidaciones.
 

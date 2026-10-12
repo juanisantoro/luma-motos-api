@@ -152,6 +152,46 @@ describe('IncomesService', () => {
     });
   });
 
+  it('lists a work month counting the sale payment plan in the month of the sale', async () => {
+    // Octubre cerró el 27/10; septiembre, el 27/09.
+    (transaction.$queryRaw as jest.Mock).mockResolvedValueOnce([
+      { periodo: '2026-09', fecha_corte: new Date('2026-09-27T00:00:00.000Z') },
+      { periodo: '2026-10', fecha_corte: new Date('2026-10-27T00:00:00.000Z') },
+    ]);
+
+    await service.findAll(
+      { page: 1, limit: 20, period: '2026-10', from: '2026-01-01' },
+      actor,
+    );
+
+    const where = findMany.mock.calls[0]?.[0].where;
+    const range = {
+      gte: new Date('2026-09-28T00:00:00.000Z'),
+      lte: new Date('2026-10-27T00:00:00.000Z'),
+    };
+    expect(where?.fecha_ingreso).toBeUndefined();
+    expect(where?.AND).toEqual([
+      {
+        OR: [
+          {
+            operacion_id: { not: null },
+            componente_pago_id: { not: null },
+            cuota_credito_id: null,
+            operaciones: { is: { fecha_operacion: range } },
+          },
+          {
+            OR: [
+              { operacion_id: null },
+              { componente_pago_id: null },
+              { cuota_credito_id: { not: null } },
+            ],
+            fecha_ingreso: range,
+          },
+        ],
+      },
+    ]);
+  });
+
   it('counts pending handovers only for the vehicle type of the screen', async () => {
     const personalFindMany = jest
       .fn()

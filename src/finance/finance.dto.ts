@@ -80,6 +80,12 @@ function AccountIdList(): PropertyDecorator {
 }
 
 export class IncomeQueryDto extends FinancialQueryDto {
+  // Mes de trabajo "AAAA-MM". Reemplaza a from/to: lo pactado en el plan de
+  // pago de una venta cuenta en el mes de la venta aunque se acredite después
+  // del corte; lo demás (patente, saldos sueltos, cuotas), por su fecha.
+  @IsOptional()
+  @Matches(/^\d{4}-(0[1-9]|1[0-2])$/, { message: 'period va como AAAA-MM.' })
+  period?: string;
   @IsOptional() @IsEnum(tipo_vehiculo_luma) vehicleType?: tipo_vehiculo_luma;
   @IsOptional() @IsString() @MaxLength(120) type?: string;
   @IsOptional() @IsUUID() unitId?: string;

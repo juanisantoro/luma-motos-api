@@ -33,6 +33,7 @@ export const PERMISSION_MODULE_LABELS: Record<string, string> = {
   gastos: 'Gastos',
   ingresos: 'Ingresos',
   inventario: 'Stock e inventario',
+  meses_trabajo: 'Meses de trabajo',
   proveedores: 'Proveedores',
   reportes: 'Reportes',
   reservas_stock: 'Reservas de stock',

@@ -187,6 +187,15 @@ stores it in `ingresos.tipo_vehiculo`; the UI always sends the circuit of the
 screen). An income with no unit, no operation and no stored `vehicleType`
 belongs to no vehicle-type list.
 
+`period` (`AAAA-MM`) filters a **work month** (see `api-work-months.md`) and
+replaces `from`/`to`: an income collecting a component of the sale's payment
+plan (`componente_pago_id`: cash, transfer, card, financiera, trade-in) counts
+in the work month of the sale (`operaciones.fecha_operacion`), even when it is
+credited after the cut. Everything else counts by `fecha_ingreso`: incomes
+without a sale, sale incomes outside the plan (licensing, a loose balance) and
+own-credit installments (`cuota_credito_id`). The page, `total` and `totals`
+use the same rule.
+
 Common filters plus `type`, `unitId`, `operationId`, `accountId`,
 `collectorId`, `clientId`, `ticketNumber`, `paymentMethod`,
 `handoverStatus` (`PENDIENTE_RENDICION|RENDIDO`) and `handoverToId`.
@@ -835,7 +844,8 @@ Antes "Pagos/patentes". Tabla `pagos_vehiculo` (migración
 
 - `GET /vehicle-payments?vehicleType=MOTO|AUTO` — listado paginado (`limit`
   máx. 100). Filtros: `conceptId`, `providerId`, `accountId`, `branchId`,
-  `status`, `month`, `year`, `search` (concepto, proveedor, detalle, VIN,
+  `status`, `month`, `year` (almanaque), `period` (mes de trabajo `AAAA-MM`,
+  de corte a corte), `search` (concepto, proveedor, detalle, VIN,
   patente, marca, modelo, operación, boleto). La sucursal es la del gasto.
 - `GET /vehicle-payments/accounts` — cajas de administradores: activas, no
   importadas, cuyo responsable tiene rol `ADMINISTRADOR` y dentro del alcance

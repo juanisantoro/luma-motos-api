@@ -25,6 +25,8 @@ import { UsersModule } from './users/users.module';
 import { CashModule } from './cash/cash.module';
 import { ExpensesModule } from './expenses/expenses.module';
 import { VehiclePaymentsModule } from './vehicle-payments/vehicle-payments.module';
+import { WorkMonthsModule } from './work-months/work-months.module';
+import { BalanceModule } from './balance/balance.module';
 import { IncomesModule } from './incomes/incomes.module';
 import { SupplierPurchasesModule } from './supplier-purchases/supplier-purchases.module';
 import { CommissionsModule } from './commissions/commissions.module';
@@ -65,6 +67,8 @@ import { DashboardModule } from './dashboard/dashboard.module';
     IncomesModule,
     ExpensesModule,
     VehiclePaymentsModule,
+    WorkMonthsModule,
+    BalanceModule,
     CommissionsModule,
     CreditPlansModule,
     BcraModule,

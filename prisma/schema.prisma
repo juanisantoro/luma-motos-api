@@ -2033,3 +2033,19 @@ enum estado_cuota_credito_luma {
   VENCIDA
   PARCIAL
 }
+
+/// Meses de trabajo: corte de cada mes por organización. Sin relaciones
+/// modeladas a propósito (como pagos_vehiculo): se usa con SQL crudo. Las FK
+/// están en la migración 20261010000000_work_months.
+model meses_trabajo {
+  id                         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizacion_id            String   @db.Uuid
+  periodo                    String   @db.Char(7)
+  fecha_corte                DateTime @db.Date
+  creado_por_usuario_id      String   @db.Uuid
+  actualizado_por_usuario_id String   @db.Uuid
+  creado_en                  DateTime @default(now()) @db.Timestamptz(6)
+  actualizado_en             DateTime @default(now()) @db.Timestamptz(6)
+
+  @@unique([organizacion_id, periodo], map: "meses_trabajo_organizacion_periodo_unico")
+}

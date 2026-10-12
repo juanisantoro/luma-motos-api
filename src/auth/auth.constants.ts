@@ -76,6 +76,7 @@ export const PERMISSION_CODES = {
   REPORTS_READ: 'reportes.consultar',
   CATALOG_COST_READ: 'catalogo.costos.consultar',
   CATALOG_COST_MANAGE: 'catalogo.costos.gestionar',
+  WORK_MONTHS_MANAGE: 'meses_trabajo.gestionar',
 } as const;
 
 export const AUDIT_ACTIONS = {

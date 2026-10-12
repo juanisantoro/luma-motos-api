@@ -37,6 +37,10 @@ export class VehiclePaymentQueryDto {
   @Min(2000)
   @Max(2200)
   year?: number;
+  // Corte: mes de trabajo "AAAA-MM", de corte a corte.
+  @IsOptional()
+  @Matches(/^\d{4}-(0[1-9]|1[0-2])$/, { message: 'period va como AAAA-MM.' })
+  period?: string;
   @IsOptional() @IsString() @MaxLength(80) search?: string;
   @IsOptional() @IsUUID() organizationId?: string;
 }

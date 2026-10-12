@@ -42,6 +42,7 @@ import {
   targetOrganization,
 } from '../finance/finance.utils';
 import { PrismaService } from '../prisma/prisma.service';
+import { loadWorkCalendar } from '../work-months/work-months.calendar';
 import {
   assertHandoverEditable,
   CashCollectionInput,
@@ -255,6 +256,36 @@ function vehicleTypeWhere(
   ];
 }
 
+// Ingresos de un mes de trabajo: lo pactado en el plan de pago de una venta
+// (contado, transferencia, tarjeta, financiera, toma) va al mes de la venta,
+// aunque se acredite después del corte. Lo que no estaba en el plan (la
+// patente, un saldo suelto), las cuotas de crédito propio y los ingresos sin
+// venta van por su fecha.
+export function monthWhere(month: {
+  from: Date;
+  to: Date;
+}): Prisma.ingresosWhereInput {
+  const range = { gte: month.from, lte: month.to };
+  return {
+    OR: [
+      {
+        operacion_id: { not: null },
+        componente_pago_id: { not: null },
+        cuota_credito_id: null,
+        operaciones: { is: { fecha_operacion: range } },
+      },
+      {
+        OR: [
+          { operacion_id: null },
+          { componente_pago_id: null },
+          { cuota_credito_id: { not: null } },
+        ],
+        fecha_ingreso: range,
+      },
+    ],
+  };
+}
+
 @Injectable()
 export class IncomesService {
   constructor(
@@ -300,6 +331,17 @@ export class IncomesService {
       (actor.globalAccess ? undefined : actor.organization.id);
     const search = query.search?.trim();
     const ticketNumber = query.ticketNumber?.trim();
+    const month = query.period
+      ? await this.prisma.withTenant(scope(actor), async (tx) =>
+          (
+            await loadWorkCalendar(tx, organizationId ?? actor.organization.id)
+          ).range(query.period!),
+        )
+      : null;
+    const conditions: Prisma.ingresosWhereInput[] = [
+      ...(query.vehicleType ? vehicleTypeWhere(query.vehicleType) : []),
+      ...(month ? [monthWhere(month)] : []),
+    ];
     const where: Prisma.ingresosWhereInput = {
       organizacion_id: organizationId,
       sucursal_id: BranchScope.forActor(actor).where(query.branchId),
@@ -318,9 +360,9 @@ export class IncomesService {
             },
           }
         : undefined,
-      AND: query.vehicleType ? vehicleTypeWhere(query.vehicleType) : undefined,
+      AND: conditions.length ? conditions : undefined,
       fecha_ingreso:
-        query.from || query.to
+        !month && (query.from || query.to)
           ? {
               gte: query.from ? businessDate(query.from) : undefined,
               lte: query.to ? businessDate(query.to) : undefined,

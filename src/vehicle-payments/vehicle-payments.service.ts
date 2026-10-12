@@ -17,6 +17,7 @@ import type { AuthenticatedUser } from '../auth/auth.types';
 import { BranchScope } from '../branch-scope/branch-scope';
 import { CashService } from '../cash/cash.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { loadWorkCalendar } from '../work-months/work-months.calendar';
 import {
   argentinaToday,
   isLicensingOverdue,
@@ -379,6 +380,17 @@ export class VehiclePaymentsService {
       conditions.push(Prisma.sql`EXTRACT(MONTH FROM p.fecha) = ${query.month}`);
     if (query.year)
       conditions.push(Prisma.sql`EXTRACT(YEAR FROM p.fecha) = ${query.year}`);
+    // Corte: un mes de trabajo, de corte a corte (mes y año son de almanaque).
+    if (query.period) {
+      const range = (
+        await this.prisma.withTenant(this.scope(actor), (tx) =>
+          loadWorkCalendar(tx, organizationId ?? actor.organization.id),
+        )
+      ).range(query.period);
+      conditions.push(
+        Prisma.sql`p.fecha BETWEEN ${range.from}::date AND ${range.to}::date`,
+      );
+    }
     if (search) {
       conditions.push(Prisma.sql`(
         u.vin_mostrado ILIKE ${`%${search}%`}

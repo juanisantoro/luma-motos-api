@@ -96,6 +96,8 @@ export class CommissionHistoryQueryDto extends CommissionPageDto {
   @Max(2200)
   year?: number;
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(12) month?: number;
+  // Corte: pagos hechos en ese mes de trabajo "AAAA-MM", de corte a corte.
+  @IsOptional() @IsString() @Matches(PERIOD_PATTERN) period?: string;
   @IsOptional() @IsUUID() organizationId?: string;
 }
 
@@ -245,6 +247,8 @@ export class ManagerCommissionHistoryQueryDto extends CommissionPageDto {
   @Max(2200)
   year?: number;
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(12) month?: number;
+  // Corte: pagos hechos en ese mes de trabajo "AAAA-MM", de corte a corte.
+  @IsOptional() @IsString() @Matches(PERIOD_PATTERN) period?: string;
   @IsOptional() @IsUUID() organizationId?: string;
 }
 

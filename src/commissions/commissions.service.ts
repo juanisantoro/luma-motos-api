@@ -25,6 +25,14 @@ import {
 } from '../finance/finance.utils';
 import { PrismaService } from '../prisma/prisma.service';
 import {
+  cutBounds,
+  loadWorkCalendar,
+  lockWorkCalendar,
+  periodOfRange,
+  shiftPeriod,
+  toDateOnly,
+} from '../work-months/work-months.calendar';
+import {
   calculateFixedCommission,
   calculateManagerCommission,
   commissionPeriod,
@@ -216,8 +224,14 @@ export class CommissionsService {
     const organizationId =
       query.organizationId ??
       (actor.globalAccess ? undefined : actor.organization.id);
-    const period = commissionPeriod(query.period);
+    commissionPeriod(query.period);
     return this.prisma.withTenant(scope(actor), async (tx) => {
+      // Sin organización elegida (acceso global) cada organización tiene sus
+      // cortes: se traen las ventas de todo el rango en que puede caer el
+      // mes y cada sugerido se queda con las de su mes (suggestionData).
+      const period = organizationId
+        ? await this.periodRange(tx, organizationId, query.period)
+        : this.widestPeriodRange(query.period);
       const operations = await tx.operaciones.findMany({
         relationLoadStrategy: 'join',
         where: {
@@ -320,6 +334,8 @@ export class CommissionsService {
       'COMMISSION_AGREEMENT_RECORDED',
       async (tx, event) => {
         await this.lockBusinessKey(tx, key);
+        // Que nadie mueva el corte del mes mientras se liquida.
+        await lockWorkCalendar(tx, key.organizationId, 'shared');
         const data = await this.suggestionData(tx, key);
         event.targetOrganizationId = targetOrganization(
           actor,
@@ -397,13 +413,18 @@ export class CommissionsService {
           actor,
           key.organizationId,
         );
+        const range = await this.periodRange(
+          tx,
+          key.organizationId,
+          key.period,
+        );
         const created = await tx.liquidaciones_comisiones.create({
           data: {
             organizacion_id: key.organizationId,
             personal_id: key.sellerId,
             sucursal_id: key.branchId,
-            periodo_desde: commissionPeriod(key.period).from,
-            periodo_hasta: commissionPeriod(key.period).to,
+            periodo_desde: range.from,
+            periodo_hasta: range.to,
             tipo_vehiculo: key.vehicleType,
             politica_comision_id: data.policy.id,
             cantidad_ventas: live.computableSales,
@@ -450,7 +471,7 @@ export class CommissionsService {
     const organizationId =
       query.organizationId ??
       (actor.globalAccess ? undefined : actor.organization.id);
-    const period = query.period ? commissionPeriod(query.period) : undefined;
+    const period = query.period ? this.settledWindow(query.period) : undefined;
     const status = query.status
       ? this.databaseSettlementStatus(query.status)
       : {
@@ -466,8 +487,9 @@ export class CommissionsService {
         sucursal_id: query.branchId,
         personal_id: query.sellerId,
         estado: status,
-        periodo_desde: period?.from,
-        periodo_hasta: period?.to,
+        periodo_hasta: period
+          ? { gte: period.min, lte: period.max }
+          : undefined,
       };
       const [total, items] = await Promise.all([
         tx.liquidaciones_comisiones.count({ where }),
@@ -702,7 +724,7 @@ export class CommissionsService {
             tx,
             actor.organization.id,
             personnel.id,
-            commissionPeriod(query.period),
+            query.period,
             query.vehicleType,
           )
         : null;
@@ -956,7 +978,7 @@ export class CommissionsService {
       config.alcance,
       managerPersonnel?.sucursal_principal_id ?? null,
     );
-    const period = commissionPeriod(periodInput);
+    const period = await this.periodRange(tx, organizationId, periodInput);
     const operations = branchIds.length
       ? await tx.operaciones.findMany({
           where: {
@@ -1091,15 +1113,15 @@ export class CommissionsService {
     tx: Prisma.TransactionClient,
     organizationId: string,
     managerId: string,
-    period: { from: Date; to: Date },
+    periodKey: string,
     vehicleType: tipo_vehiculo_luma,
   ) {
+    const period = this.settledWindow(periodKey);
     const rows = await tx.$queryRaw<ManagerSettlementRow[]>(Prisma.sql`
       ${managerSettlementSelect}
       WHERE g.organizacion_id = ${organizationId}::uuid
         AND g.personal_id = ${managerId}::uuid
-        AND g.periodo_desde = ${period.from}::date
-        AND g.periodo_hasta = ${period.to}::date
+        AND g.periodo_hasta BETWEEN ${period.min}::date AND ${period.max}::date
         AND g.tipo_vehiculo = ${vehicleType}::"tipo_vehiculo_luma"
     `);
     return rows[0] ?? null;
@@ -1205,7 +1227,7 @@ export class CommissionsService {
         WHERE ${Prisma.join(conditions, ' AND ')}
         ORDER BY p.nombre_completo ASC
       `);
-      const period = commissionPeriod(query.period);
+      const period = this.settledWindow(query.period);
       const [calculations, existingRows] = await Promise.all([
         Promise.all(
           managers.map((manager) =>
@@ -1224,8 +1246,7 @@ export class CommissionsService {
               WHERE g.personal_id IN (${Prisma.join(
                 managers.map((manager) => Prisma.sql`${manager.id}::uuid`),
               )})
-                AND g.periodo_desde = ${period.from}::date
-                AND g.periodo_hasta = ${period.to}::date
+                AND g.periodo_hasta BETWEEN ${period.min}::date AND ${period.max}::date
                 AND g.tipo_vehiculo = ${query.vehicleType}::"tipo_vehiculo_luma"
             `)
           : Promise.resolve([] as ManagerSettlementRow[]),
@@ -1291,7 +1312,7 @@ export class CommissionsService {
         tx,
         key.organizationId,
         key.managerId,
-        commissionPeriod(key.period),
+        key.period,
         key.vehicleType,
       );
       return {
@@ -1316,6 +1337,7 @@ export class CommissionsService {
         await tx.$executeRaw(Prisma.sql`
           SELECT pg_advisory_xact_lock(hashtextextended(${this.managerKeyString(key)}, 0))
         `);
+        await lockWorkCalendar(tx, key.organizationId, 'shared');
         event.targetOrganizationId = targetOrganization(
           actor,
           key.organizationId,
@@ -1337,12 +1359,16 @@ export class CommissionsService {
             'MANAGER_COMMISSION_NOT_CONFIGURED',
             'Manager has no active commission configuration',
           );
-        const period = commissionPeriod(key.period);
+        const period = await this.periodRange(
+          tx,
+          key.organizationId,
+          key.period,
+        );
         const existing = await this.managerSettlementRowByKey(
           tx,
           key.organizationId,
           key.managerId,
-          period,
+          key.period,
           key.vehicleType,
         );
         const now = new Date();
@@ -1446,7 +1472,7 @@ export class CommissionsService {
     const organizationId =
       query.organizationId ??
       (actor.globalAccess ? undefined : actor.organization.id);
-    const period = query.period ? commissionPeriod(query.period) : undefined;
+    const period = query.period ? this.settledWindow(query.period) : undefined;
     const status = query.status
       ? this.databaseManagerSettlementStatus(query.status)
       : undefined;
@@ -1464,10 +1490,10 @@ export class CommissionsService {
         );
       else
         conditions.push(Prisma.sql`g.estado IN ('ACORDADA', 'PAGADA')`);
-      if (period) {
-        conditions.push(Prisma.sql`g.periodo_desde = ${period.from}::date`);
-        conditions.push(Prisma.sql`g.periodo_hasta = ${period.to}::date`);
-      }
+      if (period)
+        conditions.push(
+          Prisma.sql`g.periodo_hasta BETWEEN ${period.min}::date AND ${period.max}::date`,
+        );
       const where = Prisma.sql`WHERE ${Prisma.join(conditions, ' AND ')}`;
       const [rows, countRows] = await Promise.all([
         tx.$queryRaw<ManagerSettlementRow[]>(Prisma.sql`
@@ -1556,7 +1582,11 @@ export class CommissionsService {
     const organizationId =
       query.organizationId ??
       (actor.globalAccess ? undefined : actor.organization.id);
-    const [paidFrom, paidTo] = this.historyDates(query);
+    const [paidFrom, paidTo] = await this.historyDates(
+      tx,
+      organizationId ?? actor.organization.id,
+      query,
+    );
     const conditions: Prisma.Sql[] = [
       Prisma.sql`g.estado = 'PAGADA'`,
       Prisma.sql`g.tipo_vehiculo = ${query.vehicleType}::"tipo_vehiculo_luma"`,
@@ -1950,7 +1980,11 @@ export class CommissionsService {
     const organizationId =
       query.organizationId ??
       (actor.globalAccess ? undefined : actor.organization.id);
-    const [paidFrom, paidTo] = this.historyDates(query);
+    const [paidFrom, paidTo] = await this.historyDates(
+      tx,
+      organizationId ?? actor.organization.id,
+      query,
+    );
     const where: Prisma.liquidaciones_comisionesWhereInput = {
       organizacion_id: organizationId,
       tipo_vehiculo: query.vehicleType,
@@ -1990,7 +2024,7 @@ export class CommissionsService {
     key: SuggestionKey,
     prefetchedOperations?: OperationRecord[],
   ): Promise<SuggestionData> {
-    const period = commissionPeriod(key.period);
+    const period = await this.periodRange(tx, key.organizationId, key.period);
     // Resolved ambito-aware (VENDEDOR only - see activePolicyId) before the
     // Promise.all below, since the typed findFirst that hydrates the full
     // row (tiers included) needs the id first. This is THE vendor
@@ -2031,8 +2065,10 @@ export class CommissionsService {
           organizacion_id: key.organizationId,
           personal_id: key.sellerId,
           sucursal_id: key.branchId,
-          periodo_desde: period.from,
-          periodo_hasta: period.to,
+          periodo_hasta: {
+            gte: this.settledWindow(key.period).min,
+            lte: this.settledWindow(key.period).max,
+          },
           tipo_vehiculo: key.vehicleType,
         },
         include: settlementInclude,
@@ -2073,6 +2109,8 @@ export class CommissionsService {
         (operation) =>
           operation.organizacion_id === key.organizationId &&
           operation.sucursal_id === key.branchId &&
+          operation.fecha_operacion >= period.from &&
+          operation.fecha_operacion <= period.to &&
           this.primarySeller(operation)?.id === key.sellerId &&
           operation.versiones_vehiculos.modelos_vehiculos.tipo_vehiculo ===
             key.vehicleType,
@@ -2707,26 +2745,76 @@ export class CommissionsService {
     return value ? value.toISOString().slice(0, 10) : null;
   }
 
-  private periodLabel(item: { periodo_desde: Date }) {
-    return item.periodo_desde.toISOString().slice(0, 7);
+  // Mes de trabajo de una liquidación, por su último día.
+  private periodLabel(item: { periodo_hasta: Date }) {
+    return periodOfRange(item.periodo_hasta);
   }
 
-  private historyDates(
+  /** Rango de un mes de trabajo, con los cortes de la organización. */
+  private async periodRange(
+    tx: Prisma.TransactionClient,
+    organizationId: string,
+    period: string,
+  ) {
+    commissionPeriod(period);
+    return (await loadWorkCalendar(tx, organizationId)).range(period);
+  }
+
+  // Todos los días que puede abarcar un mes con cualquier corte: del 16 del
+  // mes anterior al 14 del siguiente.
+  private widestPeriodRange(period: string) {
+    commissionPeriod(period);
+    const previous = cutBounds(shiftPeriod(period, -1));
+    return {
+      period,
+      from: new Date(previous.min.getTime() + 24 * 60 * 60 * 1000),
+      to: cutBounds(period).max,
+    };
+  }
+
+  // Liquidaciones de un mes: las que terminan entre el 15 del mes y el 14
+  // del siguiente, que es donde puede caer su corte. No depende de los
+  // cortes actuales, así encuentra también las de otra organización.
+  private settledWindow(period: string) {
+    commissionPeriod(period);
+    return cutBounds(period);
+  }
+
+  // Pagos de un mes de almanaque (año + mes), de un mes de trabajo (period,
+  // de corte a corte, con días de Argentina) o de un rango de días.
+  private async historyDates(
+    tx: Prisma.TransactionClient,
+    organizationId: string,
     query: Pick<
       CommissionHistoryQueryDto,
-      'paidFrom' | 'paidTo' | 'year' | 'month'
+      'paidFrom' | 'paidTo' | 'year' | 'month' | 'period'
     >,
-  ): [Date | undefined, Date | undefined] {
+  ): Promise<[Date | undefined, Date | undefined]> {
     if ((query.year === undefined) !== (query.month === undefined))
       commissionBadRequest(
         'INVALID_HISTORY_PERIOD',
         'History year and month must be provided together',
       );
-    if ((query.paidFrom || query.paidTo) && query.year !== undefined)
+    if (
+      [
+        query.paidFrom || query.paidTo,
+        query.year !== undefined,
+        query.period,
+      ].filter(Boolean).length > 1
+    )
       commissionBadRequest(
         'INVALID_HISTORY_PERIOD',
-        'Date range cannot be combined with year and month',
+        'Use only one of: date range, year and month, or work period',
       );
+    if (query.period) {
+      const range = (await loadWorkCalendar(tx, organizationId)).range(
+        query.period,
+      );
+      return [
+        new Date(`${toDateOnly(range.from)}T00:00:00.000-03:00`),
+        new Date(`${toDateOnly(range.to)}T23:59:59.999-03:00`),
+      ];
+    }
     if (query.year !== undefined && query.month !== undefined) {
       return [
         new Date(Date.UTC(query.year, query.month - 1, 1)),

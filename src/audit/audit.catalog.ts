@@ -126,6 +126,11 @@ export const AUDIT_ACTIONS: Record<string, CatalogEntry> = {
   CREDIT_INSTALLMENT_PAID: entry('CREDITOS', 'Cobro de cuota'),
 
   // Comisiones
+  WORK_MONTH_CUT_SET: entry('COMISIONES', 'Corte de mes de trabajo definido'),
+  WORK_MONTH_CUT_REMOVED: entry(
+    'COMISIONES',
+    'Corte de mes de trabajo quitado',
+  ),
   COMMISSION_POLICY_CREATED: entry('COMISIONES', 'Escala creada'),
   COMMISSION_POLICY_UPDATED: entry('COMISIONES', 'Escala modificada'),
   COMMISSION_POLICY_ACTIVATED: entry('COMISIONES', 'Escala activada'),

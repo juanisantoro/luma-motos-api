@@ -13,22 +13,14 @@ import { PendingTasksService } from './pending-tasks.service';
 import { SalesService } from '../sales/sales.service';
 import { SupplierPurchasesService } from '../supplier-purchases/supplier-purchases.service';
 import { VehiclePaymentsService } from '../vehicle-payments/vehicle-payments.service';
+import {
+  WorkCalendar,
+  shiftPeriod,
+  toDateOnly,
+} from '../work-months/work-months.calendar';
+import { WorkMonthsService } from '../work-months/work-months.service';
 
 const VEHICLE_TYPES = [tipo_vehiculo_luma.MOTO, tipo_vehiculo_luma.AUTO] as const;
-
-function currentPeriodKey(): string {
-  const now = new Date();
-  return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
-}
-
-// Período "AAAA-MM" del mes anterior al actual (UTC).
-function previousPeriodKey(): string {
-  const now = new Date();
-  const previous = new Date(
-    Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1),
-  );
-  return `${previous.getUTCFullYear()}-${String(previous.getUTCMonth() + 1).padStart(2, '0')}`;
-}
 
 export const DASHBOARD_MONTHS = ['current', 'previous'] as const;
 export type DashboardMonth = (typeof DASHBOARD_MONTHS)[number];
@@ -37,16 +29,6 @@ export type DashboardMonth = (typeof DASHBOARD_MONTHS)[number];
 // today (UTC), not a Mon-Sun calendar week - simpler to reason about and
 // avoids a timezone-dependent week boundary. Backward-looking for "loaded
 // this week" counts, forward-looking for "due this week" amounts.
-// Primer y último día (UTC) del mes de un período "AAAA-MM", para columnas
-// de fecha sin hora.
-function periodRange(period: string): { from: Date; to: Date } {
-  const [year, month] = period.split('-').map(Number);
-  return {
-    from: new Date(Date.UTC(year, month - 1, 1)),
-    to: new Date(Date.UTC(year, month, 0)),
-  };
-}
-
 // Vendedores y modelos que se muestran por sucursal.
 const BRANCH_RANKING_LIMIT = 5;
 
@@ -93,6 +75,7 @@ export class DashboardService {
     private readonly vehiclePayments: VehiclePaymentsService,
     private readonly expenses: ExpensesService,
     private readonly pendingTasks: PendingTasksService,
+    private readonly workMonths: WorkMonthsService,
   ) {}
 
   // `month` sólo cambia el inicio del ADMINISTRADOR: elige si los números
@@ -113,20 +96,24 @@ export class DashboardService {
     // The role code only picks which screen layout is returned.
     const branches = BranchScope.forActor(actor);
     const hasBranches = branches.allBranches || branches.branchIds.length > 0;
+    // "El mes" de cada inicio es el mes de trabajo, con los cortes que
+    // definió la organización (o el de almanaque si no hay cortes).
+    const calendar = await this.workMonths.calendar(actor);
+    const period = calendar.current();
 
     switch (actor.role.code) {
       case ROLE_CODES.ADMINISTRADOR:
         return {
           role: 'ADMINISTRADOR' as const,
           greeting,
-          ...(await this.buildAdminHome(actor, has, month)),
+          ...(await this.buildAdminHome(actor, has, month, calendar)),
         };
       case ROLE_CODES.GERENTE:
         return hasBranches
           ? {
               role: 'GERENTE' as const,
               greeting,
-              ...(await this.buildManagerHome(actor, branches, has)),
+              ...(await this.buildManagerHome(actor, branches, has, period)),
             }
           : { role: 'GERENTE' as const, greeting };
       case ROLE_CODES.ADMINISTRATIVA:
@@ -134,7 +121,12 @@ export class DashboardService {
           ? {
               role: 'ADMINISTRATIVA' as const,
               greeting,
-              ...(await this.buildAdministrativeHome(actor, branches, has)),
+              ...(await this.buildAdministrativeHome(
+                actor,
+                branches,
+                has,
+                period,
+              )),
             }
           : { role: 'ADMINISTRATIVA' as const, greeting };
       case ROLE_CODES.VENDEDOR:
@@ -143,7 +135,7 @@ export class DashboardService {
           ? {
               role: 'VENDEDOR' as const,
               greeting,
-              ...(await this.buildSellerHome(actor, has)),
+              ...(await this.buildSellerHome(actor, has, period)),
             }
           : { role: 'VENDEDOR' as const, greeting };
       default:
@@ -160,9 +152,21 @@ export class DashboardService {
     actor: AuthenticatedUser,
     has: (code: string) => boolean,
     month: DashboardMonth,
+    calendar: WorkCalendar,
   ) {
-    const period =
-      month === 'previous' ? previousPeriodKey() : currentPeriodKey();
+    const current = calendar.current();
+    const period = month === 'previous' ? shiftPeriod(current, -1) : current;
+    // Los dos meses que se pueden elegir, con sus fechas, para el selector.
+    const months = (['current', 'previous'] as const).map((value) => {
+      const key = value === 'previous' ? shiftPeriod(current, -1) : current;
+      const range = calendar.range(key);
+      return {
+        month: value,
+        period: key,
+        from: toDateOnly(range.from),
+        to: toDateOnly(range.to),
+      };
+    });
     const allBranches = BranchScope.forActor(actor);
     const [
       monthlySales,
@@ -206,6 +210,7 @@ export class DashboardService {
               allBranches.only(branch.branchId),
               branch,
               period,
+              calendar,
               has,
             ),
           ),
@@ -214,6 +219,7 @@ export class DashboardService {
     return {
       month,
       period,
+      months,
       pendingTasks,
       monthlySales,
       newClientsThisWeek,
@@ -235,10 +241,11 @@ export class DashboardService {
     scope: BranchScope,
     branch: { branchId: string; branchName: string },
     period: string,
+    calendar: WorkCalendar,
     has: (code: string) => boolean,
   ) {
     const branchId = branch.branchId;
-    const month = periodRange(period);
+    const month = calendar.range(period);
     const canSell = has(PERMISSION_CODES.SALES_READ);
     const [
       monthlySales,
@@ -313,8 +320,8 @@ export class DashboardService {
     actor: AuthenticatedUser,
     branches: BranchScope,
     has: (code: string) => boolean,
+    period: string,
   ) {
-    const period = currentPeriodKey();
     // Commission suggestions are queried per branch; with several allowed
     // branches the ranking uses the user's main branch.
     const rankingBranchId = actor.branch?.id ?? branches.singleBranchId;
@@ -328,7 +335,7 @@ export class DashboardService {
       pendingTasks,
     ] = await Promise.all([
         has(PERMISSION_CODES.SALES_READ)
-          ? this.sales.monthlyPerformance(actor)
+          ? this.sales.monthlyPerformance(actor, { period })
           : null,
         has(PERMISSION_CODES.COMMISSIONS_READ)
           ? this.estimatedCommission(actor, period, 'MANAGER')
@@ -368,8 +375,8 @@ export class DashboardService {
     actor: AuthenticatedUser,
     branches: BranchScope,
     has: (code: string) => boolean,
+    period: string,
   ) {
-    const period = currentPeriodKey();
     const [
       dueTodayAlert,
       dueThisWeek,
@@ -471,14 +478,16 @@ export class DashboardService {
   private async buildSellerHome(
     actor: AuthenticatedUser,
     has: (code: string) => boolean,
+    period: string,
   ) {
-    const period = currentPeriodKey();
     const sellerId = has(PERMISSION_CODES.SALES_READ)
       ? await this.sales.resolveSellerId(actor)
       : null;
     const [monthlySales, ownCommission, clientsThisWeek, myOperations, topModels] =
       await Promise.all([
-        sellerId ? this.sales.monthlyPerformance(actor, { sellerId }) : null,
+        sellerId
+          ? this.sales.monthlyPerformance(actor, { sellerId, period })
+          : null,
         has(PERMISSION_CODES.COMMISSIONS_OWN)
           ? this.estimatedCommission(actor, period, 'SELLER')
           : null,

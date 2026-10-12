@@ -91,6 +91,10 @@ usa la pantalla donde la tarea se resuelve, acotada a una sucursal
 
 ## ADMINISTRADOR — toda la organización
 
+"El mes" de todos los inicios es el **mes de trabajo** en curso (ver
+`docs/api-work-months.md`): con cortes cargados va del día siguiente al corte
+del mes anterior hasta el corte del mes; sin cortes, es el mes de almanaque.
+
 Acepta el query opcional `month=current|previous` (por defecto `current`).
 Con `previous`, todo lo que es "del mes" pasa al mes anterior: `monthlySales`
 (que compara ese mes contra el previo a él), `salesByBranch`, `topModels` y,
@@ -106,6 +110,10 @@ el parámetro y siempre ven el mes en curso.
   "greeting": { "...": "..." },
   "month": "current",
   "period": "2026-08",
+  "months": [
+    { "month": "current", "period": "2026-08", "from": "2026-07-28", "to": "2026-08-27" },
+    { "month": "previous", "period": "2026-07", "from": "2026-06-28", "to": "2026-07-27" }
+  ],
   "monthlySales": {
     "period": "2026-08",
     "currentMonth": { "units": 42, "amount": 105000000 },
@@ -159,6 +167,7 @@ el parámetro y siempre ven el mes en curso.
 | Campo | Permiso | Notas |
 | --- | --- | --- |
 | `month`, `period` | — | Mes elegido (`current`/`previous`) y su período `AAAA-MM` |
+| `months` | — | Los dos meses que se pueden elegir, con su primer y último día según los cortes |
 | `monthlySales`, `salesByBranch`, `topModels` | `ventas.consultar` | `salesByBranch` siempre lista todas las sucursales activas, incluidas las que tuvieron cero ventas en el mes |
 | `newClientsThisWeek` | `clientes.consultar` | Ventana rodante de 7 días (hoy incluido), no semana calendario |
 | `stockUnitsTotal` | `inventario.consultar` | Suma unidades `EN_STOCK` de MOTO + AUTO |

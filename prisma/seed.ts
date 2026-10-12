@@ -440,6 +440,13 @@ const managedPermissions = [
     roles: ['ADMINISTRADOR'],
   },
   {
+    codigo: 'meses_trabajo.gestionar',
+    modulo: 'meses_trabajo',
+    descripcion:
+      'Define el corte de cada mes de trabajo: desde y hasta qué día cuenta cada mes.',
+    roles: ['ADMINISTRADOR'],
+  },
+  {
     codigo: 'comisiones.acordar',
     modulo: 'comisiones',
     descripcion: 'Registra acuerdos de comisión con vendedores.',
