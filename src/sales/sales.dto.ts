@@ -259,8 +259,10 @@ export class UpdateSalesOperationDto {
 // Corrección administrativa de una operación ya cargada (operaciones
 // migradas): mismos datos que el PATCH, en cualquier estado y sin cambiar el
 // estado. No incluye sucursal, unidad ni patentamiento (tienen su circuito).
+// El modelo (versionId) sí: para cuando el vendedor eligió mal la moto.
 export class CorrectSalesOperationDto {
   @Type(() => Number) @IsInt() @Min(0) expectedVersion!: number;
+  @IsOptional() @IsUUID() versionId?: string;
   @IsOptional() @IsUUID() clientId?: string;
   @IsOptional() @IsUUID() sellerId?: string;
   @IsOptional() @IsUUID() contactId?: string | null;

@@ -151,9 +151,21 @@ Acepta `clientId`, `sellerId`, `contactId` (nullable), `agreedPrice`,
 `paymentPlatform`, `creditAmount` (nullable), `financialInstitutionId`,
 `guarantor` (nullable), `operationDate`, `deliveryStatus`,
 `deliveryScheduledDate`, `papersDelivered`, `debt`, `notes` (nullable),
-`ticketNumber` (nullable) e `includesHelmet`. Sólo
-se tocan los campos enviados. No modifica unidad, modelo, sucursal, precio de
-lista ni patentamiento (siguen por `PATCH /:id/unit` y `PATCH /:id/licensing`).
+`ticketNumber` (nullable), `includesHelmet` y `versionId`. Sólo
+se tocan los campos enviados. No modifica unidad, sucursal ni patentamiento
+(siguen por su propio circuito y `PATCH /:id/licensing`).
+
+`versionId` corrige el modelo que eligió mal el vendedor. Tiene que ser del
+mismo tipo (moto/auto) y estar disponible para la organización (400 si no). Se
+rechaza con 409 si la operación tiene asignada una unidad de otro modelo
+(`CORRECTION_UNIT_OTHER_MODEL`), una reserva activa
+(`CORRECTION_RESERVATION_ACTIVE`) o un pedido al proveedor en curso
+(`CORRECTION_SUPPLY_IN_PROGRESS`): se deshacen antes por su circuito. Precio de
+lista y mínimo pasan a ser los del modelo nuevo vigentes a la fecha de la venta
+en su sucursal (400 `ACTIVE_PRICE_POLICY_REQUIRED` si no hay; 409
+`CORRECTION_CURRENCY_MISMATCH` si está en otra moneda); las ventas importadas
+sin precios de referencia siguen sin ellos. El precio de cierre y el estado no
+cambian.
 
 Si llega `agreedPrice`, `paymentPlatform`, `creditAmount` o
 `financialInstitutionId`, el plan de pago se reconcilia en la misma

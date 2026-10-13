@@ -2203,8 +2203,22 @@ export class SalesService {
         const estimate = input.operationDate
           ? licensingEstimate(new Date(input.operationDate))
           : undefined;
+        const versionChange =
+          input.versionId && input.versionId !== current.version_id
+            ? await this.correctedVersion(
+                tx,
+                current,
+                input.versionId,
+                input.operationDate
+                  ? new Date(input.operationDate)
+                  : current.fecha_operacion,
+              )
+            : undefined;
 
         event.previousData = {
+          versionId: current.version_id,
+          listPrice: current.precio_lista?.toString() ?? null,
+          minimumPrice: current.precio_minimo?.toString() ?? null,
           clientId: current.cliente_id,
           sellerIds: current.asignaciones_personal_operacion.map(
             (assignment) =>
@@ -2229,6 +2243,13 @@ export class SalesService {
             },
           },
           data: {
+            ...(versionChange
+              ? {
+                  version_id: versionChange.versionId,
+                  precio_lista: versionChange.listPrice,
+                  precio_minimo: versionChange.minimumPrice,
+                }
+              : {}),
             cliente_id: input.clientId,
             precio_acordado: input.agreedPrice,
             plataforma_pago: input.paymentPlatform,
@@ -2339,6 +2360,79 @@ export class SalesService {
       },
       id,
     );
+  }
+
+  // Cambio de modelo desde la corrección (el vendedor eligió mal la moto).
+  // Tiene que ser del mismo tipo (moto/auto) y la operación no puede tener
+  // una unidad de otro modelo, una reserva activa ni un pedido al proveedor
+  // en curso: esos son del modelo viejo y se deshacen antes por su circuito.
+  // El precio de lista y el mínimo pasan a ser los del modelo nuevo (a la
+  // fecha de la venta); el precio de cierre y el estado no cambian.
+  private async correctedVersion(
+    tx: Prisma.TransactionClient,
+    operation: OperationRecord,
+    versionId: string,
+    at: Date,
+  ): Promise<{
+    versionId: string;
+    listPrice?: Prisma.Decimal;
+    minimumPrice?: Prisma.Decimal;
+  }> {
+    await this.versionOr400(
+      tx,
+      versionId,
+      operation.organizacion_id,
+      operation.versiones_vehiculos.modelos_vehiculos.tipo_vehiculo,
+    );
+    if (operation.unidad_vehiculo_id) {
+      const unit = await tx.unidades_vehiculos.findFirst({
+        where: {
+          id: operation.unidad_vehiculo_id,
+          organizacion_id: operation.organizacion_id,
+        },
+        select: { version_id: true, vin_mostrado: true },
+      });
+      if (unit && unit.version_id !== versionId)
+        throw apiError(
+          HttpStatus.CONFLICT,
+          'CORRECTION_UNIT_OTHER_MODEL',
+          'The operation has a unit of another model assigned: release it before changing the model',
+          { vin: unit.vin_mostrado },
+        );
+    } else if (await this.activeReservation(tx, operation.id)) {
+      throw apiError(
+        HttpStatus.CONFLICT,
+        'CORRECTION_RESERVATION_ACTIVE',
+        'Release the active reservation before changing the model',
+      );
+    }
+    if (this.supplyInProgress(operation))
+      throw apiError(
+        HttpStatus.CONFLICT,
+        'CORRECTION_SUPPLY_IN_PROGRESS',
+        'Cancel the supplier order before changing the model',
+      );
+    // Las ventas importadas sin precios de referencia siguen sin ellos.
+    if (operation.precio_lista === null || operation.precio_minimo === null)
+      return { versionId };
+    const policy = await this.pricePolicyOr400(
+      tx,
+      versionId,
+      operation.sucursal_id,
+      operation.organizacion_id,
+      at,
+    );
+    if (policy.moneda !== operation.moneda)
+      throw apiError(
+        HttpStatus.CONFLICT,
+        'CORRECTION_CURRENCY_MISMATCH',
+        'The new model is priced in another currency',
+      );
+    return {
+      versionId,
+      listPrice: policy.precio_lista,
+      minimumPrice: policy.precio_minimo,
+    };
   }
 
   // Leaves the payment plan matching the corrected price and platform:

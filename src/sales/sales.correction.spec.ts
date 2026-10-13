@@ -573,3 +573,220 @@ describe('SalesService.correct', () => {
     ).resolves.toBeDefined();
   });
 });
+
+describe('SalesService.correct - cambio de modelo', () => {
+  const newVersionId = '6de88c4c-3382-4f9b-ae60-98147159c977';
+
+  function withCatalog(
+    current: ReturnType<typeof operation>,
+    options: {
+      vehicleType?: string;
+      unitVersionId?: string;
+      reservation?: boolean;
+      policy?: {
+        precio_lista: number;
+        precio_minimo: number;
+        moneda: string;
+      } | null;
+    } = {},
+  ) {
+    const setup = harness(current);
+    const transaction = setup.transaction as typeof setup.transaction & {
+      versiones_vehiculos: { findUnique: jest.Mock };
+      unidades_vehiculos: { findFirst: jest.Mock };
+      reservas_stock: { findFirst: jest.Mock };
+      politicas_precios_vehiculos: { findFirst: jest.Mock };
+    };
+    transaction.versiones_vehiculos = {
+      findUnique: jest.fn().mockResolvedValue({
+        id: newVersionId,
+        alcance: 'GLOBAL',
+        organizacion_propietaria_id: null,
+        catalogo_organizaciones: [],
+        modelos_vehiculos: { tipo_vehiculo: options.vehicleType ?? 'MOTO' },
+      }),
+    };
+    transaction.unidades_vehiculos = {
+      findFirst: jest.fn().mockResolvedValue({
+        version_id: options.unitVersionId ?? current.version_id,
+        vin_mostrado: 'ABC123456',
+      }),
+    };
+    transaction.reservas_stock = {
+      findFirst: jest
+        .fn()
+        .mockResolvedValue(
+          options.reservation ? { id: 'reservation-1' } : null,
+        ),
+    };
+    const policy =
+      options.policy === undefined
+        ? { precio_lista: 150, precio_minimo: 140, moneda: 'ARS' }
+        : options.policy;
+    transaction.politicas_precios_vehiculos = {
+      findFirst: jest.fn().mockResolvedValue(
+        policy && {
+          precio_lista: new Prisma.Decimal(policy.precio_lista),
+          precio_minimo: new Prisma.Decimal(policy.precio_minimo),
+          moneda: policy.moneda,
+        },
+      ),
+    };
+    return { ...setup, transaction };
+  }
+
+  const withoutUnit = (status = 'APROBADA') =>
+    operation(status, { unidad_vehiculo_id: null, unidades_vehiculos: null });
+
+  it('changes the model and takes the new list and minimum prices', async () => {
+    const { service, transaction, events } = withCatalog(withoutUnit());
+
+    await service.correct(
+      operationId,
+      { expectedVersion: 2, versionId: newVersionId },
+      actor,
+    );
+
+    const data = transaction.operaciones.update.mock.calls[0][0].data;
+    expect(data).toMatchObject({
+      version_id: newVersionId,
+      precio_lista: new Prisma.Decimal(150),
+      precio_minimo: new Prisma.Decimal(140),
+    });
+    expect(data).not.toHaveProperty('estado_operacion');
+    expect(data.precio_acordado).toBeUndefined();
+    // Precio a la fecha de la venta (29/08), no a hoy.
+    const policyWhere = (
+      transaction.politicas_precios_vehiculos.findFirst.mock.calls[0] as [
+        { where: { vigente_desde: { lte: unknown } } },
+      ]
+    )[0].where;
+    expect(policyWhere.vigente_desde.lte).toEqual(
+      new Date('2026-08-29T00:00:00.000Z'),
+    );
+    expect(events[0]).toMatchObject({
+      previousData: {
+        versionId: '4de88c4c-3382-4f9b-ae60-98147159c977',
+        listPrice: '120',
+        minimumPrice: '110',
+      },
+      metadata: { correctedFields: ['versionId'] },
+    });
+  });
+
+  it('accepts a unit of the new model', async () => {
+    const { service, transaction } = withCatalog(operation('CERRADA'), {
+      unitVersionId: newVersionId,
+    });
+
+    await service.correct(
+      operationId,
+      { expectedVersion: 2, versionId: newVersionId },
+      actor,
+    );
+    expect(transaction.operaciones.update.mock.calls[0][0].data).toMatchObject({
+      version_id: newVersionId,
+    });
+  });
+
+  it('does not touch prices of imported sales without references', async () => {
+    const { service, transaction } = withCatalog(
+      operation('APROBADA', {
+        unidad_vehiculo_id: null,
+        unidades_vehiculos: null,
+        precio_lista: null,
+        precio_minimo: null,
+      }),
+      { policy: null },
+    );
+
+    await service.correct(
+      operationId,
+      { expectedVersion: 2, versionId: newVersionId },
+      actor,
+    );
+    const data = transaction.operaciones.update.mock.calls[0][0].data;
+    expect(data.version_id).toBe(newVersionId);
+    expect(data.precio_lista).toBeUndefined();
+  });
+
+  it.each([
+    [
+      'a unit of the old model',
+      () => withCatalog(operation('APROBADA')),
+      'CORRECTION_UNIT_OTHER_MODEL',
+    ],
+    [
+      'an active reservation',
+      () => withCatalog(withoutUnit(), { reservation: true }),
+      'CORRECTION_RESERVATION_ACTIVE',
+    ],
+    [
+      'a supplier order in progress',
+      () =>
+        withCatalog(
+          operation('APROBADA', {
+            unidad_vehiculo_id: null,
+            unidades_vehiculos: null,
+            solicitudes_abastecimiento: [{ estado: 'PEDIDO' }],
+          }),
+        ),
+      'CORRECTION_SUPPLY_IN_PROGRESS',
+    ],
+    [
+      'no price for the new model',
+      () => withCatalog(withoutUnit(), { policy: null }),
+      'ACTIVE_PRICE_POLICY_REQUIRED',
+    ],
+    [
+      'a price in another currency',
+      () =>
+        withCatalog(withoutUnit(), {
+          policy: { precio_lista: 1, precio_minimo: 1, moneda: 'USD' },
+        }),
+      'CORRECTION_CURRENCY_MISMATCH',
+    ],
+  ])('refuses a new model with %s', async (_case, build, code) => {
+    const { service, transaction } = build();
+
+    await expect(
+      errorCode(
+        service.correct(
+          operationId,
+          { expectedVersion: 2, versionId: newVersionId },
+          actor,
+        ),
+      ),
+    ).resolves.toBe(code);
+    expect(transaction.operaciones.update).not.toHaveBeenCalled();
+  });
+
+  it('refuses a model of another vehicle type', async () => {
+    const { service } = withCatalog(withoutUnit(), { vehicleType: 'AUTO' });
+
+    await expect(
+      service.correct(
+        operationId,
+        { expectedVersion: 2, versionId: newVersionId },
+        actor,
+      ),
+    ).rejects.toThrow('Version is not available to the organization');
+  });
+
+  it('ignores the same model', async () => {
+    const { service, transaction } = withCatalog(withoutUnit());
+
+    await service.correct(
+      operationId,
+      {
+        expectedVersion: 2,
+        versionId: '4de88c4c-3382-4f9b-ae60-98147159c977',
+        notes: 'x',
+      },
+      actor,
+    );
+    const data = transaction.operaciones.update.mock.calls[0][0].data;
+    expect(data.version_id).toBeUndefined();
+    expect(transaction.versiones_vehiculos.findUnique).not.toHaveBeenCalled();
+  });
+});
