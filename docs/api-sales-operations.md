@@ -66,7 +66,8 @@ inventario, disponibilidad de proveedor y abastecimiento ya filtran por
   "guarantor": "texto optional",
   "operationDate": "2026-08-29",
   "reservationExpiresAt": "timestamp optional",
-  "deliveryStatus": "NO_PROGRAMADA",
+  "deliveryStatus": "NO_PROGRAMADA | PROGRAMADA",
+  "deliveryScheduledDate": "2026-09-05 (obligatorio con PROGRAMADA)",
   "papersDelivered": false,
   "debt": "NO",
   "submit": false,
@@ -115,13 +116,29 @@ protección adicional y nunca reemplaza la regla bajo lista.
 `PATCH /api/sales/operations/:id` requiere `expectedVersion` y acepta
 `branchId`, `clientId`, `sellerId`, `contactId` (nullable), `agreedPrice`,
 `paymentPlatform`, `creditAmount` (nullable), `guarantor` (nullable),
-`operationDate`, `deliveryStatus`, `papersDelivered`, `debt`, `notes`
-(nullable), `ticketNumber` (nullable), `includesHelmet`, `licensingMode` y
+`operationDate`, `deliveryStatus`, `deliveryScheduledDate`, `papersDelivered`,
+`debt`, `notes` (nullable), `ticketNumber` (nullable), `includesHelmet`,
+`licensingMode` y
 `licensingAmount` (nullable). BORRADOR/RECHAZADA vuelven a BORRADOR. APROBADA
 sólo admite entrega, papeles, debe, observaciones y número de boleto; la
 modalidad de patentamiento de una operación aprobada se gestiona con
 `PATCH /:id/licensing`. Cambiar `operationDate` recalcula la ventana estimada de
 patente.
+
+#### Entrega programada
+
+Al crear la operación la entrega puede arrancar `NO_PROGRAMADA` o `PROGRAMADA`
+(con `deliveryScheduledDate`); `LISTA`, `ENTREGADO` y `CANCELADA` se rechazan
+con 400 y sólo se marcan con la operación aprobada. Antes de aprobar, el
+`PATCH` también permite pasar entre `NO_PROGRAMADA` y `PROGRAMADA`.
+
+`deliveryScheduledDate` ("AAAA-MM-DD") es el día de entrega acordado con el
+cliente; lo aceptan este `PATCH` y la corrección. Para dejar `deliveryStatus` en
+`PROGRAMADA` hace falta el día: si no viene y la operación no tenía uno guardado,
+responde `400 DELIVERY_DATE_REQUIRED` (la base lo exige con
+`operacion_entrega_programacion_valido`). Volver a `NO_PROGRAMADA` borra el día;
+los demás estados lo conservan. Las respuestas lo devuelven en
+`deliveryScheduledDate` (`null` si no hay).
 
 ### Corrección de una operación ya cargada
 
@@ -132,8 +149,9 @@ el estado y no vuelve a pedir aprobación aunque el precio quede bajo lista.
 
 Acepta `clientId`, `sellerId`, `contactId` (nullable), `agreedPrice`,
 `paymentPlatform`, `creditAmount` (nullable), `financialInstitutionId`,
-`guarantor` (nullable), `operationDate`, `deliveryStatus`, `papersDelivered`,
-`debt`, `notes` (nullable), `ticketNumber` (nullable) e `includesHelmet`. Sólo
+`guarantor` (nullable), `operationDate`, `deliveryStatus`,
+`deliveryScheduledDate`, `papersDelivered`, `debt`, `notes` (nullable),
+`ticketNumber` (nullable) e `includesHelmet`. Sólo
 se tocan los campos enviados. No modifica unidad, modelo, sucursal, precio de
 lista ni patentamiento (siguen por `PATCH /:id/unit` y `PATCH /:id/licensing`).
 

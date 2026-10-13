@@ -182,9 +182,15 @@ export class CreateSalesOperationDto {
   @IsOptional() @IsString() @IsNotEmpty() @MaxLength(500) guarantor?: string;
   @IsOptional() @IsDateString() operationDate?: string;
   @IsOptional() @IsDateString() reservationExpiresAt?: string;
+  // Al cargarla, la entrega puede quedar NO_PROGRAMADA o PROGRAMADA (con el
+  // día acordado con el cliente, "AAAA-MM-DD").
   @IsOptional()
   @IsEnum(luma_estado_entrega)
   deliveryStatus?: luma_estado_entrega;
+  @IsOptional()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/)
+  @IsDateString()
+  deliveryScheduledDate?: string;
   @IsOptional() @IsBoolean() papersDelivered?: boolean;
   @IsOptional() @IsEnum(deuda_operacion_luma) debt?: deuda_operacion_luma;
   @IsOptional() @IsBoolean() submit?: boolean;
@@ -229,6 +235,12 @@ export class UpdateSalesOperationDto {
   @IsOptional()
   @IsEnum(luma_estado_entrega)
   deliveryStatus?: luma_estado_entrega;
+  // Día de entrega acordado con el cliente ("AAAA-MM-DD"). Obligatorio para
+  // dejar la entrega PROGRAMADA.
+  @IsOptional()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/)
+  @IsDateString()
+  deliveryScheduledDate?: string;
   @IsOptional() @IsBoolean() papersDelivered?: boolean;
   @IsOptional() @IsEnum(deuda_operacion_luma) debt?: deuda_operacion_luma;
   @IsOptional() @IsString() @MaxLength(2000) notes?: string | null;
@@ -277,6 +289,12 @@ export class CorrectSalesOperationDto {
   @IsOptional()
   @IsEnum(luma_estado_entrega)
   deliveryStatus?: luma_estado_entrega;
+  // Día de entrega acordado con el cliente ("AAAA-MM-DD"). Obligatorio para
+  // dejar la entrega PROGRAMADA.
+  @IsOptional()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/)
+  @IsDateString()
+  deliveryScheduledDate?: string;
   @IsOptional() @IsBoolean() papersDelivered?: boolean;
   @IsOptional() @IsEnum(deuda_operacion_luma) debt?: deuda_operacion_luma;
   @IsOptional() @IsString() @MaxLength(2000) notes?: string | null;

@@ -535,6 +535,39 @@ export function deliveredAtFor(
   return status === 'ENTREGADO' ? (current ?? new Date()) : null;
 }
 
+/** Estados de entrega posibles antes de aprobar la operación. */
+const SCHEDULABLE_DELIVERY_STATUSES: luma_estado_entrega[] = [
+  'NO_PROGRAMADA',
+  'PROGRAMADA',
+];
+
+/**
+ * Día de entrega acordado con el cliente (`entrega_programada_en`). La base
+ * exige la fecha cuando la entrega queda PROGRAMADA: sin ella el UPDATE falla
+ * con la regla `operacion_entrega_programacion_valido`. Se guarda al mediodía
+ * UTC para que el día no cambie con el huso horario.
+ *
+ * - Fecha informada: se guarda (también para corregirla).
+ * - Vuelve a NO_PROGRAMADA: se borra.
+ * - Queda PROGRAMADA sin fecha nueva ni guardada: 400 DELIVERY_DATE_REQUIRED.
+ */
+export function scheduledDeliveryFor(
+  status: luma_estado_entrega | undefined,
+  date: string | undefined,
+  current: { estado_entrega: luma_estado_entrega; entrega_programada_en: Date | null },
+): Date | null | undefined {
+  if (date) return new Date(`${date}T12:00:00.000Z`);
+  if (status === 'NO_PROGRAMADA') return null;
+  const finalStatus = status ?? current.estado_entrega;
+  if (finalStatus === 'PROGRAMADA' && !current.entrega_programada_en)
+    throw apiError(
+      HttpStatus.BAD_REQUEST,
+      'DELIVERY_DATE_REQUIRED',
+      'A scheduled delivery needs its delivery date',
+    );
+  return undefined;
+}
+
 @Injectable()
 export class SalesService {
   constructor(
@@ -1690,10 +1723,20 @@ export class SalesService {
 
   async create(input: CreateSalesOperationDto, actor: AuthenticatedUser) {
     this.assertOrganizationSelection(actor, input.organizationId);
-    if (input.deliveryStatus && input.deliveryStatus !== 'NO_PROGRAMADA')
+    // Una operación nueva todavía no se entregó: la entrega arranca sin
+    // programar o programada para el día que se acordó con el cliente.
+    if (
+      input.deliveryStatus &&
+      !SCHEDULABLE_DELIVERY_STATUSES.includes(input.deliveryStatus)
+    )
       throw new BadRequestException(
-        'New operations must start with delivery status NO_PROGRAMADA',
+        'New operations must start with delivery status NO_PROGRAMADA or PROGRAMADA',
       );
+    const scheduledDelivery = scheduledDeliveryFor(
+      input.deliveryStatus,
+      input.deliveryScheduledDate,
+      { estado_entrega: 'NO_PROGRAMADA', entrega_programada_en: null },
+    );
     this.assertPaymentContract(
       input.paymentPlatform,
       input.creditAmount,
@@ -1777,6 +1820,7 @@ export class SalesService {
             respaldo_garante: input.guarantor?.trim(),
             debe: input.debt,
             estado_entrega: input.deliveryStatus,
+            entrega_programada_en: scheduledDelivery ?? undefined,
             entregado_en: deliveredAtFor(input.deliveryStatus),
             estado_documentacion: input.papersDelivered
               ? 'COMPLETA'
@@ -1888,6 +1932,7 @@ export class SalesService {
               ![
                 'expectedVersion',
                 'deliveryStatus',
+                'deliveryScheduledDate',
                 'papersDelivered',
                 'debt',
                 'notes',
@@ -1899,9 +1944,11 @@ export class SalesService {
             'Approved operations only allow delivery, papers, debt, notes, and ticket number updates',
           );
         const branchId = input.branchId ?? current.sucursal_id;
+        // Programar el día de entrega se puede desde el alta; lo demás (lista,
+        // entregada, cancelada) sólo con la operación aprobada.
         if (
           input.deliveryStatus &&
-          input.deliveryStatus !== 'NO_PROGRAMADA' &&
+          !SCHEDULABLE_DELIVERY_STATUSES.includes(input.deliveryStatus) &&
           current.estado_operacion !== luma_estado_operacion.APROBADA
         )
           throw new ConflictException(
@@ -2001,6 +2048,11 @@ export class SalesService {
               ? new Date(input.operationDate)
               : undefined,
             estado_entrega: input.deliveryStatus,
+            entrega_programada_en: scheduledDeliveryFor(
+              input.deliveryStatus,
+              input.deliveryScheduledDate,
+              current,
+            ),
             entregado_en: deliveredAtFor(
               input.deliveryStatus,
               current.entregado_en,
@@ -2164,6 +2216,9 @@ export class SalesService {
           operationDate: current.fecha_operacion.toISOString(),
           ticketNumber: current.numero_boleto,
           status: current.estado_operacion,
+          deliveryStatus: current.estado_entrega,
+          deliveryScheduledDate:
+            current.entrega_programada_en?.toISOString().slice(0, 10) ?? null,
         };
 
         await tx.operaciones.update({
@@ -2190,6 +2245,11 @@ export class SalesService {
             patente_estimada_desde: estimate?.from,
             patente_estimada_hasta: estimate?.to,
             estado_entrega: input.deliveryStatus,
+            entrega_programada_en: scheduledDeliveryFor(
+              input.deliveryStatus,
+              input.deliveryScheduledDate,
+              current,
+            ),
             entregado_en: deliveredAtFor(
               input.deliveryStatus,
               current.entregado_en,
@@ -5390,6 +5450,8 @@ export class SalesService {
       operationDate: item.fecha_operacion,
       status: item.estado_operacion,
       deliveryStatus: item.estado_entrega,
+      deliveryScheduledDate:
+        item.entrega_programada_en?.toISOString().slice(0, 10) ?? null,
       documentationStatus: item.estado_documentacion,
       papersDelivered: item.documentacion_entregada_en !== null,
       papersDeliveredAt: item.documentacion_entregada_en,

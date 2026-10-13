@@ -325,6 +325,132 @@ describe('SalesService', () => {
     });
   });
 
+  it('creates the operation with the delivery scheduled for the agreed day', async () => {
+    const clientId = '904e2a34-8285-48fa-b64c-24a80d94f9cb';
+    const createdOperation = completeOperation('BORRADOR');
+    const clientCreate = jest
+      .fn<Promise<unknown>, [Prisma.clientesCreateArgs]>()
+      .mockResolvedValue({ id: clientId });
+    const operationCreate = jest
+      .fn<Promise<unknown>, [Prisma.operacionesCreateArgs]>()
+      .mockResolvedValue(operation('BORRADOR'));
+    const transaction = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
+      $executeRaw: jest.fn().mockResolvedValue(1),
+      sucursales: { findFirst: jest.fn().mockResolvedValue({ id: 'branch' }) },
+      clientes: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: clientCreate,
+      },
+      versiones_vehiculos: {
+        findUnique: jest.fn().mockResolvedValue({
+          alcance: 'GLOBAL',
+          organizacion_propietaria_id: null,
+          catalogo_organizaciones: [],
+          modelos_vehiculos: { tipo_vehiculo: 'MOTO' },
+        }),
+      },
+      personal: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: '11b5de9b-9bc2-4777-bb78-9c7267b73aca',
+        }),
+      },
+      politicas_precios_vehiculos: {
+        findFirst: jest.fn().mockResolvedValue({
+          precio_lista: new Prisma.Decimal(100),
+          precio_minimo: new Prisma.Decimal(90),
+          moneda: 'ARS',
+        }),
+      },
+      operaciones: {
+        create: operationCreate,
+        findFirst: jest.fn().mockResolvedValue(createdOperation),
+      },
+      asignaciones_personal_operacion: {
+        create: jest.fn().mockResolvedValue({}),
+      },
+      disponibilidad_proveedor: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: availabilityId,
+          proveedor_id: '0a44e64e-351e-4d9b-9150-5f20e34e4d61',
+          vence_en: null,
+          cantidad_informada: 1,
+        }),
+      },
+      proveedores: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: '0a44e64e-351e-4d9b-9150-5f20e34e4d61',
+        }),
+      },
+      reservas_stock: {
+        count: jest.fn().mockResolvedValue(0),
+        create: jest.fn().mockResolvedValue({}),
+      },
+      solicitudes_abastecimiento: {
+        create: jest.fn().mockResolvedValue({}),
+      },
+    } as unknown as Prisma.TransactionClient;
+
+    await expect(
+      service(transaction).create(
+        {
+          vehicleType: 'MOTO',
+          branchId: operation('BORRADOR').sucursal_id,
+          client: {
+            documentType: 'DNI',
+            documentNumber: '12.345.678',
+            fullName: 'Cliente Nuevo',
+            phone: '1122334455',
+          },
+          versionId: operation('BORRADOR').version_id,
+          condition: 'NUEVO',
+          supplierAvailabilityId: availabilityId,
+          agreedPrice: 100,
+          paymentPlatform: 'EFECTIVO',
+          licensingMode: 'BONIFICADA',
+          deliveryStatus: 'PROGRAMADA',
+          deliveryScheduledDate: '2026-10-20',
+          submit: false,
+        },
+        actor,
+      ),
+    ).resolves.toMatchObject({ client: { id: clientId } });
+    const data = operationCreate.mock.calls[0]?.[0].data as {
+      estado_entrega?: string;
+      entrega_programada_en?: Date;
+    };
+    expect(data.estado_entrega).toBe('PROGRAMADA');
+    expect(data.entrega_programada_en?.toISOString().slice(0, 10)).toBe(
+      '2026-10-20',
+    );
+  });
+
+  it('asks for the day when a new operation is scheduled without one', async () => {
+    await expect(
+      service({} as Prisma.TransactionClient).create(
+        {
+          deliveryStatus: 'PROGRAMADA',
+        } as unknown as Parameters<SalesService['create']>[0],
+        actor,
+      ),
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({ code: 'DELIVERY_DATE_REQUIRED' }),
+    });
+  });
+
+  it('does not start a new operation as ready or delivered', async () => {
+    await expect(
+      service({} as Prisma.TransactionClient).create(
+        {
+          deliveryStatus: 'ENTREGADO',
+        } as unknown as Parameters<SalesService['create']>[0],
+        actor,
+      ),
+    ).rejects.toThrow(
+      'New operations must start with delivery status NO_PROGRAMADA or PROGRAMADA',
+    );
+  });
+
   it('rejects combining a stock unit and a supplier availability', async () => {
     const transaction = {
       sucursales: { findFirst: jest.fn().mockResolvedValue({ id: 'branch' }) },

@@ -315,6 +315,90 @@ describe('SalesService.correct', () => {
     expect(data.entregado_en).toBeNull();
   });
 
+  it('schedules the delivery with the agreed day', async () => {
+    const { service, transaction, events } = harness(operation('APROBADA'));
+
+    await service.correct(
+      operationId,
+      {
+        expectedVersion: 2,
+        deliveryStatus: 'PROGRAMADA',
+        deliveryScheduledDate: '2026-10-20',
+      },
+      actor,
+    );
+
+    // The database rejects PROGRAMADA without entrega_programada_en
+    // (operacion_entrega_programacion_valido).
+    const data = transaction.operaciones.update.mock.calls[0][0].data as {
+      estado_entrega: string;
+      entrega_programada_en: Date | null | undefined;
+    };
+    expect(data.estado_entrega).toBe('PROGRAMADA');
+    expect(data.entrega_programada_en?.toISOString().slice(0, 10)).toBe(
+      '2026-10-20',
+    );
+    expect(events[0]).toMatchObject({
+      previousData: { deliveryStatus: 'NO_PROGRAMADA', deliveryScheduledDate: null },
+    });
+  });
+
+  it('asks for the day before scheduling a delivery without one', async () => {
+    const { service, transaction } = harness(operation('APROBADA'));
+
+    await expect(
+      service.correct(
+        operationId,
+        { expectedVersion: 2, deliveryStatus: 'PROGRAMADA' },
+        actor,
+      ),
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({ code: 'DELIVERY_DATE_REQUIRED' }),
+    });
+    expect(transaction.operaciones.update).not.toHaveBeenCalled();
+  });
+
+  it('keeps the agreed day when an already scheduled delivery is edited', async () => {
+    const scheduled = new Date('2026-10-20T12:00:00.000Z');
+    const { service, transaction } = harness(
+      operation('APROBADA', {
+        estado_entrega: 'PROGRAMADA',
+        entrega_programada_en: scheduled,
+      }),
+    );
+
+    await service.correct(
+      operationId,
+      { expectedVersion: 2, notes: 'Lo retira el hermano' },
+      actor,
+    );
+
+    const data = transaction.operaciones.update.mock.calls[0][0].data as {
+      entrega_programada_en: Date | null | undefined;
+    };
+    expect(data.entrega_programada_en).toBeUndefined();
+  });
+
+  it('forgets the agreed day when the delivery goes back to not scheduled', async () => {
+    const { service, transaction } = harness(
+      operation('APROBADA', {
+        estado_entrega: 'PROGRAMADA',
+        entrega_programada_en: new Date('2026-10-20T12:00:00.000Z'),
+      }),
+    );
+
+    await service.correct(
+      operationId,
+      { expectedVersion: 2, deliveryStatus: 'NO_PROGRAMADA' },
+      actor,
+    );
+
+    const data = transaction.operaciones.update.mock.calls[0][0].data as {
+      entrega_programada_en: Date | null | undefined;
+    };
+    expect(data.entrega_programada_en).toBeNull();
+  });
+
   it('moves a cash sale to cash + credit keeping the cash component', async () => {
     const { service, transaction } = harness(operation('APROBADA'));
 
