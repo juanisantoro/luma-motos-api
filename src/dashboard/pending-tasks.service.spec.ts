@@ -44,6 +44,8 @@ describe('PendingTasksService', () => {
   const tx = {
     sucursales: { findMany: jest.fn<Promise<unknown>, CountArgs>() },
     ingresos: { count: jest.fn<Promise<number>, CountArgs>() },
+    // Ingresos sin cobrar del todo: se calculan en la base con lo cobrado.
+    $queryRaw: jest.fn<Promise<Array<{ id: string }>>, unknown[]>(),
   };
   const prisma = {
     withTenant: jest.fn(
@@ -82,7 +84,10 @@ describe('PendingTasksService', () => {
       receivedPendingCollection: 0,
     });
     expenses.pendingPaymentCount.mockResolvedValue(5);
-    tx.ingresos.count.mockResolvedValueOnce(6).mockResolvedValueOnce(7);
+    tx.$queryRaw.mockResolvedValue(
+      Array.from({ length: 6 }, (_, index) => ({ id: `income-${index}` })),
+    );
+    tx.ingresos.count.mockResolvedValueOnce(7);
     service = new PendingTasksService(
       prisma as never,
       creditPlans as never,
@@ -117,11 +122,12 @@ describe('PendingTasksService', () => {
     // Cada consulta se acota a esa sucursal.
     const overdueCall = creditPlans.overdueAlert.mock.calls[0];
     expect(overdueCall?.[1].branchIds).toEqual([SM]);
+    // Pendientes de cobro: el mismo criterio que el filtro de Ingresos.
+    expect(tx.$queryRaw).toHaveBeenCalledTimes(1);
     expect(tx.ingresos.count.mock.calls[0]?.[0].where).toMatchObject({
       organizacion_id: ORG,
       sucursal_id: { in: [SM] },
-      estado_registro: { in: ['PENDIENTE', 'PAGO_PARCIAL'] },
-      requiere_conciliacion: false,
+      estado_rendicion: 'PENDIENTE_RENDICION',
     });
     // Todas las cuotas vencidas, no sólo las de más de 30 días.
     expect(overdueCall?.[2]).toBe(0);

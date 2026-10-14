@@ -1,10 +1,11 @@
 import { Injectable } from '@nestjs/common';
-import { estado_rendicion_luma } from '@prisma/client';
+import { Prisma, estado_rendicion_luma } from '@prisma/client';
 import { PERMISSION_CODES } from '../auth/auth.constants';
 import type { AuthenticatedUser } from '../auth/auth.types';
 import { BranchScope } from '../branch-scope/branch-scope';
 import { CreditPlansService } from '../credit-plans/credit-plans.service';
 import { ExpensesService } from '../expenses/expenses.service';
+import { unpaidIncomeIds } from '../incomes/unpaid-incomes';
 import { PrismaService } from '../prisma/prisma.service';
 import { argentinaToday } from '../sales/licensing';
 import { SalesService } from '../sales/sales.service';
@@ -204,13 +205,13 @@ export class PendingTasksService {
           sucursal_id: branch.where(),
         };
         const [pendingCollection, pendingHandover] = await Promise.all([
-          tx.ingresos.count({
-            where: {
-              ...base,
-              estado_registro: { in: ['PENDIENTE', 'PAGO_PARCIAL'] },
-              requiere_conciliacion: false,
-            },
-          }),
+          // Mismo criterio que el filtro "Pendiente o parcial" de Ingresos
+          // (lo cobrado no llega al importe), no el estado guardado.
+          unpaidIncomeIds(
+            tx,
+            actor.organization.id,
+            branch.sql(Prisma.sql`i."sucursal_id"`),
+          ).then((ids) => ids.length),
           tx.ingresos.count({
             where: {
               ...base,

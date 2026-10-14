@@ -46,6 +46,14 @@ export class FinancialQueryDto extends FinancialPageDto {
   @IsOptional() @IsDateString() @Matches(BUSINESS_DATE_PATTERN) from?: string;
   @IsOptional() @IsDateString() @Matches(BUSINESS_DATE_PATTERN) to?: string;
   @IsOptional() @IsEnum(FinancialPaymentStatus) status?: FinancialPaymentStatus;
+  // Sin cobrar / pagar del todo: pendiente o parcial. Es lo que cuenta el
+  // inicio en "pendientes de cobro" y "pendientes de pago".
+  @IsOptional()
+  @Transform(({ value }: { value: unknown }) =>
+    value === 'true' ? true : value === 'false' ? false : value,
+  )
+  @IsBoolean()
+  unpaid?: boolean;
   @IsOptional() @IsString() @MaxLength(160) search?: string;
 }
 

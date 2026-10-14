@@ -128,6 +128,15 @@ export class CreditInstallmentQueryDto {
   @Type(() => Number) @IsInt() @Min(1) @Max(100) limit = 50;
   @IsOptional() @IsIn(CREDIT_INSTALLMENT_STATUSES) status?: CreditInstallmentStatus;
   @IsOptional() @IsUUID() operationId?: string;
+  // Sucursal de la venta (desde el inicio, con la sucursal elegida).
+  @IsOptional() @IsUUID() branchId?: string;
+  // Sólo las que vencen hoy sin cobrar del todo: lo que cuenta el inicio.
+  @IsOptional()
+  @Transform(({ value }: { value: unknown }) =>
+    value === 'true' ? true : value === 'false' ? false : value,
+  )
+  @IsBoolean()
+  dueToday?: boolean;
   @IsOptional() @IsString() @MaxLength(80) search?: string;
   @IsOptional() @IsUUID() organizationId?: string;
 }

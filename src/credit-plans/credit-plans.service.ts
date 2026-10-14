@@ -664,6 +664,14 @@ export class CreditPlansService {
     ];
     if (organizationId) conditions.push(Prisma.sql`c.organizacion_id = ${organizationId}::uuid`);
     if (query.operationId) conditions.push(Prisma.sql`oc.operacion_id = ${query.operationId}::uuid`);
+    if (query.branchId) {
+      BranchScope.forActor(actor).assert(query.branchId);
+      conditions.push(Prisma.sql`o.sucursal_id = ${query.branchId}::uuid`);
+    }
+    if (query.dueToday)
+      conditions.push(
+        Prisma.sql`c.estado IN ('PENDIENTE', 'PARCIAL') AND c.vencimiento = CURRENT_DATE`,
+      );
     if (query.status) {
       conditions.push(Prisma.sql`
         CASE

@@ -51,6 +51,7 @@ import {
 } from './cash-handover';
 import { syncComponentPaymentStatus } from './component-collections';
 import { guarantorSearchWhere } from '../sales/guarantor';
+import { unpaidIncomeIds } from './unpaid-incomes';
 
 const personnelSelect = {
   select: { id: true, nombre_completo: true },
@@ -429,6 +430,17 @@ export class IncomesService {
           { fecha_ingreso: 'desc' as const },
           { id: 'desc' as const },
         ];
+        // Pendientes de cobro (pendiente o parcial): los mismos que cuenta el
+        // inicio, calculados en la base con lo cobrado de cada ingreso.
+        if (query.unpaid)
+          where.id = {
+            in: await unpaidIncomeIds(
+              tx,
+              organizationId,
+              BranchScope.forActor(actor).sql(Prisma.sql`i."sucursal_id"`),
+              query.branchId,
+            ),
+          };
         if (!query.status) {
           const [count, page, sums] = await Promise.all([
             tx.ingresos.count({ where }),

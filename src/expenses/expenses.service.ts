@@ -157,6 +157,10 @@ export class ExpensesService {
     const where: Prisma.gastosWhereInput = {
       organizacion_id: organizationId,
       sucursal_id: BranchScope.forActor(actor).where(query.branchId),
+      // Igual que el contador de "Gastos pendientes de pago" del inicio.
+      estado_pago: query.unpaid
+        ? { in: ['PENDIENTE', 'PAGO_PARCIAL', 'VENCIDO'] }
+        : undefined,
       categoria: query.category?.trim(),
       recuperable: query.recoverable,
       fecha_generacion:
