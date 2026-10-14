@@ -173,4 +173,59 @@ describe('CatalogService', () => {
       marca_id: undefined,
     });
   });
+
+  it('lets a tenant actor add a new brand and model, but not rename them', async () => {
+    const brand = {
+      id: '0b3d3f1e-5f0e-4a43-9c55-2a1f1b4d7a01',
+      nombre: 'Hero',
+      activo: true,
+      creado_en: new Date(),
+      actualizado_en: new Date(),
+    };
+    const createBrand = jest.fn().mockResolvedValue(brand);
+    const tx = {
+      marcas_vehiculos: {
+        create: createBrand,
+        findUnique: jest.fn().mockResolvedValue(brand),
+      },
+      modelos_vehiculos: {
+        create: jest.fn().mockResolvedValue({
+          id: '0b3d3f1e-5f0e-4a43-9c55-2a1f1b4d7a02',
+          nombre: 'NEX 125',
+          tipo_vehiculo: 'MOTO',
+          activo: true,
+          creado_en: new Date(),
+          actualizado_en: new Date(),
+          marcas_vehiculos: brand,
+        }),
+      },
+    } as unknown as Prisma.TransactionClient;
+    const service = new CatalogService(
+      {} as PrismaService,
+      {
+        execute: jest.fn(
+          (_event: unknown, work: (t: Prisma.TransactionClient) => unknown) =>
+            Promise.resolve(work(tx)),
+        ),
+      } as unknown as AuditService,
+    );
+
+    await expect(
+      service.createBrand({ name: ' Hero ' }, actor),
+    ).resolves.toMatchObject({ name: 'Hero' });
+    await expect(
+      service.createModel(
+        { brandId: brand.id, vehicleType: 'MOTO', name: 'NEX 125' },
+        actor,
+      ),
+    ).resolves.toMatchObject({ name: 'NEX 125' });
+    expect(createBrand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: { nombre: 'Hero', nombre_normalizado: 'hero' },
+      }),
+    );
+    await expect(
+      service.updateBrand(brand.id, { name: 'HERO' }, actor),
+    ).rejects.toThrow('global access');
+  });
 });

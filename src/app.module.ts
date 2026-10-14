@@ -10,6 +10,7 @@ import { AuthModule } from './auth/auth.module';
 import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
 import { PermissionsGuard } from './auth/guards/permissions.guard';
 import { RolesGuard } from './auth/guards/roles.guard';
+import { ClientLogsModule } from './client-logs/client-logs.module';
 import { ClientsModule } from './clients/clients.module';
 import { CreditInquiriesModule } from './credit-inquiries/credit-inquiries.module';
 import { CatalogModule } from './catalog/catalog.module';
@@ -76,6 +77,7 @@ import { DashboardModule } from './dashboard/dashboard.module';
     BcraModule,
     DashboardModule,
     AssistantModule,
+    ClientLogsModule,
   ],
   providers: [
     {

@@ -118,10 +118,6 @@ export class CatalogService {
       where: { nombre_normalizado: brandNormalized },
     });
     if (!brand) {
-      if (!globalAccess)
-        throw new ForbiddenException(
-          'Global access is required to create a shared vehicle brand',
-        );
       brand = await tx.marcas_vehiculos.create({
         data: { nombre: brandName, nombre_normalizado: brandNormalized },
       });
@@ -141,10 +137,6 @@ export class CatalogService {
       },
     });
     if (!model) {
-      if (!globalAccess)
-        throw new ForbiddenException(
-          'Global access is required to create a shared vehicle model',
-        );
       model = await tx.modelos_vehiculos.create({
         data: {
           marca_id: brand.id,
@@ -271,11 +263,10 @@ export class CatalogService {
       this.brandOr404(tx, id),
     );
   }
+  // Marcas y modelos son compartidos entre organizaciones: cualquiera con
+  // catalogo.gestionar puede agregar uno nuevo (el nombre normalizado es
+  // único, así que no se duplican), pero sólo el acceso global los edita.
   async createBrand(input: NameDto, actor: AuthenticatedUser) {
-    this.requireGlobal(
-      actor,
-      'Only users with global access can manage shared catalog brands',
-    );
     return this.mutate(
       actor,
       'CATALOG_BRAND_CREATED',
@@ -361,10 +352,6 @@ export class CatalogService {
     );
   }
   async createModel(input: CreateModelDto, actor: AuthenticatedUser) {
-    this.requireGlobal(
-      actor,
-      'Only users with global access can manage shared catalog models',
-    );
     return this.mutate(
       actor,
       'CATALOG_MODEL_CREATED',

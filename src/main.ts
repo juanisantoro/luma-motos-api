@@ -2,9 +2,10 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { Logger, ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { NestFactory } from '@nestjs/core';
+import { HttpAdapterHost, NestFactory } from '@nestjs/core';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
+import { HttpErrorLogFilter } from './common/http-error-log.filter';
 import { EnvironmentVariables } from './config/environment';
 
 async function bootstrap() {
@@ -43,6 +44,10 @@ async function bootstrap() {
       transform: true,
       whitelist: true,
     }),
+  );
+  // Cada pedido rechazado queda en el log ("api-error") para revisarlo.
+  app.useGlobalFilters(
+    new HttpErrorLogFilter(app.get(HttpAdapterHost).httpAdapter),
   );
   app.enableShutdownHooks();
 

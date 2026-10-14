@@ -30,7 +30,8 @@ pagination. `GET /catalog/versions` accepts `search`, `active`, `brandId`,
 `modelId`, `scope=GLOBAL|RESTRINGIDO`, `vehicleType`, `branchId`, `currentOn`,
 `organizationId`,
 pagination. Restricted versions are visible to their owner and assigned
-organizations. Brands/models are globally managed.
+organizations. Brands/models are shared: any catalog manager can add a new one
+(normalized names stay unique), only global access can rename or deactivate them.
 
 `GET /catalog/price-policies` accepts `versionId`, `branchId`, `currentOn`
 (date), `organizationId`, `vehicleType`, pagination; it returns policies valid
@@ -111,8 +112,8 @@ reception movements in one transaction. A retry with the same complete VIN set
 returns the existing units with `replayed:true`; partial or conflicting VIN
 reuse returns 409. No catalog assignment, policy, or unit survives a failed
 request.
-Existing shared brands/models can be reused by tenant catalog managers. Creating
-an entirely new shared brand or model additionally requires global access.
+Tenant catalog managers reuse existing shared brands/models and can create new
+ones. Reactivating an inactive one still requires global access.
 `POST /inventory/units/:id/transfer` takes
 `{destinationBranchId,notes?}` and only transfers `EN_STOCK` to a different
 active branch. `GET /inventory/units/:id/movements?page&limit` is paginated.
@@ -146,8 +147,8 @@ expiresAt?,notes?,organizationId?}`. It resolves or creates the catalog and
 active price policy, enables the version for the tenant, and upserts availability
 without VIN/chassis in one transaction. Response is
 `{catalog:{brand,model,version},pricePolicy:{...,created},availability}`.
-The same global-access rule applies only when the shared brand/model itself is
-new.
+The same brand/model rule applies: new ones are created, inactive ones need
+global access.
 
 ## Supply requests
 
