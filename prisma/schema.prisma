@@ -1909,6 +1909,10 @@ enum plataforma_pago_luma {
   MOTO_EFECTIVO
   MOTO_CREDITO
   MOTO_EFECTIVO_CREDITO
+  TRANSFERENCIA
+  TARJETA
+  TRANSFERENCIA_CREDITO
+  CREDITO_CREDITO
 }
 
 enum deuda_operacion_luma {

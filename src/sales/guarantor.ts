@@ -1,24 +1,19 @@
 import { HttpStatus } from '@nestjs/common';
 import { Prisma, plataforma_pago_luma } from '@prisma/client';
 import { apiError } from '../common/api-error';
+import {
+  CREDIT_PAYMENT_PLATFORMS,
+  platformHasCredit,
+} from './payment-platforms';
 
 // Garante de la operación. Cuando alguna parte se paga con crédito, la venta
 // indica si tiene un garante propio (nombre, apellido y DNI obligatorios) o
 // si el garante es el mismo cliente: en ese caso se copian sus datos al
 // guardarla. Sin crédito no hay garante.
 
-export const GUARANTOR_CREDIT_PLATFORMS: plataforma_pago_luma[] = [
-  plataforma_pago_luma.CREDITO,
-  plataforma_pago_luma.EFECTIVO_CREDITO,
-  plataforma_pago_luma.MOTO_CREDITO,
-  plataforma_pago_luma.MOTO_EFECTIVO_CREDITO,
-];
+export const GUARANTOR_CREDIT_PLATFORMS = CREDIT_PAYMENT_PLATFORMS;
 
-export function platformHasCredit(
-  platform: plataforma_pago_luma | null | undefined,
-) {
-  return Boolean(platform && GUARANTOR_CREDIT_PLATFORMS.includes(platform));
-}
+export { platformHasCredit };
 
 export type GuarantorInput = {
   hasGuarantor?: boolean | null;

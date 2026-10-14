@@ -18,6 +18,7 @@ const organizationId = '8fa94171-13b3-40b5-8c33-1f7d8ea94c75';
 const sellerId = '11b5de9b-9bc2-4777-bb78-9c7267b73aca';
 const newSellerId = '33b5de9b-9bc2-4777-bb78-9c7267b73aca';
 const financialId = '55b5de9b-9bc2-4777-bb78-9c7267b73aca';
+const otherFinancialId = '6c1f2b7e-3d4a-4b5c-9e8f-0a1b2c3d4e5f';
 
 const actor: AuthenticatedUser = {
   id: '1f73d68f-6474-48bf-b95a-1f2e20d7b32a',
@@ -339,7 +340,10 @@ describe('SalesService.correct', () => {
       '2026-10-20',
     );
     expect(events[0]).toMatchObject({
-      previousData: { deliveryStatus: 'NO_PROGRAMADA', deliveryScheduledDate: null },
+      previousData: {
+        deliveryStatus: 'NO_PROGRAMADA',
+        deliveryScheduledDate: null,
+      },
     });
   });
 
@@ -490,6 +494,141 @@ describe('SalesService.correct', () => {
       }),
     );
     expect(events[0].metadata).toMatchObject({ detachedIncomes: 2 });
+  });
+
+  it('pasa el resto a transferencia al cambiar de efectivo a transferencia', async () => {
+    const { service, transaction } = harness(operation('APROBADA'));
+
+    await service.correct(
+      operationId,
+      { expectedVersion: 2, paymentPlatform: 'TRANSFERENCIA' },
+      actor,
+    );
+
+    expect(
+      transaction.componentes_pago_operacion.update.mock.calls[0][0],
+    ).toMatchObject({
+      where: { id_organizacion_id: { id: 'component-cash' } },
+      data: {
+        importe_esperado: new Prisma.Decimal(100),
+        tipo_componente: 'TRANSFERENCIA_BANCARIA',
+      },
+    });
+  });
+
+  it('arma los dos créditos al pasar a crédito + crédito', async () => {
+    const { service, transaction } = harness(operation('APROBADA'));
+
+    await service.correct(
+      operationId,
+      {
+        expectedVersion: 2,
+        paymentPlatform: 'CREDITO_CREDITO',
+        creditAmount: 100,
+        financialInstitutionId: financialId,
+        secondCreditAmount: 30,
+        secondFinancialInstitutionId: otherFinancialId,
+        hasGuarantor: false,
+      },
+      actor,
+    );
+
+    const created =
+      transaction.componentes_pago_operacion.create.mock.calls.map(
+        ([args]) => args.data,
+      );
+    expect(created).toEqual([
+      expect.objectContaining({
+        tipo_componente: 'FINANCIACION',
+        importe_esperado: new Prisma.Decimal(70),
+        financiera_id: financialId,
+      }),
+      expect.objectContaining({
+        tipo_componente: 'FINANCIACION',
+        importe_esperado: new Prisma.Decimal(30),
+        financiera_id: otherFinancialId,
+      }),
+    ]);
+  });
+
+  it('pide el segundo crédito en crédito + crédito', async () => {
+    const { service } = harness(operation('APROBADA'));
+
+    await expect(
+      errorCode(
+        service.correct(
+          operationId,
+          {
+            expectedVersion: 2,
+            paymentPlatform: 'CREDITO_CREDITO',
+            creditAmount: 100,
+            financialInstitutionId: financialId,
+            hasGuarantor: false,
+          },
+          actor,
+        ),
+      ),
+    ).resolves.toBe('CORRECTION_SECOND_CREDIT_REQUIRED');
+  });
+
+  it('no acepta los dos créditos con la misma financiera', async () => {
+    const { service } = harness(operation('APROBADA'));
+
+    await expect(
+      errorCode(
+        service.correct(
+          operationId,
+          {
+            expectedVersion: 2,
+            paymentPlatform: 'CREDITO_CREDITO',
+            creditAmount: 100,
+            financialInstitutionId: financialId,
+            secondCreditAmount: 30,
+            secondFinancialInstitutionId: financialId,
+            hasGuarantor: false,
+          },
+          actor,
+        ),
+      ),
+    ).resolves.toBe('DOUBLE_CREDIT_INSTITUTIONS_REQUIRED');
+  });
+
+  it('deja los dos créditos como están al corregir crédito + crédito', async () => {
+    const current = operation('APROBADA', {
+      plataforma_pago: 'CREDITO_CREDITO',
+      monto_credito: new Prisma.Decimal(100),
+      componentes_pago_operacion: [
+        component({
+          id: 'credit-a',
+          tipo_componente: 'FINANCIACION',
+          importe_esperado: new Prisma.Decimal(60),
+          financiera_id: financialId,
+        }),
+        component({
+          id: 'credit-b',
+          tipo_componente: 'FINANCIACION',
+          importe_esperado: new Prisma.Decimal(40),
+          financiera_id: otherFinancialId,
+        }),
+      ],
+    });
+    const { service, transaction } = harness(current);
+
+    await service.correct(
+      operationId,
+      {
+        expectedVersion: 2,
+        paymentPlatform: 'CREDITO_CREDITO',
+        creditAmount: 100,
+        hasGuarantor: false,
+      },
+      actor,
+    );
+
+    expect(
+      transaction.componentes_pago_operacion.create,
+    ).not.toHaveBeenCalled();
+    expect(transaction.ingresos.updateMany).not.toHaveBeenCalled();
   });
 
   it('follows a price change with the cash component', async () => {

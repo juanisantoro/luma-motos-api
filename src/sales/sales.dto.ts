@@ -289,6 +289,14 @@ export class CorrectSalesOperationDto {
   // Financiera del crédito. Sólo hace falta cuando la forma de pago lleva
   // crédito y la operación todavía no tiene una financiación cargada.
   @IsOptional() @IsUUID() financialInstitutionId?: string;
+  // Crédito + crédito: el segundo crédito (monto y financiera). creditAmount
+  // es el total de los dos; el primero es la diferencia.
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0.01)
+  secondCreditAmount?: number;
+  @IsOptional() @IsUUID() secondFinancialInstitutionId?: string;
   @IsOptional() @IsBoolean() hasGuarantor?: boolean;
   @IsOptional() @IsString() @MaxLength(120) guarantorFirstName?: string | null;
   @IsOptional() @IsString() @MaxLength(120) guarantorLastName?: string | null;

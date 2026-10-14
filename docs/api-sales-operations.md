@@ -83,8 +83,9 @@ inventario, disponibilidad de proveedor y abastecimiento ya filtran por
 }
 ```
 
-**Garante.** Si la forma de pago lleva crédito (`CREDITO`,
-`EFECTIVO_CREDITO`, `MOTO_CREDITO`, `MOTO_EFECTIVO_CREDITO`) hay que mandar
+**Garante.** Si la forma de pago lleva crédito (`CREDITO`, `CREDITO_CREDITO`,
+`EFECTIVO_CREDITO`, `TRANSFERENCIA_CREDITO`, `MOTO_CREDITO`,
+`MOTO_EFECTIVO_CREDITO`) hay que mandar
 `hasGuarantor` (`400 GUARANTOR_REQUIRED`). Con `true`, nombre, apellido y DNI
 son obligatorios (`400 GUARANTOR_DATA_REQUIRED`; el DNI se guarda sin puntos,
 6 a 11 dígitos, `400 GUARANTOR_DOCUMENT_INVALID`). Con `false` el garante es el
@@ -393,10 +394,26 @@ compatibilidad y equivale a "recibida".
 y `licensingCollectionPending=true` (fase 5: PAGA_CLIENTE con la patente
 recibida y el cobro al cliente pendiente).
 
-Plataformas: `EFECTIVO`, `CREDITO`, `EFECTIVO_CREDITO`, `MOTO_EFECTIVO`,
-`MOTO_CREDITO`, `MOTO_EFECTIVO_CREDITO`. `creditAmount` es obligatorio y
-positivo exactamente cuando la plataforma contiene crédito, y no puede superar
-el cierre. `debt`: `NO|RESERVA|CUOTA_INICIAL|PAPELES|ACCESORIOS|OTRO`.
+Plataformas: `EFECTIVO`, `TRANSFERENCIA`, `TARJETA`, `CREDITO`,
+`CREDITO_CREDITO`, `EFECTIVO_CREDITO`, `TRANSFERENCIA_CREDITO`,
+`MOTO_EFECTIVO`, `MOTO_CREDITO`, `MOTO_EFECTIVO_CREDITO`. `creditAmount` es
+obligatorio y positivo exactamente cuando la plataforma contiene crédito, y no
+puede superar el cierre.
+
+En el plan de pagos (`POST .../payment-plan`), lo que no cubren crédito ni parte
+de pago se paga como dice la plataforma: efectivo, transferencia
+(`TRANSFERENCIA_BANCARIA`) o tarjeta. `CREDITO_CREDITO` son dos componentes
+`FINANCIACION` de financieras distintas que suman `creditAmount` y completan el
+precio (`400 DOUBLE_CREDIT_INSTITUTIONS_REQUIRED`). En una corrección
+(`PATCH .../correction`) `creditAmount` es el total de los dos créditos y el
+segundo va en `secondCreditAmount` y `secondFinancialInstitutionId` (el primero
+es la diferencia, con `financialInstitutionId`). Si la operación ya tiene los
+dos, se pueden omitir; si falta el segundo responde
+`400 CORRECTION_SECOND_CREDIT_REQUIRED`. Al cambiar de
+plataforma, el componente del resto pasa al tipo de la nueva (p. ej. de
+efectivo a transferencia).
+
+`debt`: `NO|RESERVA|CUOTA_INICIAL|PAPELES|ACCESORIOS|OTRO`.
 
 ## Asignación de unidad (fase 3)
 

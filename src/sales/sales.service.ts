@@ -83,6 +83,12 @@ import {
   touchesGuarantor,
 } from './guarantor';
 import {
+  CREDIT_PAYMENT_PLATFORMS,
+  PAYMENT_PLATFORM_RULES,
+  REMAINDER_PAYMENT_PLATFORMS,
+  TRADE_IN_PAYMENT_PLATFORMS,
+} from './payment-platforms';
+import {
   ApproveSalesOperationDto,
   AssignSalesUnitDto,
   CorrectSalesOperationDto,
@@ -515,24 +521,6 @@ function licensingOverdueWhere(
     ],
   };
 }
-
-const CREDIT_PAYMENT_PLATFORMS: plataforma_pago_luma[] = [
-  plataforma_pago_luma.CREDITO,
-  plataforma_pago_luma.EFECTIVO_CREDITO,
-  plataforma_pago_luma.MOTO_CREDITO,
-  plataforma_pago_luma.MOTO_EFECTIVO_CREDITO,
-];
-const TRADE_IN_PAYMENT_PLATFORMS: plataforma_pago_luma[] = [
-  plataforma_pago_luma.MOTO_EFECTIVO,
-  plataforma_pago_luma.MOTO_CREDITO,
-  plataforma_pago_luma.MOTO_EFECTIVO_CREDITO,
-];
-const CASH_PAYMENT_PLATFORMS: plataforma_pago_luma[] = [
-  plataforma_pago_luma.EFECTIVO,
-  plataforma_pago_luma.EFECTIVO_CREDITO,
-  plataforma_pago_luma.MOTO_EFECTIVO,
-  plataforma_pago_luma.MOTO_EFECTIVO_CREDITO,
-];
 
 // La base exige fecha de entrega cuando la operación queda ENTREGADO
 // (operacion_entregado_en_valido). Se conserva la que ya tenía; al salir de
@@ -2218,7 +2206,9 @@ export class SalesService {
           input.agreedPrice !== undefined ||
           input.paymentPlatform !== undefined ||
           input.creditAmount !== undefined ||
-          input.financialInstitutionId !== undefined;
+          input.financialInstitutionId !== undefined ||
+          input.secondCreditAmount !== undefined ||
+          input.secondFinancialInstitutionId !== undefined;
         if (planTouched && platform)
           this.assertPaymentContract(platform, creditAmount, agreedPrice);
 
@@ -2393,6 +2383,9 @@ export class SalesService {
                 agreedPrice,
                 creditAmount,
                 financialInstitutionId: input.financialInstitutionId,
+                secondCreditAmount: input.secondCreditAmount,
+                secondFinancialInstitutionId:
+                  input.secondFinancialInstitutionId,
               })
             : 0;
         event.metadata = {
@@ -2495,6 +2488,8 @@ export class SalesService {
       agreedPrice: Prisma.Decimal;
       creditAmount: Prisma.Decimal | null;
       financialInstitutionId?: string;
+      secondCreditAmount?: number;
+      secondFinancialInstitutionId?: string;
     },
   ): Promise<number> {
     const organizationId = operation.organizacion_id;
@@ -2534,7 +2529,7 @@ export class SalesService {
           : 'The operation has a trade-in and the selected payment platform does not include one',
       );
     const cashTotal = target.agreedPrice.minus(credit).minus(tradeInTotal);
-    const expectsCash = CASH_PAYMENT_PLATFORMS.includes(target.platform);
+    const expectsCash = REMAINDER_PAYMENT_PLATFORMS.includes(target.platform);
     if (cashTotal.lessThan(0) || expectsCash !== cashTotal.greaterThan(0))
       throw apiError(
         HttpStatus.BAD_REQUEST,
@@ -2569,15 +2564,61 @@ export class SalesService {
     };
     const kept: string[] = [];
 
-    // Financing.
-    const [mainFinancing, ...extraFinancing] = financing;
+    // Financing: one component per credit (two for credit + credit, from
+    // different financial institutions). Existing ones are updated in place,
+    // in order, and the leftovers cancelled.
+    const doubleCredit = PAYMENT_PLATFORM_RULES[target.platform].credit === 2;
+    const desired: Array<{ amount: Prisma.Decimal; institutionId?: string }> =
+      [];
+    if (doubleCredit) {
+      const second =
+        target.secondCreditAmount !== undefined
+          ? new Prisma.Decimal(target.secondCreditAmount)
+          : financing[1]?.importe_esperado;
+      if (!second || !second.greaterThan(0) || !second.lessThan(credit))
+        throw apiError(
+          HttpStatus.BAD_REQUEST,
+          'CORRECTION_SECOND_CREDIT_REQUIRED',
+          'Credit + credit needs both credit amounts',
+        );
+      desired.push(
+        {
+          amount: credit.minus(second),
+          institutionId:
+            target.financialInstitutionId ??
+            financing[0]?.financiera_id ??
+            undefined,
+        },
+        {
+          amount: second,
+          institutionId:
+            target.secondFinancialInstitutionId ??
+            financing[1]?.financiera_id ??
+            undefined,
+        },
+      );
+      if (desired[0]!.institutionId === desired[1]!.institutionId)
+        throw apiError(
+          HttpStatus.BAD_REQUEST,
+          'DOUBLE_CREDIT_INSTITUTIONS_REQUIRED',
+          'Credit + credit needs two different financial institutions',
+        );
+    } else if (credit.greaterThan(0)) {
+      desired.push({
+        amount: credit,
+        institutionId:
+          target.financialInstitutionId ??
+          financing[0]?.financiera_id ??
+          undefined,
+      });
+    }
     const financingChanges =
-      credit.greaterThan(0) !== financing.length > 0 ||
-      extraFinancing.length > 0 ||
-      (mainFinancing !== undefined &&
-        (!mainFinancing.importe_esperado.equals(credit) ||
-          (target.financialInstitutionId !== undefined &&
-            target.financialInstitutionId !== mainFinancing.financiera_id)));
+      desired.length !== financing.length ||
+      desired.some(
+        (item, index) =>
+          !financing[index]!.importe_esperado.equals(item.amount) ||
+          item.institutionId !== financing[index]!.financiera_id,
+      );
     if (financingChanges) {
       // An own credit already has its installments generated from the
       // financed amount: changing it here would leave them out of sync.
@@ -2591,19 +2632,18 @@ export class SalesService {
           'The operation has an own credit with installments; its financing cannot be corrected here',
         );
     }
-    if (credit.greaterThan(0)) {
-      const financialInstitutionId =
-        target.financialInstitutionId ?? mainFinancing?.financiera_id;
-      if (!financialInstitutionId)
+    for (const [index, item] of desired.entries()) {
+      const existing = financing[index];
+      if (!item.institutionId)
         throw apiError(
           HttpStatus.BAD_REQUEST,
           'CORRECTION_FINANCIAL_INSTITUTION_REQUIRED',
           'A financial institution is required for the credit amount',
         );
-      if (financialInstitutionId !== mainFinancing?.financiera_id) {
+      if (item.institutionId !== existing?.financiera_id) {
         const financial = await tx.financieras.findFirst({
           where: {
-            id: financialInstitutionId,
+            id: item.institutionId,
             organizacion_id: organizationId,
             activo: true,
           },
@@ -2614,43 +2654,44 @@ export class SalesService {
             'Financial institution is invalid or inactive',
           );
       }
-      if (mainFinancing) {
+      if (existing) {
         await tx.componentes_pago_operacion.update({
           where: {
             id_organizacion_id: {
-              id: mainFinancing.id,
+              id: existing.id,
               organizacion_id: organizationId,
             },
           },
           data: {
-            importe_esperado: credit,
-            financiera_id: financialInstitutionId,
+            importe_esperado: item.amount,
+            financiera_id: item.institutionId,
             consulta_crediticia_id:
-              financialInstitutionId === mainFinancing.financiera_id
-                ? undefined
-                : null,
+              item.institutionId === existing.financiera_id ? undefined : null,
           },
         });
-        kept.push(mainFinancing.id);
+        kept.push(existing.id);
       } else {
         const created = await tx.componentes_pago_operacion.create({
           data: {
             operacion_id: operation.id,
             tipo_componente: tipo_componente_pago_luma.FINANCIACION,
-            importe_esperado: credit,
-            financiera_id: financialInstitutionId,
+            importe_esperado: item.amount,
+            financiera_id: item.institutionId,
             organizacion_id: organizationId,
           },
           select: { id: true },
         });
         kept.push(created.id);
       }
-      for (const component of extraFinancing) await cancel(component.id);
-    } else {
-      for (const component of financing) await cancel(component.id);
     }
+    for (const component of financing.slice(desired.length))
+      await cancel(component.id);
 
     // Cash: the first cash-like component absorbs the difference.
+    const remainderType =
+      PAYMENT_PLATFORM_RULES[target.platform].remainder ??
+      tipo_componente_pago_luma.EFECTIVO;
+    const platformChanged = operation.plataforma_pago !== target.platform;
     if (cashTotal.greaterThan(0)) {
       const [mainCash, ...otherCash] = cash;
       const others = otherCash.reduce(
@@ -2668,6 +2709,11 @@ export class SalesService {
           },
           data: {
             importe_esperado: keepOthers ? cashTotal.minus(others) : cashTotal,
+            // Al cambiar de plataforma (p. ej. de efectivo a transferencia)
+            // el resto pasa a pagarse como dice la nueva.
+            ...(platformChanged && mainCash.tipo_componente !== remainderType
+              ? { tipo_componente: remainderType }
+              : {}),
           },
         });
         kept.push(mainCash.id);
@@ -2678,7 +2724,7 @@ export class SalesService {
         const created = await tx.componentes_pago_operacion.create({
           data: {
             operacion_id: operation.id,
-            tipo_componente: tipo_componente_pago_luma.EFECTIVO,
+            tipo_componente: remainderType,
             importe_esperado: cashTotal,
             organizacion_id: organizationId,
           },
@@ -4416,13 +4462,7 @@ export class SalesService {
   ) {
     if (!platform)
       throw new BadRequestException('Payment platform is required');
-    const creditPlatforms: plataforma_pago_luma[] = [
-      plataforma_pago_luma.CREDITO,
-      plataforma_pago_luma.EFECTIVO_CREDITO,
-      plataforma_pago_luma.MOTO_CREDITO,
-      plataforma_pago_luma.MOTO_EFECTIVO_CREDITO,
-    ];
-    const requiresCredit = creditPlatforms.includes(platform);
+    const requiresCredit = CREDIT_PAYMENT_PLATFORMS.includes(platform);
     const amount =
       creditAmount === null || creditAmount === undefined
         ? null
@@ -4540,22 +4580,32 @@ export class SalesService {
         component.type !== tipo_componente_pago_luma.FINANCIACION &&
         component.type !== tipo_componente_pago_luma.TOMA_PARTE_PAGO,
     );
-    const expected = {
-      [plataforma_pago_luma.EFECTIVO]: [true, false, false],
-      [plataforma_pago_luma.CREDITO]: [false, true, false],
-      [plataforma_pago_luma.EFECTIVO_CREDITO]: [true, true, false],
-      [plataforma_pago_luma.MOTO_EFECTIVO]: [true, false, true],
-      [plataforma_pago_luma.MOTO_CREDITO]: [false, true, true],
-      [plataforma_pago_luma.MOTO_EFECTIVO_CREDITO]: [true, true, true],
-    }[operation.plataforma_pago];
+    const rule = PAYMENT_PLATFORM_RULES[operation.plataforma_pago];
     if (
-      hasCashLike !== expected[0] ||
-      hasFinancing !== expected[1] ||
-      hasTradeIn !== expected[2]
+      hasCashLike !== (rule.remainder !== null) ||
+      hasFinancing !== rule.credit > 0 ||
+      hasTradeIn !== rule.tradeIn
     )
       throw new BadRequestException(
         'Payment components do not match the selected payment platform',
       );
+    // Crédito + crédito: dos financiaciones de financieras distintas.
+    if (rule.credit === 2) {
+      const institutions = new Set(
+        components
+          .filter(
+            (component) =>
+              component.type === tipo_componente_pago_luma.FINANCIACION,
+          )
+          .map((component) => component.financialInstitutionId),
+      );
+      if (institutions.size < 2)
+        throw apiError(
+          HttpStatus.BAD_REQUEST,
+          'DOUBLE_CREDIT_INSTITUTIONS_REQUIRED',
+          'Credit + credit needs two financing components from different financial institutions',
+        );
+    }
     if (hasFinancing) {
       const financingTotal = components
         .filter(
