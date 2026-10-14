@@ -50,6 +50,7 @@ import {
   resolveCashCollection,
 } from './cash-handover';
 import { syncComponentPaymentStatus } from './component-collections';
+import { guarantorSearchWhere } from '../sales/guarantor';
 
 const personnelSelect = {
   select: { id: true, nombre_completo: true },
@@ -330,6 +331,7 @@ export class IncomesService {
       query.organizationId ??
       (actor.globalAccess ? undefined : actor.organization.id);
     const search = query.search?.trim();
+    const guarantorMatch = guarantorSearchWhere(search);
     const ticketNumber = query.ticketNumber?.trim();
     const month = query.period
       ? await this.prisma.withTenant(scope(actor), async (tx) =>
@@ -413,6 +415,10 @@ export class IncomesService {
                 },
               },
             },
+            // Garante de la operación del ingreso.
+            ...(guarantorMatch
+              ? [{ operaciones: { is: guarantorMatch } }]
+              : []),
           ]
         : undefined,
     };

@@ -73,6 +73,16 @@ import {
 } from './licensing';
 import { nationalHolidayDates } from './ar-holidays';
 import {
+  type GuarantorClient,
+  type GuarantorColumns,
+  type GuarantorInput,
+  guarantorSearchWhere,
+  guarantorView,
+  platformHasCredit,
+  resolveGuarantor,
+  touchesGuarantor,
+} from './guarantor';
+import {
   ApproveSalesOperationDto,
   AssignSalesUnitDto,
   CorrectSalesOperationDto,
@@ -610,6 +620,7 @@ export class SalesService {
     const search = query.search?.trim();
     const operationNumber =
       search && /^\d+$/.test(search) ? BigInt(search) : undefined;
+    const guarantorMatch = guarantorSearchWhere(search);
     const overdueWhere = licensingOverdueWhere();
     const collectionPendingIds = query.licensingCollectionPending
       ? await this.prisma.withTenant(this.scope(actor), (tx) =>
@@ -625,6 +636,9 @@ export class SalesService {
             : { NOT: overdueWhere },
         collectionPendingIds ? { id: { in: collectionPendingIds } } : {},
         this.fulfillmentWhere(query.fulfillmentStatus),
+        query.guarantor
+          ? (guarantorSearchWhere(query.guarantor) ?? { id: { in: [] } })
+          : {},
       ],
       modalidad_patentamiento:
         query.licensingMode === 'SIN_DEFINIR' ? null : query.licensingMode,
@@ -676,6 +690,8 @@ export class SalesService {
               },
             },
             { numero_boleto: { contains: search, mode: 'insensitive' } },
+            // Garante: DNI, apellido o apellido y nombre, en cualquier orden.
+            ...(guarantorMatch ? [guarantorMatch] : []),
           ]
         : undefined,
     };
@@ -1758,6 +1774,13 @@ export class SalesService {
       async (tx) => {
         await this.branchOr400(tx, branchId, organizationId);
         const clientId = await this.resolveClient(tx, input, organizationId);
+        const guarantor = await this.guarantorFor(
+          tx,
+          input.paymentPlatform,
+          input,
+          clientId,
+          organizationId,
+        );
         await this.versionOr400(
           tx,
           input.versionId,
@@ -1817,7 +1840,7 @@ export class SalesService {
             moneda: policy.moneda,
             plataforma_pago: input.paymentPlatform,
             monto_credito: input.creditAmount,
-            respaldo_garante: input.guarantor?.trim(),
+            ...guarantor,
             debe: input.debt,
             estado_entrega: input.deliveryStatus,
             entrega_programada_en: scheduledDelivery ?? undefined,
@@ -2012,6 +2035,22 @@ export class SalesService {
             current.organizacion_id,
             SalesAssignmentRole.CONTACTO,
           );
+        const guarantor =
+          input.paymentPlatform !== undefined ||
+          input.clientId !== undefined ||
+          touchesGuarantor(input)
+            ? await this.guarantorFor(
+                tx,
+                input.paymentPlatform ?? current.plataforma_pago,
+                input,
+                input.clientId ?? current.cliente_id,
+                current.organizacion_id,
+                current,
+                input.clientId && input.clientId !== current.cliente_id
+                  ? undefined
+                  : current.clientes,
+              )
+            : undefined;
         const policy =
           input.branchId || input.agreedPrice !== undefined
             ? await this.pricePolicyOr400(
@@ -2038,12 +2077,7 @@ export class SalesService {
             moneda: policy?.moneda,
             plataforma_pago: input.paymentPlatform,
             monto_credito: input.creditAmount,
-            respaldo_garante:
-              input.guarantor === undefined
-                ? undefined
-                : input.guarantor === null
-                  ? null
-                  : input.guarantor.trim(),
+            ...(guarantor ?? {}),
             fecha_operacion: input.operationDate
               ? new Date(input.operationDate)
               : undefined,
@@ -2203,6 +2237,22 @@ export class SalesService {
         const estimate = input.operationDate
           ? licensingEstimate(new Date(input.operationDate))
           : undefined;
+        const guarantor =
+          input.paymentPlatform !== undefined ||
+          input.clientId !== undefined ||
+          touchesGuarantor(input)
+            ? await this.guarantorFor(
+                tx,
+                platform,
+                input,
+                input.clientId ?? current.cliente_id,
+                current.organizacion_id,
+                current,
+                input.clientId && input.clientId !== current.cliente_id
+                  ? undefined
+                  : current.clientes,
+              )
+            : undefined;
         const versionChange =
           input.versionId && input.versionId !== current.version_id
             ? await this.correctedVersion(
@@ -2254,12 +2304,7 @@ export class SalesService {
             precio_acordado: input.agreedPrice,
             plataforma_pago: input.paymentPlatform,
             monto_credito: planTouched && platform ? creditAmount : undefined,
-            respaldo_garante:
-              input.guarantor === undefined
-                ? undefined
-                : input.guarantor === null
-                  ? null
-                  : input.guarantor.trim(),
+            ...(guarantor ?? {}),
             fecha_operacion: input.operationDate
               ? new Date(input.operationDate)
               : undefined,
@@ -5130,6 +5175,29 @@ export class SalesService {
       await tx.clientes.update({ where: { id }, data: { activo: true } });
   }
 
+  // Garante a guardar. Sin crédito no hay garante; con crédito y sin garante
+  // propio se copian los datos del cliente (sólo entonces se lee el cliente).
+  private async guarantorFor(
+    tx: Prisma.TransactionClient,
+    platform: plataforma_pago_luma | null | undefined,
+    input: GuarantorInput,
+    clientId: string,
+    organizationId: string,
+    current?: Partial<GuarantorColumns>,
+    knownClient?: GuarantorClient,
+  ) {
+    if (!platformHasCredit(platform))
+      return resolveGuarantor(platform, input, null, current);
+    const client =
+      knownClient ??
+      (await tx.clientes.findFirst({
+        where: { id: clientId, organizacion_id: organizationId },
+        select: { nombre_completo: true, numero_documento: true },
+      }));
+    if (!client) throw new BadRequestException('Client is invalid');
+    return resolveGuarantor(platform, input, client, current);
+  }
+
   private async resolveClient(
     tx: Prisma.TransactionClient,
     input: CreateSalesOperationDto,
@@ -5557,7 +5625,9 @@ export class SalesService {
       currency: item.moneda,
       paymentPlatform: item.plataforma_pago,
       creditAmount: item.monto_credito?.toString() ?? null,
-      guarantor: item.respaldo_garante,
+      guarantor: guarantorView(item),
+      // Texto libre de antes del garante estructurado (sólo histórico).
+      legacyGuarantor: item.respaldo_garante,
       ticketNumber: item.numero_boleto,
       requestedColor: item.color_deseado,
       fulfillment: this.fulfillment(item, currentUnit),

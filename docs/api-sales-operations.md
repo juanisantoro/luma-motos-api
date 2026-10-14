@@ -63,7 +63,10 @@ inventario, disponibilidad de proveedor y abastecimiento ya filtran por
   "agreedPrice": 2500000,
   "paymentPlatform": "EFECTIVO_CREDITO",
   "creditAmount": 1000000,
-  "guarantor": "texto optional",
+  "hasGuarantor": true,
+  "guarantorFirstName": "Juan (obligatorio con hasGuarantor=true)",
+  "guarantorLastName": "Pérez (obligatorio con hasGuarantor=true)",
+  "guarantorDocument": "30111222 (obligatorio con hasGuarantor=true)",
   "operationDate": "2026-08-29",
   "reservationExpiresAt": "timestamp optional",
   "deliveryStatus": "NO_PROGRAMADA | PROGRAMADA",
@@ -79,6 +82,18 @@ inventario, disponibilidad de proveedor y abastecimiento ya filtran por
   "organizationId": "uuid optional; propio o acceso global"
 }
 ```
+
+**Garante.** Si la forma de pago lleva crédito (`CREDITO`,
+`EFECTIVO_CREDITO`, `MOTO_CREDITO`, `MOTO_EFECTIVO_CREDITO`) hay que mandar
+`hasGuarantor` (`400 GUARANTOR_REQUIRED`). Con `true`, nombre, apellido y DNI
+son obligatorios (`400 GUARANTOR_DATA_REQUIRED`; el DNI se guarda sin puntos,
+6 a 11 dígitos, `400 GUARANTOR_DOCUMENT_INVALID`). Con `false` el garante es el
+cliente: se copian su nombre y documento. Sin crédito no hay garante y los
+campos se ignoran. La respuesta trae `guarantor`
+(`{hasGuarantor, sameAsClient, firstName, lastName, documentNumber, fullName}`
+o `null`) y `legacyGuarantor`, el texto libre "respaldo/garante" de las
+operaciones anteriores (sólo lectura). Las operaciones con crédito cargadas
+antes quedan con `guarantor: null` hasta que se editen.
 
 El contrato principal usa `client`; `clientId` se acepta como alternativa
 temporal compatible, nunca junto con `client`. La misma transacción tenant/RLS
@@ -115,7 +130,8 @@ protección adicional y nunca reemplaza la regla bajo lista.
 
 `PATCH /api/sales/operations/:id` requiere `expectedVersion` y acepta
 `branchId`, `clientId`, `sellerId`, `contactId` (nullable), `agreedPrice`,
-`paymentPlatform`, `creditAmount` (nullable), `guarantor` (nullable),
+`paymentPlatform`, `creditAmount` (nullable), `hasGuarantor`,
+`guarantorFirstName`, `guarantorLastName`, `guarantorDocument`,
 `operationDate`, `deliveryStatus`, `deliveryScheduledDate`, `papersDelivered`,
 `debt`, `notes` (nullable), `ticketNumber` (nullable), `includesHelmet`,
 `licensingMode` y
@@ -149,7 +165,8 @@ el estado y no vuelve a pedir aprobación aunque el precio quede bajo lista.
 
 Acepta `clientId`, `sellerId`, `contactId` (nullable), `agreedPrice`,
 `paymentPlatform`, `creditAmount` (nullable), `financialInstitutionId`,
-`guarantor` (nullable), `operationDate`, `deliveryStatus`,
+`hasGuarantor`, `guarantorFirstName`, `guarantorLastName`,
+`guarantorDocument`, `operationDate`, `deliveryStatus`,
 `deliveryScheduledDate`, `papersDelivered`, `debt`, `notes` (nullable),
 `ticketNumber` (nullable), `includesHelmet` y `versionId`. Sólo
 se tocan los campos enviados. No modifica unidad, sucursal ni patentamiento
@@ -501,7 +518,10 @@ abastecimiento y observación, vendedor, contacto, usuario creador,
 componentes, tomas, obligaciones, reserva, aprobación, `ticketNumber`
 (número de boleto), `includesHelmet` y `licensing`. Dinero se serializa como
 string decimal. `search` busca por número de operación, cliente, chasis,
-patente y número de boleto.
+patente, número de boleto y garante (DNI, apellido o apellido y nombre, en
+cualquier orden). `guarantor=` filtra sólo por garante. La búsqueda por garante
+también está en clientes, ingresos, cobranza de cuotas, gastos de motos/autos
+y auditoría de caja.
 
 Rutas adicionales: `GET /sellers`, `GET /price-policy`, `GET /:id`,
 `POST /:id/reservation`, `POST /:id/reservation/release`,

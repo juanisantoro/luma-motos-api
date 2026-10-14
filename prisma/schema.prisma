@@ -663,6 +663,24 @@ model tipos_service {
   @@unique([id, organizacion_id], map: "tipos_service_id_organizacion_unico")
 }
 
+/// Aviso de service ya resuelto (cliente contactado o descartado). La lista
+/// de avisos se calcula; esto sólo evita que uno resuelto vuelva a salir.
+/// Sin relaciones modeladas: las FK (con la organización) están en la base.
+model avisos_service {
+  id                         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizacion_id            String   @db.Uuid
+  unidad_vehiculo_id         String   @db.Uuid
+  etapa                      String   @db.VarChar(20)
+  vence_el                   DateTime @db.Date
+  estado                     String   @db.VarChar(20)
+  canal                      String?  @db.VarChar(20)
+  nota                       String?
+  registrado_por_personal_id String   @db.Uuid
+  registrado_en              DateTime @default(now()) @db.Timestamptz(6)
+
+  @@unique([organizacion_id, unidad_vehiculo_id, etapa, vence_el], map: "avisos_service_aviso_unico")
+}
+
 /// Orden de trabajo de una moto que entra a service. Sin relaciones
 /// modeladas: las FK (con la organización) están en la base.
 model ordenes_service {
@@ -851,6 +869,11 @@ model operaciones {
   plataforma_pago                                                                                            plataforma_pago_luma?
   monto_credito                                                                                               Decimal?                           @db.Decimal(18, 2)
   respaldo_garante                                                                                            String?                            @db.VarChar(500)
+  tiene_garante                                                                                               Boolean?
+  garante_nombre                                                                                              String?                            @db.VarChar(120)
+  garante_apellido                                                                                            String?                            @db.VarChar(120)
+  garante_documento                                                                                           String?                            @db.VarChar(30)
+  garante_busqueda                                                                                            String?                            @db.VarChar(400)
   numero_boleto                                                                                                  String?                                    @db.VarChar(40)
   incluye_casco                                                                                               Boolean                            @default(false)
   modalidad_patentamiento                                                                                     modalidad_patentamiento_luma?
@@ -916,6 +939,7 @@ model operaciones {
   @@index([estado_operacion, fecha_operacion(sort: Desc)], map: "operaciones_estado_fecha_indice")
   @@index([sucursal_id, fecha_operacion(sort: Desc)], map: "operaciones_sucursal_fecha_indice")
   @@index([organizacion_id, modalidad_patentamiento], map: "operaciones_modalidad_patentamiento_indice")
+  @@index([garante_busqueda(ops: raw("gin_trgm_ops"))], map: "operaciones_garante_busqueda_trgm_indice", type: Gin)
 }
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.

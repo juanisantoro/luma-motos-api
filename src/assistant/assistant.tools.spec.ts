@@ -108,10 +108,15 @@ describe('AssistantToolsService', () => {
   });
 
   it('offers each query only with the permissions of its screen', () => {
-    expect(names(seller)).toEqual(['buscar_operaciones', 'consultar_stock']);
+    expect(names(seller)).toEqual([
+      'buscar_operaciones',
+      'buscar_por_garante',
+      'consultar_stock',
+    ]);
     expect(names(administrative)).toEqual([
       'buscar_clientes',
       'buscar_operaciones',
+      'buscar_por_garante',
       'seguimiento_cobros',
       'gastos_de_vehiculos',
       'consultar_stock',
@@ -476,5 +481,49 @@ describe('AssistantToolsService', () => {
     });
     expect(answer).toContain('Honda Wave Wave 110');
     expect(answer).not.toContain('3900000');
+  });
+
+  it('busca ventas por garante en motos y autos, sólo por el garante', async () => {
+    findAll.mockResolvedValue({
+      items: [
+        {
+          ...operationRow,
+          guarantor: {
+            hasGuarantor: true,
+            sameAsClient: false,
+            firstName: 'Juan',
+            lastName: 'Pérez',
+            documentNumber: '30111222',
+            fullName: 'Pérez, Juan',
+          },
+        },
+      ],
+      total: 1,
+    });
+
+    const answer = JSON.parse(
+      await tools.run(
+        'buscar_por_garante',
+        '{"apellidoGarante":"Pérez","nombreGarante":"Juan","documentoGarante":"30.111.222"}',
+        administrative,
+      ),
+    ) as { resultados: Array<{ garante: string }> };
+
+    expect(findAll).toHaveBeenCalledTimes(2);
+    expect(call(findAll, 0)[0]).toMatchObject({
+      vehicleType: 'MOTO',
+      guarantor: 'Pérez Juan 30111222',
+    });
+    expect(call(findAll, 0)[0].search).toBeUndefined();
+    expect(call(findAll, 1)[0]).toMatchObject({ vehicleType: 'AUTO' });
+    expect(answer.resultados[0]?.garante).toBe('Pérez, Juan · DNI 30111222');
+  });
+
+  it('pide un dato del garante antes de buscar', async () => {
+    const answer = JSON.parse(
+      await tools.run('buscar_por_garante', '{}', administrative),
+    ) as { nota: string };
+    expect(findAll).not.toHaveBeenCalled();
+    expect(answer.nota).toContain('DNI');
   });
 });

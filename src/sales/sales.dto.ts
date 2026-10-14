@@ -86,6 +86,8 @@ export class SalesOperationQueryDto {
   mine?: boolean;
   @IsOptional() @IsUUID() versionId?: string;
   @IsOptional() @IsString() @MaxLength(80) search?: string;
+  // Sólo por garante: DNI, apellido o apellido y nombre (cualquier orden).
+  @IsOptional() @IsString() @MaxLength(120) guarantor?: string;
   @IsOptional()
   @IsIn(SALES_LICENSING_MODE_FILTERS)
   licensingMode?: SalesLicensingModeFilter;
@@ -179,7 +181,13 @@ export class CreateSalesOperationDto {
   @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0.01)
   creditAmount?: number;
-  @IsOptional() @IsString() @IsNotEmpty() @MaxLength(500) guarantor?: string;
+  // Garante: obligatorio indicar si tiene cuando alguna parte se paga con
+  // crédito. Con garante propio van nombre, apellido y DNI; sin garante, el
+  // garante es el cliente (se completa solo).
+  @IsOptional() @IsBoolean() hasGuarantor?: boolean;
+  @IsOptional() @IsString() @MaxLength(120) guarantorFirstName?: string;
+  @IsOptional() @IsString() @MaxLength(120) guarantorLastName?: string;
+  @IsOptional() @IsString() @MaxLength(30) guarantorDocument?: string;
   @IsOptional() @IsDateString() operationDate?: string;
   @IsOptional() @IsDateString() reservationExpiresAt?: string;
   // Al cargarla, la entrega puede quedar NO_PROGRAMADA o PROGRAMADA (con el
@@ -226,11 +234,10 @@ export class UpdateSalesOperationDto {
   @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0.01)
   creditAmount?: number | null;
-  @IsOptional()
-  @IsString()
-  @IsNotEmpty()
-  @MaxLength(500)
-  guarantor?: string | null;
+  @IsOptional() @IsBoolean() hasGuarantor?: boolean;
+  @IsOptional() @IsString() @MaxLength(120) guarantorFirstName?: string | null;
+  @IsOptional() @IsString() @MaxLength(120) guarantorLastName?: string | null;
+  @IsOptional() @IsString() @MaxLength(30) guarantorDocument?: string | null;
   @IsOptional() @IsDateString() operationDate?: string;
   @IsOptional()
   @IsEnum(luma_estado_entrega)
@@ -282,11 +289,10 @@ export class CorrectSalesOperationDto {
   // Financiera del crédito. Sólo hace falta cuando la forma de pago lleva
   // crédito y la operación todavía no tiene una financiación cargada.
   @IsOptional() @IsUUID() financialInstitutionId?: string;
-  @IsOptional()
-  @IsString()
-  @IsNotEmpty()
-  @MaxLength(500)
-  guarantor?: string | null;
+  @IsOptional() @IsBoolean() hasGuarantor?: boolean;
+  @IsOptional() @IsString() @MaxLength(120) guarantorFirstName?: string | null;
+  @IsOptional() @IsString() @MaxLength(120) guarantorLastName?: string | null;
+  @IsOptional() @IsString() @MaxLength(30) guarantorDocument?: string | null;
   @IsOptional() @IsDateString() operationDate?: string;
   @IsOptional()
   @IsEnum(luma_estado_entrega)

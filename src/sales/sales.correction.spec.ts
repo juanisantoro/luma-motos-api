@@ -409,6 +409,7 @@ describe('SalesService.correct', () => {
         paymentPlatform: 'EFECTIVO_CREDITO',
         creditAmount: 60,
         financialInstitutionId: financialId,
+        hasGuarantor: false,
       },
       actor,
     );
@@ -516,6 +517,7 @@ describe('SalesService.correct', () => {
             expectedVersion: 2,
             paymentPlatform: 'EFECTIVO_CREDITO',
             creditAmount: 60,
+            hasGuarantor: false,
           },
           actor,
         ),

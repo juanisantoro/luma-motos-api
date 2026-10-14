@@ -34,6 +34,7 @@ import {
   PayCreditInstallmentDto,
   UpdateCreditPlanDto,
 } from './credit-plans.dto';
+import { guarantorSearchSql } from '../sales/guarantor';
 
 type CreditPlanRow = {
   id: string;
@@ -676,6 +677,7 @@ export class CreditPlansService {
       conditions.push(Prisma.sql`(
         cl.nombre_completo ILIKE ${`%${search}%`}
         OR o.numero_operacion::text ILIKE ${`%${search}%`}
+        OR ${guarantorSearchSql(Prisma.sql`o.garante_busqueda`, search) ?? Prisma.sql`FALSE`}
       )`);
     }
     const where = conditions.length

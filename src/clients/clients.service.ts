@@ -21,6 +21,7 @@ import { ClientListQueryDto } from './dto/client-list-query.dto';
 import { CreateClientDto } from './dto/create-client.dto';
 import { UpdateClientStatusDto } from './dto/update-client-status.dto';
 import { UpdateClientDto } from './dto/update-client.dto';
+import { guarantorSearchWhere } from '../sales/guarantor';
 
 const clientSelect = {
   id: true,
@@ -97,6 +98,7 @@ export class ClientsService {
     const normalizedDocument = query.search
       ? normalizeClientDocument(query.search)
       : undefined;
+    const guarantorMatch = guarantorSearchWhere(query.search);
     const organizationId = actor.globalAccess
       ? query.organizationId
       : actor.organization.id;
@@ -122,6 +124,10 @@ export class ClientsService {
                 mode: 'insensitive',
               },
             },
+            // Clientes con alguna operación cuyo garante coincide.
+            ...(guarantorMatch
+              ? [{ operaciones: { some: guarantorMatch } }]
+              : []),
           ]
         : undefined,
     };

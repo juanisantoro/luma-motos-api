@@ -37,6 +37,8 @@ import { VehiclePaymentsService } from '../vehicle-payments/vehicle-payments.ser
 //    mínimo, comisiones ni datos internos). El teléfono de un cliente sólo
 //    sale por buscar_clientes (clientes.consultar) y el documento por esa
 //    consulta o por buscar_clientes_en_rojo, cuyas pantallas ya lo muestran.
+//    El garante (nombre y DNI) sale con las ventas: la pantalla Operaciones
+//    lo muestra en el detalle de cada venta.
 
 const MAX_ROWS = 8;
 // Clients a document may resolve to when searching sales by document.
@@ -143,6 +145,11 @@ interface OperationView {
   status: string;
   agreedPrice: string;
   client: { fullName: string };
+  guarantor?: {
+    sameAsClient: boolean;
+    fullName: string;
+    documentNumber: string | null;
+  } | null;
   branch: { name: string };
   seller: { fullName: string } | null;
   fulfillment: { status: string };
@@ -237,6 +244,7 @@ function operation(view: OperationView) {
     fecha: day(view.operationDate),
     estado: view.status,
     cliente: view.client.fullName,
+    garante: guarantor(view),
     vehiculo: [
       view.vehicle.model?.brand.name,
       view.vehicle.model?.name,
@@ -252,6 +260,19 @@ function operation(view: OperationView) {
     situacionUnidad: view.fulfillment.status,
     patentamiento: licensing(view.licensing),
   };
+}
+
+function guarantor(view: OperationView) {
+  if (!view.guarantor) return null;
+  if (view.guarantor.sameAsClient) return 'El mismo cliente';
+  return [
+    view.guarantor.fullName,
+    view.guarantor.documentNumber
+      ? `DNI ${view.guarantor.documentNumber}`
+      : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
 }
 
 function page<T, R>(result: Page<T>, map: (item: T) => R) {
@@ -433,7 +454,7 @@ export class AssistantToolsService {
         properties: {
           tipoVehiculo: vehicleTypeProperty,
           busqueda: searchProperty(
-            'número de operación, número de boleto, nombre del cliente, chasis o patente',
+            'número de operación, número de boleto, nombre del cliente, chasis, patente o garante',
           ),
           documentoCliente: documentProperty,
           estado: { type: 'string', enum: OPERATION_STATUSES },
@@ -474,6 +495,66 @@ export class AssistantToolsService {
         },
       },
       {
+        name: 'buscar_por_garante',
+        description:
+          'Busca ventas (operaciones) por su garante: DNI, apellido, o apellido y nombre del garante. Usala cuando pregunten "de quién es garante tal persona", "qué ventas garantiza X" o "quién salió de garante con el DNI tal". Cuando el crédito no tiene garante propio, el garante es el mismo cliente.',
+        permissions: [PERMISSION_CODES.SALES_READ],
+        properties: {
+          tipoVehiculo: vehicleTypeProperty,
+          documentoGarante: {
+            type: 'string',
+            description: 'DNI del garante, sólo los dígitos.',
+          },
+          apellidoGarante: {
+            type: 'string',
+            description: 'Apellido del garante.',
+          },
+          nombreGarante: {
+            type: 'string',
+            description:
+              'Nombre del garante. Usalo junto con el apellido cuando lo tengas.',
+          },
+        },
+        run: async (args, actor) => {
+          const text = [
+            textArg(args, 'apellidoGarante'),
+            textArg(args, 'nombreGarante'),
+            documentArg(args, 'documentoGarante'),
+          ]
+            .filter(Boolean)
+            .join(' ');
+          if (!text)
+            return {
+              resultados: [],
+              nota: 'Indicá el DNI, el apellido o el apellido y nombre del garante.',
+            };
+          // Sin circuito indicado se busca en motos y en autos.
+          const vehicleType = enumArg(args, 'tipoVehiculo', VEHICLE_TYPES);
+          const types = vehicleType ? [vehicleType] : [...VEHICLE_TYPES];
+          const pages = await Promise.all(
+            types.map(
+              async (type) =>
+                (await sales.findAll(
+                  Object.assign(new SalesOperationQueryDto(), {
+                    vehicleType: type,
+                    guarantor: text,
+                    page: 1,
+                    limit: MAX_ROWS,
+                  }),
+                  actor,
+                )) as unknown as Page<OperationView>,
+            ),
+          );
+          return page(
+            {
+              items: pages.flatMap((item) => item.items),
+              total: pages.reduce((sum, item) => sum + item.total, 0),
+            },
+            operation,
+          );
+        },
+      },
+      {
         name: 'seguimiento_cobros',
         description:
           'Cobros de las ventas que el usuario puede ver en Seguimiento de cobros: precio acordado, cobrado, saldo y efectivo sin rendir de cada operación.',
@@ -484,7 +565,7 @@ export class AssistantToolsService {
         properties: {
           tipoVehiculo: vehicleTypeProperty,
           busqueda: searchProperty(
-            'número de operación, número de boleto, nombre del cliente, chasis o patente',
+            'número de operación, número de boleto, nombre del cliente, chasis, patente o garante',
           ),
           documentoCliente: documentProperty,
         },

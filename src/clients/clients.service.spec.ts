@@ -140,7 +140,13 @@ describe('ClientsService', () => {
         activo: true,
       },
     });
-    expect(countClients.mock.calls[0]?.[0].where.OR).toHaveLength(3);
+    // Nombre, documento, correo y garante de alguna de sus operaciones.
+    expect(countClients.mock.calls[0]?.[0].where.OR).toHaveLength(4);
+    expect(countClients.mock.calls[0]?.[0].where.OR[3]).toEqual({
+      operaciones: {
+        some: { AND: [{ garante_busqueda: { contains: 'ana' } }] },
+      },
+    });
     expect(findClients).toHaveBeenCalledWith(
       expect.objectContaining({
         skip: 10,

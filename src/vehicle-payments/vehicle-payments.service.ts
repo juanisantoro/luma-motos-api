@@ -32,6 +32,7 @@ import {
   UpdateVehiclePaymentDto,
   VehiclePaymentQueryDto,
 } from './vehicle-payments.dto';
+import { guarantorSearchSql } from '../sales/guarantor';
 
 type CatalogRow = { id: string; nombre: string };
 
@@ -403,6 +404,7 @@ export class VehiclePaymentsService {
         OR p.observaciones ILIKE ${`%${search}%`}
         OR o.numero_operacion::text ILIKE ${`%${search}%`}
         OR o.numero_boleto ILIKE ${`%${search}%`}
+        OR ${guarantorSearchSql(Prisma.sql`o.garante_busqueda`, search) ?? Prisma.sql`FALSE`}
       )`);
     }
     const where = Prisma.sql`WHERE ${Prisma.join(conditions, ' AND ')}`;

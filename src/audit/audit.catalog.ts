@@ -89,6 +89,11 @@ export const AUDIT_ACTIONS: Record<string, CatalogEntry> = {
   SERVICE_ORDER_CANCELLED: entry('SERVICE', 'Orden de service cancelada'),
   SERVICE_TYPE_CREATED: entry('SERVICE', 'Tipo de service creado'),
   SERVICE_TYPE_UPDATED: entry('SERVICE', 'Tipo de service modificado'),
+  SERVICE_REMINDER_RESOLVED: entry(
+    'SERVICE',
+    'Aviso de service resuelto (cliente contactado o descartado)',
+  ),
+  SERVICE_REMINDER_REOPENED: entry('SERVICE', 'Aviso de service reabierto'),
   EXPENSE_CREATED: entry('DINERO', 'Gasto cargado'),
   EXPENSE_UPDATED: entry('DINERO', 'Gasto modificado'),
   EXPENSE_PAYMENT_REGISTERED: entry('DINERO', 'Pago de un gasto'),

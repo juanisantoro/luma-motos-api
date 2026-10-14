@@ -9,6 +9,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { argentinaToday } from '../sales/licensing';
 import { SalesService } from '../sales/sales.service';
 import { ServiceOrdersService } from '../service-orders/service-orders.service';
+import { ServiceRemindersService } from '../service-orders/service-reminders.service';
 import { VehiclePaymentsService } from '../vehicle-payments/vehicle-payments.service';
 
 /** Tareas de administración que se cuentan, en el orden en que se muestran. */
@@ -22,6 +23,7 @@ export const PENDING_TASK_KEYS = [
   'LICENSING_PENDING_COLLECTION',
   'EXPENSES_PENDING_PAYMENT',
   'SERVICE_READY_TO_DELIVER',
+  'SERVICE_REMINDERS_DUE',
 ] as const;
 
 export type PendingTaskKey = (typeof PENDING_TASK_KEYS)[number];
@@ -57,6 +59,7 @@ export class PendingTasksService {
     private readonly sales: SalesService,
     private readonly expenses: ExpensesService,
     private readonly serviceOrders: ServiceOrdersService,
+    private readonly serviceReminders: ServiceRemindersService,
   ) {}
 
   /** `null` cuando el usuario no puede ver ninguna de las tareas. */
@@ -71,6 +74,8 @@ export class PendingTasksService {
       licensing: permissions.has(PERMISSION_CODES.SALES_LICENSING_MANAGE),
       expenses: permissions.has(PERMISSION_CODES.EXPENSES_READ),
       service: permissions.has(PERMISSION_CODES.SERVICE_COLLECT),
+      // Contactar a los clientes por el service: quien recibe las motos.
+      serviceReminders: permissions.has(PERMISSION_CODES.SERVICE_MANAGE),
     };
     if (!Object.values(can).some(Boolean)) return null;
 
@@ -126,7 +131,8 @@ export class PendingTasksService {
       | 'vehiclePayments'
       | 'licensing'
       | 'expenses'
-      | 'service',
+      | 'service'
+      | 'serviceReminders',
       boolean
     >,
   ): Promise<PendingTask[]> {
@@ -139,6 +145,7 @@ export class PendingTasksService {
       licensing,
       expenses,
       service,
+      serviceReminders,
     ] = await Promise.all([
       can.credits
         ? this.creditPlans.dueInRange(actor, branch, today, today)
@@ -152,6 +159,9 @@ export class PendingTasksService {
       can.expenses ? this.expenses.pendingPaymentCount(actor, branch) : null,
       can.service
         ? this.serviceOrders.readyToDeliverCount(actor, branch)
+        : null,
+      can.serviceReminders
+        ? this.serviceReminders.pendingCount(actor, branch)
         : null,
     ]);
     const tasks: PendingTask[] = [];
@@ -172,6 +182,8 @@ export class PendingTasksService {
     }
     if (expenses !== null) add('EXPENSES_PENDING_PAYMENT', expenses);
     if (service !== null) add('SERVICE_READY_TO_DELIVER', service);
+    if (serviceReminders !== null)
+      add('SERVICE_REMINDERS_DUE', serviceReminders);
     return tasks;
   }
 

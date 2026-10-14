@@ -15,6 +15,7 @@ import {
   AuditLogQueryDto,
   AuditMoneyQueryDto,
 } from './dto/audit-log-query.dto';
+import { guarantorSearchWhere } from '../sales/guarantor';
 
 type Tx = Prisma.TransactionClient;
 
@@ -581,6 +582,7 @@ export class AuditQueryService {
       const search = query.search?.trim();
       if (search) {
         const contains = { contains: search, mode: 'insensitive' as const };
+        const guarantorMatch = guarantorSearchWhere(search);
         and.push({
           OR: [
             { referencia: contains },
@@ -591,6 +593,15 @@ export class AuditQueryService {
                 clientes: { nombre_completo: contains },
               },
             },
+            ...(guarantorMatch
+              ? [
+                  {
+                    ingresos_movimientos_caja_ingreso: {
+                      operaciones: guarantorMatch,
+                    },
+                  },
+                ]
+              : []),
             { gastos: { detalle: contains } },
             { personal: { nombre_completo: contains } },
           ],

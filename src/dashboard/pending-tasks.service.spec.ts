@@ -64,6 +64,9 @@ describe('PendingTasksService', () => {
   const serviceOrders = {
     readyToDeliverCount: jest.fn<Promise<number>, ScopedArgs>(),
   };
+  const serviceReminders = {
+    pendingCount: jest.fn<Promise<number>, ScopedArgs>(),
+  };
   let service: PendingTasksService;
 
   beforeEach(() => {
@@ -87,6 +90,7 @@ describe('PendingTasksService', () => {
       sales as never,
       expenses as never,
       serviceOrders as never,
+      serviceReminders as never,
     );
   });
 
@@ -223,6 +227,28 @@ describe('PendingTasksService', () => {
       { key: 'SERVICE_READY_TO_DELIVER', count: 2, amount: null },
     ]);
     const call = serviceOrders.readyToDeliverCount.mock.calls[0];
+    expect(call?.[1].branchIds).toEqual([SM]);
+  });
+
+  it('counts the service reminders for whoever receives the motos', async () => {
+    serviceReminders.pendingCount.mockResolvedValue(4);
+
+    const result = await service.byBranch(
+      actor({
+        role: {
+          id: 'role-id',
+          code: 'ADMINISTRATIVA',
+          name: 'Administrativa',
+          system: true,
+          permissions: ['service.gestionar'],
+        },
+      }),
+    );
+
+    expect(result?.branches[0]?.tasks).toEqual([
+      { key: 'SERVICE_REMINDERS_DUE', count: 4, amount: null },
+    ]);
+    const call = serviceReminders.pendingCount.mock.calls[0];
     expect(call?.[1].branchIds).toEqual([SM]);
   });
 
