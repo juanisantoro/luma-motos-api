@@ -24,6 +24,18 @@ import {
   ROLE_AUDIT_ACTIONS,
   SYSTEM_ROLE_CODES,
 } from './roles.constants';
+import { BASE_ROLE_CODES, type BaseRoleCode } from './role-base';
+
+function cloneBase(source: {
+  codigo: string;
+  es_sistema: boolean;
+  rol_base: string | null;
+}): BaseRoleCode | null {
+  const code = source.es_sistema ? source.codigo : source.rol_base;
+  return (BASE_ROLE_CODES as readonly string[]).includes(code ?? '')
+    ? (code as BaseRoleCode)
+    : null;
+}
 
 const roleSelect = {
   id: true,
@@ -32,6 +44,7 @@ const roleSelect = {
   descripcion: true,
   activo: true,
   es_sistema: true,
+  rol_base: true,
   version: true,
   organizacion_id: true,
   creado_en: true,
@@ -190,6 +203,7 @@ export class RolesService {
       metadata: {
         code,
         name: input.name,
+        baseRole: input.baseRole ?? null,
         permissionCodes: input.permissionCodes,
       },
     };
@@ -213,6 +227,7 @@ export class RolesService {
               descripcion: input.description,
               organizacion_id: organizationId,
               es_sistema: false,
+              rol_base: input.baseRole ?? null,
               permisos_rol: {
                 createMany: {
                   data: input.permissionCodes.map((permissionCode) => ({
@@ -236,7 +251,8 @@ export class RolesService {
     if (
       input.name === undefined &&
       input.description === undefined &&
-      input.permissionCodes === undefined
+      input.permissionCodes === undefined &&
+      input.baseRole === undefined
     ) {
       throw new BadRequestException('At least one role field is required');
     }
@@ -245,6 +261,13 @@ export class RolesService {
       (transaction) => this.findManagedRole(transaction, id, actor),
     );
     this.assertRoleManageable(current, actor);
+    // Los roles del sistema ya son la base: no toman otra.
+    if (current.es_sistema && input.baseRole)
+      throw apiError(
+        HttpStatus.BAD_REQUEST,
+        'SYSTEM_ROLE_BASE_NOT_ALLOWED',
+        'System roles cannot act as another role',
+      );
     const permissionCodes =
       input.permissionCodes ??
       current.permisos_rol.map((entry) => entry.permisos.codigo);
@@ -271,6 +294,7 @@ export class RolesService {
       previousData: {
         name: current.nombre,
         description: current.descripcion,
+        baseRole: current.rol_base,
         permissionCodes: current.permisos_rol.map(
           (entry) => entry.permisos.codigo,
         ),
@@ -279,6 +303,8 @@ export class RolesService {
       metadata: {
         name: input.name ?? current.nombre,
         description: input.description ?? current.descripcion,
+        baseRole:
+          input.baseRole === undefined ? current.rol_base : input.baseRole,
         permissionCodes,
         version: input.version + 1,
       },
@@ -306,6 +332,7 @@ export class RolesService {
             data: {
               nombre: input.name,
               descripcion: input.description,
+              rol_base: current.es_sistema ? undefined : input.baseRole,
               version: {
                 increment: 1,
               },
@@ -438,6 +465,9 @@ export class RolesService {
         name: input.name,
         code: input.code,
         description: source.descripcion,
+        // Copiar un rol del sistema (p. ej. Vendedor) da un rol que funciona
+        // como él; copiar uno propio conserva su base.
+        ...(cloneBase(source) ? { baseRole: cloneBase(source)! } : {}),
         permissionCodes: source.permisos_rol.map(
           (entry) => entry.permisos.codigo,
         ),
@@ -735,6 +765,7 @@ export class RolesService {
       description: role.descripcion,
       active: role.activo,
       system: role.es_sistema,
+      baseRole: role.rol_base ?? null,
       version: role.version,
       userCount: role._count.usuarios,
       createdAt: role.creado_en,

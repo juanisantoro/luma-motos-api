@@ -70,6 +70,7 @@ import {
   commissionConflict,
   commissionNotFound,
 } from './commissions.errors';
+import { rolesActingAs } from '../roles/role-base';
 
 const SELLER_ASSIGNMENT_ROLES: rol_asignacion_luma[] = ['VENDEDOR', 'CALLCENTER'];
 
@@ -791,7 +792,7 @@ export class CommissionsService {
         id: managerId,
         organizacion_id: organizationId,
         estado: 'ACTIVO',
-        roles: { activo: true, codigo: ROLE_CODES.GERENTE },
+        roles: rolesActingAs([ROLE_CODES.GERENTE]),
       },
       select: { id: true, nombre_completo: true, sucursal_principal_id: true },
     });

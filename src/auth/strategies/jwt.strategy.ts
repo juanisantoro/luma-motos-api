@@ -11,6 +11,7 @@ import {
   buildBranchScope,
 } from '../../branch-scope/branch-scope';
 import { AuthenticatedPrincipal, JwtPayload } from '../auth.types';
+import { effectiveRoleCode } from '../../roles/role-base';
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
@@ -114,6 +115,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
                 nombre: true,
                 activo: true,
                 es_sistema: true,
+                rol_base: true,
                 permisos_rol: {
                   select: {
                     codigo_permiso: true,
@@ -205,7 +207,8 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
         },
         role: {
           id: result.roles.id,
-          code: result.roles.codigo,
+          // Un rol con base (p. ej. "Vendedor autos") se comporta como su base.
+          code: effectiveRoleCode(result.roles),
           name: result.roles.nombre,
           system: result.roles.es_sistema,
           permissions,

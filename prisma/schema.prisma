@@ -16,6 +16,9 @@ model Role {
   descripcion     String          @db.VarChar(240)
   activo          Boolean         @default(true)
   es_sistema      Boolean         @default(false)
+  /// "Funciona como": rol del sistema que toma como base un rol creado por la
+  /// organización (VENDEDOR, CALLCENTER, ADMINISTRATIVA, GERENTE, MECANICO).
+  rol_base        String?         @db.VarChar(50)
   version         Int             @default(1)
   organizacion_id String?         @db.Uuid
   creado_en       DateTime        @default(now()) @db.Timestamptz(6)

@@ -3,6 +3,7 @@ import {
   ArrayMaxSize,
   ArrayUnique,
   IsArray,
+  IsIn,
   IsOptional,
   IsString,
   IsUUID,
@@ -10,8 +11,14 @@ import {
   MaxLength,
   MinLength,
 } from 'class-validator';
+import { BASE_ROLE_CODES, type BaseRoleCode } from '../role-base';
 
 export class CreateRoleDto {
+  // "Funciona como": rol del sistema que toma como base (opcional).
+  @IsOptional()
+  @IsIn(BASE_ROLE_CODES)
+  baseRole?: BaseRoleCode;
+
   @Transform(({ value }: { value: unknown }) =>
     typeof value === 'string' ? value.trim() : value,
   )

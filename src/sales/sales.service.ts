@@ -116,6 +116,7 @@ import {
   UpdateSalesOperationDto,
   VersionedSalesActionDto,
 } from './sales.dto';
+import { effectiveRoleCode, rolesActingAs } from '../roles/role-base';
 
 const SELLER_ASSIGNMENT_ROLES: SalesAssignmentRole[] = [
   SalesAssignmentRole.VENDEDOR,
@@ -1590,10 +1591,7 @@ export class SalesService {
             : undefined,
         roles:
           assignmentRole === SalesAssignmentRole.VENDEDOR
-            ? {
-                activo: true,
-                codigo: { in: [ROLE_CODES.VENDEDOR, ROLE_CODES.CALLCENTER] },
-              }
+            ? rolesActingAs([ROLE_CODES.VENDEDOR, ROLE_CODES.CALLCENTER])
             : undefined,
         OR: branchFilter
           ? [
@@ -5353,13 +5351,13 @@ export class SalesService {
         estado: 'ACTIVO',
         roles:
           assignmentRole === SalesAssignmentRole.VENDEDOR
-            ? {
-                activo: true,
-                codigo: { in: [ROLE_CODES.VENDEDOR, ROLE_CODES.CALLCENTER] },
-              }
+            ? rolesActingAs([ROLE_CODES.VENDEDOR, ROLE_CODES.CALLCENTER])
             : undefined,
       },
-      select: { id: true, roles: { select: { codigo: true } } },
+      select: {
+        id: true,
+        roles: { select: { codigo: true, es_sistema: true, rol_base: true } },
+      },
     });
     if (!seller)
       throw new BadRequestException({
@@ -5379,7 +5377,8 @@ export class SalesService {
     // seller slot exactly like a VENDEDOR. When they do, the operation's
     // rol_asignacion must record CALLCENTER (not a hardcoded VENDEDOR) so
     // commissions.service.ts can tell who to pay and how.
-    return seller.roles?.codigo === ROLE_CODES.CALLCENTER
+    return seller.roles &&
+      effectiveRoleCode(seller.roles) === ROLE_CODES.CALLCENTER
       ? SalesAssignmentRole.CALLCENTER
       : SalesAssignmentRole.VENDEDOR;
   }

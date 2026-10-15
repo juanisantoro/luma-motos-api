@@ -23,6 +23,7 @@ import {
   verifyPassword,
 } from './password-hashing';
 import { createTemporaryPassword } from './temporary-password';
+import { effectiveRoleCode } from '../roles/role-base';
 
 const userForAuthenticationSelect = {
   id: true,
@@ -58,6 +59,7 @@ const userForAuthenticationSelect = {
       nombre: true,
       activo: true,
       es_sistema: true,
+      rol_base: true,
       permisos_rol: {
         select: {
           codigo_permiso: true,
@@ -764,7 +766,8 @@ export class AuthService {
       },
       role: {
         id: user.roles.id,
-        code: user.roles.codigo,
+        // Un rol con base (p. ej. "Vendedor autos") se comporta como su base.
+        code: effectiveRoleCode(user.roles),
         name: user.roles.nombre,
         system: user.roles.es_sistema,
         permissions,
