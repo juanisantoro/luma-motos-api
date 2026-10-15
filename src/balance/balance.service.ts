@@ -119,12 +119,8 @@ export class BalanceService {
       const period = query.period ?? calendar.current();
       const range = calendar.range(period);
       const days = { gte: range.from, lte: range.to };
-      // Las comisiones de gerentes se pagan con fecha y hora: el mes de
-      // trabajo en hora de Argentina.
-      const instants = {
-        gte: new Date(`${toDateOnly(range.from)}T00:00:00.000-03:00`),
-        lte: new Date(`${toDateOnly(range.to)}T23:59:59.999-03:00`),
-      };
+      // Las comisiones (de vendedores y de gerentes) van al mes que
+      // liquidan, aunque se paguen en el siguiente.
       const entries: BalanceEntry[] = [];
 
       const [incomes, expenses, purchases, sales, vehicle, managers] =
@@ -252,7 +248,7 @@ export class BalanceService {
             WHERE g.organizacion_id = ${organizationId}::uuid
               AND g.estado = 'PAGADA'
               AND g.moneda = ${currency}
-              AND g.pagado_en BETWEEN ${instants.gte}::timestamptz AND ${instants.lte}::timestamptz
+              AND g.periodo_hasta BETWEEN ${range.from}::date AND ${range.to}::date
           `),
         ]);
 

@@ -588,7 +588,10 @@ export class CommissionsService {
           data: {
             organizacion_id: settlement.organizacion_id,
             sucursal_id: settlement.sucursal_id,
-            fecha_generacion: businessDate(input.paidAt.slice(0, 10)),
+            // El gasto es del mes de la comisión aunque se pague después
+            // (septiembre pagado el 7/10 queda en septiembre). El movimiento
+            // de caja sí lleva la fecha real del pago.
+            fecha_generacion: settlement.periodo_hasta,
             categoria: 'COMISIONES',
             detalle: `Comisión ${settlement.tipo_vehiculo} ${this.periodLabel(settlement)}`,
             importe: settlement.importe_acordado,
@@ -1720,7 +1723,7 @@ export class CommissionsService {
             businessDate(input.validFrom),
             input.validTo ? businessDate(input.validTo) : null,
           );
-        const created = await tx.politicas_comisiones.create({
+        const inserted = await tx.politicas_comisiones.create({
           data: {
             organizacion_id: organizationId,
             tipo_vehiculo: input.vehicleType,
@@ -1735,17 +1738,15 @@ export class CommissionsService {
               actor,
               organizationId,
             ),
-            escalas_comisiones: {
-              create: input.tiers.map((tier) => ({
-                organizacion_id: organizationId,
-                minimo_ventas: tier.minUnits,
-                maximo_ventas: tier.maxUnits,
-                importe_fijo: new Prisma.Decimal(tier.fixedAmount),
-              })),
-            },
           },
-          include: policyInclude,
+          select: { id: true },
         });
+        const created = await this.replacePolicyTiers(
+          tx,
+          inserted.id,
+          organizationId,
+          input.tiers,
+        );
         // ambito isn't part of the typed create() input above (see the
         // ambito helpers note) - set it explicitly, in the same
         // transaction, right after the row exists.
@@ -1756,6 +1757,40 @@ export class CommissionsService {
       undefined,
       organizationId,
     );
+  }
+
+  // Carga las escalas de una política (borra las que tenía) y la devuelve
+  // con ellas. Van aparte del create/update de la política: anidadas, Prisma
+  // no acepta organizacion_id (la escala tiene dos relaciones que lo usan) y
+  // el alta fallaba con "Unknown argument organizacion_id".
+  private async replacePolicyTiers(
+    tx: Prisma.TransactionClient,
+    policyId: string,
+    organizationId: string,
+    tiers: Array<{
+      minUnits: number;
+      maxUnits?: number | null;
+      fixedAmount: string | number;
+    }>,
+  ) {
+    await tx.escalas_comisiones.deleteMany({
+      where: { politica_id: policyId, organizacion_id: organizationId },
+    });
+    await tx.escalas_comisiones.createMany({
+      data: tiers.map((tier) => ({
+        politica_id: policyId,
+        organizacion_id: organizationId,
+        minimo_ventas: tier.minUnits,
+        maximo_ventas: tier.maxUnits ?? null,
+        importe_fijo: new Prisma.Decimal(tier.fixedAmount),
+      })),
+    });
+    return tx.politicas_comisiones.findUniqueOrThrow({
+      where: {
+        id_organizacion_id: { id: policyId, organizacion_id: organizationId },
+      },
+      include: policyInclude,
+    });
   }
 
   async updatePolicy(
@@ -1792,8 +1827,7 @@ export class CommissionsService {
             'Only draft commission policies can be edited',
           );
         this.assertVersion(current.version_fila, input.expectedVersion);
-        await tx.escalas_comisiones.deleteMany({ where: { politica_id: id } });
-        const updated = await tx.politicas_comisiones.update({
+        await tx.politicas_comisiones.update({
           where: {
             id_organizacion_id: {
               id,
@@ -1807,17 +1841,15 @@ export class CommissionsService {
             vigente_hasta: input.validTo ? businessDate(input.validTo) : null,
             estado: this.databasePolicyStatus(input.status),
             version_fila: { increment: 1 },
-            escalas_comisiones: {
-              create: input.tiers.map((tier) => ({
-                organizacion_id: current.organizacion_id,
-                minimo_ventas: tier.minUnits,
-                maximo_ventas: tier.maxUnits,
-                importe_fijo: new Prisma.Decimal(tier.fixedAmount),
-              })),
-            },
           },
-          include: policyInclude,
+          select: { id: true },
         });
+        const updated = await this.replacePolicyTiers(
+          tx,
+          id,
+          current.organizacion_id,
+          input.tiers,
+        );
         // ambito isn't part of the typed update() input above (see the
         // ambito helpers note) - set it explicitly in the same transaction.
         await this.setPolicyAmbito(tx, updated.id, current.organizacion_id, ambito);
